@@ -1,0 +1,276 @@
+cmake_minimum_required(VERSION 3.24)
+project(Spidy VERSION 0.8.1 LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(MSVC)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/EHsc> /utf-8)
+endif()
+option(SPIDY_BUILD_XR "Build the Windows OpenXR / D3D12 swing lab" ${WIN32})
+option(SPIDY_BUILD_OBSERVER "Build the opt-in camera diagnostic DLL" OFF)
+option(SPIDY_BUILD_LAUNCHER "Build the Spidy launcher window (Dear ImGui from tools/bootstrap.ps1)" ${SPIDY_BUILD_XR})
+
+# Stamp a shipped Windows binary with version metadata (CompanyName, ProductName, FileVersion...)
+# via apps/spidy_module.rc. Unsigned, metadata-less modules that attach to the running game are
+# what antivirus heuristics flag; the resource is also how a vendor identifies a false-positive
+# report. Signing (tools/build.ps1, when a certificate is configured) builds on top of this.
+function(spidy_stamp_version target description)
+  if(NOT WIN32)
+    return()
+  endif()
+  get_target_property(kind ${target} TYPE)
+  if(kind STREQUAL "EXECUTABLE")
+    set(filetype VFT_APP)
+  else()
+    set(filetype VFT_DLL)
+  endif()
+  target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/apps/spidy_module.rc")
+  target_compile_definitions(${target} PRIVATE
+                             SPIDY_VERSION="${PROJECT_VERSION}"
+                             SPIDY_VERSION_NUMBERS=${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0
+                             SPIDY_MODULE_DESC="${description}"
+                             SPIDY_MODULE_FILE="$<TARGET_FILE_NAME:${target}>"
+                             SPIDY_MODULE_FILETYPE=${filetype})
+endfunction()
+
+add_library(spidy_core src/swing.cpp src/web_grab.cpp src/web_tie.cpp src/web_line.cpp src/lab_world.cpp src/lab_props.cpp src/game_tracking.cpp
+            src/web_visual.cpp src/body_ik.cpp src/punch.cpp src/shooter.cpp src/vr_settings.cpp
+            src/body_calibration.cpp src/overlay_text.cpp src/slow_motion.cpp src/web_strike.cpp
+            src/impact_sound.cpp src/prompt_buttons.cpp src/gadget_wheel.cpp src/spider_sense.cpp src/phone.cpp
+            src/body_haptics.cpp src/tech_marks.cpp)
+target_include_directories(spidy_core PUBLIC include)
+if(MSVC)
+  target_compile_options(spidy_core PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(spidy_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+enable_testing()
+add_executable(spidy_realistic_flip_tests tests/realistic_flip_tests.cpp)
+target_include_directories(spidy_realistic_flip_tests PRIVATE include)
+add_test(NAME realistic_flips COMMAND spidy_realistic_flip_tests)
+add_executable(spidy_tests tests/core_tests.cpp)
+target_link_libraries(spidy_tests PRIVATE spidy_core)
+if(WIN32)
+  # The game target scan's class rules, tried on the test's own classes.
+  target_sources(spidy_tests PRIVATE src/game_targets.cpp)
+endif()
+add_test(NAME core COMMAND spidy_tests)
+# Settings profiles (launcher_profile.hpp) hold the SPIDY VR tab's settings: the launcher's programs build
+# vr_settings themselves, as the launcher has the static runtime and spidy_core the DLL one.
+add_executable(spidy_launcher_tests tests/launcher_tests.cpp src/vr_settings.cpp)
+target_include_directories(spidy_launcher_tests PRIVATE include)
+add_test(NAME launcher COMMAND spidy_launcher_tests)
+add_executable(spidy_sim apps/sim.cpp)
+target_link_libraries(spidy_sim PRIVATE spidy_core)
+# Draws the combat marks over eye captures without a headset (tools/preview-marks.ps1).
+add_executable(spidy_mark_preview apps/mark_preview.cpp)
+target_link_libraries(spidy_mark_preview PRIVATE spidy_core)
+add_executable(spidy_phone_preview apps/phone_preview.cpp)
+target_link_libraries(spidy_phone_preview PRIVATE spidy_core)
+if(SPIDY_BUILD_OBSERVER)
+  if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "The game observer requires 64-bit Windows")
+  endif()
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/minhook/CMakeLists.txt")
+    message(FATAL_ERROR "Run tools/bootstrap.ps1 -Observer for the pinned MinHook source")
+  endif()
+  add_subdirectory(third_party/minhook EXCLUDE_FROM_ALL)
+  add_library(spidy_observer SHARED src/game_observer.cpp)
+  target_compile_definitions(spidy_observer PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_observer PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_observer PRIVATE minhook)
+  add_library(spidy_bridge SHARED src/game_bridge.cpp)
+  target_include_directories(spidy_bridge PRIVATE include)
+  target_compile_definitions(spidy_bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_bridge PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_bridge PRIVATE minhook)
+  add_library(spidy_view SHARED src/game_view.cpp)
+  target_include_directories(spidy_view PRIVATE include)
+  target_compile_definitions(spidy_view PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_view PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_view PRIVATE minhook)
+  add_library(spidy_stereo_probe SHARED src/stereo_probe.cpp src/native_eye_gpu.cpp src/native_webs.cpp
+              src/native_body.cpp src/native_hud.cpp src/game_fp.cpp)
+  target_include_directories(spidy_stereo_probe PRIVATE include)
+  target_compile_definitions(spidy_stereo_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_stereo_probe PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_stereo_probe PRIVATE minhook d3d12 d3dcompiler winmm spidy_core)
+  add_library(spidy_render_probe SHARED src/render_probe.cpp)
+  target_compile_definitions(spidy_render_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_render_probe PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_render_probe PRIVATE minhook d3d12 dxgi)
+  add_library(spidy_eye_capture SHARED src/eye_capture.cpp)
+  target_compile_definitions(spidy_eye_capture PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_eye_capture PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_eye_capture PRIVATE minhook d3d12)
+  add_library(spidy_scene_trace SHARED src/scene_trace.cpp)
+  target_compile_definitions(spidy_scene_trace PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_scene_trace PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_scene_trace PRIVATE minhook)
+  add_library(spidy_camera_watch SHARED src/camera_watch.cpp)
+  target_compile_definitions(spidy_camera_watch PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_camera_watch PRIVATE /W4 /permissive-)
+  add_library(spidy_collision_probe SHARED src/collision_probe.cpp)
+  target_include_directories(spidy_collision_probe PRIVATE include)
+  target_compile_definitions(spidy_collision_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_collision_probe PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_collision_probe PRIVATE minhook)
+  add_library(spidy_ray_bridge SHARED src/native_rays.cpp src/game_swing.cpp src/game_targets.cpp
+              src/game_grab.cpp src/native_bodies.cpp src/game_punch.cpp src/game_shooter.cpp
+              src/game_warp.cpp src/game_offers.cpp src/game_sense.cpp src/game_focus.cpp
+              src/game_sound.cpp src/game_throw.cpp src/game_dodge.cpp)
+  target_include_directories(spidy_ray_bridge PRIVATE include)
+  target_compile_definitions(spidy_ray_bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_ray_bridge PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_ray_bridge PRIVATE minhook spidy_core)
+  add_library(spidy_movement_probe SHARED src/movement_probe.cpp)
+  target_include_directories(spidy_movement_probe PRIVATE include)
+  target_compile_definitions(spidy_movement_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_movement_probe PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_movement_probe PRIVATE minhook)
+  add_library(spidy_movement_bridge SHARED src/native_movement.cpp)
+  target_include_directories(spidy_movement_bridge PRIVATE include)
+  target_compile_definitions(spidy_movement_bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_movement_bridge PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_movement_bridge PRIVATE minhook)
+  # Loaded while the game starts, before its renderer exists; keep it small.
+  add_library(spidy_render_memory SHARED src/native_render_memory.cpp)
+  target_include_directories(spidy_render_memory PRIVATE include)
+  target_compile_definitions(spidy_render_memory PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+  target_compile_options(spidy_render_memory PRIVATE /W4 /permissive-)
+  target_link_libraries(spidy_render_memory PRIVATE minhook)
+  # Version-stamp the modules the player package ships (package.ps1's $modules).
+  spidy_stamp_version(spidy_bridge "Spidy VR game bridge")
+  spidy_stamp_version(spidy_render_probe "Spidy VR render probe")
+  spidy_stamp_version(spidy_ray_bridge "Spidy VR input bridge")
+  spidy_stamp_version(spidy_movement_bridge "Spidy VR movement bridge")
+  spidy_stamp_version(spidy_stereo_probe "Spidy VR stereo renderer")
+  spidy_stamp_version(spidy_render_memory "Spidy VR render-memory helper")
+endif()
+if(SPIDY_BUILD_XR)
+  if(NOT WIN32)
+    message(FATAL_ERROR "The XR renderer currently requires Windows D3D12")
+  endif()
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenXR-SDK/CMakeLists.txt")
+    message(FATAL_ERROR "Run tools/bootstrap.ps1 to fetch the pinned OpenXR SDK")
+  endif()
+  set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+  set(BUILD_WITH_SYSTEM_JSONCPP OFF CACHE BOOL "" FORCE)
+  set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/OpenXR-SDK EXCLUDE_FROM_ALL)
+  add_library(spidy_d3d12 src/d3d12_renderer.cpp)
+  target_link_libraries(spidy_d3d12 PUBLIC spidy_core d3d12 dxgi d3dcompiler)
+  target_compile_definitions(spidy_d3d12 PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+  add_library(spidy_openxr src/xr_session.cpp)
+  target_link_libraries(spidy_openxr PUBLIC spidy_d3d12 openxr_loader)
+  target_compile_definitions(spidy_openxr PUBLIC XR_USE_PLATFORM_WIN32 XR_USE_GRAPHICS_API_D3D12)
+  # Body haptics on bHaptics devices (bhaptics_output.hpp) with bHaptics' own SDK: its header names the
+  # functions, and its library, beside the modules, is loaded at run time. The Developer Portal app they play as
+  # comes from the environment (the release workflow's repository secrets), else from bhaptics-app.local
+  # (git-ignored; app_id=... and api_key=... lines); a build without one plays no body haptics.
+  set(SPIDY_BHAPTICS_SDK "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tact-cpp2/sdk")
+  if(NOT EXISTS "${SPIDY_BHAPTICS_SDK}/include/bhaptics/bhaptics.h")
+    message(FATAL_ERROR "Run tools/bootstrap.ps1 to fetch the pinned bHaptics SDK")
+  endif()
+  set(SPIDY_BHAPTICS_APP_ID "$ENV{SPIDY_BHAPTICS_APP_ID}")
+  set(SPIDY_BHAPTICS_API_KEY "$ENV{SPIDY_BHAPTICS_API_KEY}")
+  set(bhaptics_app "${CMAKE_CURRENT_SOURCE_DIR}/bhaptics-app.local")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${bhaptics_app}")
+  if(EXISTS "${bhaptics_app}" AND (NOT SPIDY_BHAPTICS_APP_ID OR NOT SPIDY_BHAPTICS_API_KEY))
+    file(STRINGS "${bhaptics_app}" bhaptics_lines)
+    foreach(line IN LISTS bhaptics_lines)
+      if(line MATCHES "^[ \t]*app_id[ \t]*=[ \t]*([^ \t]+)")
+        set(SPIDY_BHAPTICS_APP_ID "${CMAKE_MATCH_1}")
+      elseif(line MATCHES "^[ \t]*api_key[ \t]*=[ \t]*([^ \t]+)")
+        set(SPIDY_BHAPTICS_API_KEY "${CMAKE_MATCH_1}")
+      endif()
+    endforeach()
+  endif()
+  foreach(value IN ITEMS "${SPIDY_BHAPTICS_APP_ID}" "${SPIDY_BHAPTICS_API_KEY}")
+    if(NOT value MATCHES "^[A-Za-z0-9_-]*$")
+      message(FATAL_ERROR "A bHaptics App ID or API key has more than letters, digits, - and _ in it")
+    endif()
+  endforeach()
+  if(SPIDY_BHAPTICS_APP_ID AND SPIDY_BHAPTICS_API_KEY)
+    message(STATUS "bHaptics app: ${SPIDY_BHAPTICS_APP_ID}")
+  else()
+    message(STATUS "No bHaptics app (SPIDY_BHAPTICS_APP_ID, SPIDY_BHAPTICS_API_KEY): no body haptics in this build")
+  endif()
+  add_library(spidy_bhaptics STATIC src/bhaptics_output.cpp)
+  target_include_directories(spidy_bhaptics PRIVATE "${SPIDY_BHAPTICS_SDK}/include")
+  target_link_libraries(spidy_bhaptics PUBLIC spidy_core)
+  target_compile_definitions(spidy_bhaptics PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+                             SPIDY_BHAPTICS_APP_ID="${SPIDY_BHAPTICS_APP_ID}"
+                             SPIDY_BHAPTICS_API_KEY="${SPIDY_BHAPTICS_API_KEY}")
+  # The SDK's library beside the modules: the test loads it from there, and a VR session puts a copy beside
+  # the stereo module it stages (run_game_vr.py).
+  add_custom_command(TARGET spidy_bhaptics POST_BUILD
+                     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SPIDY_BHAPTICS_SDK}/lib/x64/bhaptics_library.dll"
+                             "${CMAKE_BINARY_DIR}")
+  add_executable(spidy_haptics_test apps/haptics_test.cpp)
+  target_link_libraries(spidy_haptics_test PRIVATE spidy_bhaptics)
+  target_compile_definitions(spidy_haptics_test PRIVATE _CRT_SECURE_NO_WARNINGS) # getenv
+  spidy_stamp_version(spidy_haptics_test "Spidy VR haptics test")
+  if(SPIDY_BUILD_OBSERVER)
+    target_sources(spidy_stereo_probe PRIVATE src/game_xr.cpp src/game_player.cpp src/game_pad.cpp
+                   src/game_menu.cpp src/game_time.cpp src/game_prompts.cpp src/game_steam.cpp
+                   src/phone_music.cpp src/phone_pc_media.cpp src/diag_log.cpp)
+    # The build's id in the session's diagnostics (diag_log.hpp): the commit where git knows it, and
+    # always when it was configured, so two builds of one version can be told apart.
+    find_package(Git QUIET)
+    set(SPIDY_BUILD_COMMIT "")
+    if(GIT_FOUND)
+      execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=10 HEAD
+                      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE SPIDY_BUILD_COMMIT
+                      OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+    string(TIMESTAMP SPIDY_BUILD_STAMP "%Y%m%d-%H%MZ" UTC)
+    set_source_files_properties(src/diag_log.cpp PROPERTIES COMPILE_DEFINITIONS
+                                "SPIDY_BUILD_COMMIT=\"${SPIDY_BUILD_COMMIT}\";SPIDY_BUILD_STAMP=\"${SPIDY_BUILD_STAMP}\"")
+    target_link_libraries(spidy_stereo_probe PRIVATE spidy_openxr spidy_bhaptics shell32 ole32 uuid runtimeobject)
+  endif()
+  add_executable(spidy_xr_lab apps/xr_lab.cpp)
+  target_link_libraries(spidy_xr_lab PRIVATE spidy_openxr)
+  add_executable(spidy_headset_probe apps/xr_headset_probe.cpp)
+  target_link_libraries(spidy_headset_probe PRIVATE openxr_loader)
+  spidy_stamp_version(spidy_headset_probe "Spidy VR headset probe")
+  add_executable(spidy_xr_swapchain_probe apps/xr_swapchain_probe.cpp)
+  target_link_libraries(spidy_xr_swapchain_probe PRIVATE spidy_openxr)
+  add_executable(spidy_graphics_test tests/graphics_test.cpp)
+  target_link_libraries(spidy_graphics_test PRIVATE spidy_d3d12 spidy_core)
+  foreach(target spidy_d3d12 spidy_openxr spidy_xr_lab spidy_graphics_test spidy_bhaptics spidy_haptics_test)
+    target_compile_options(${target} PRIVATE /W4 /permissive-)
+  endforeach()
+endif()
+if(SPIDY_BUILD_LAUNCHER)
+  if(NOT WIN32)
+    message(FATAL_ERROR "The Spidy launcher requires Windows")
+  endif()
+  set(SPIDY_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
+  if(NOT EXISTS "${SPIDY_IMGUI}/imgui.h")
+    message(FATAL_ERROR "Run tools/bootstrap.ps1 to fetch the pinned Dear ImGui")
+  endif()
+  add_executable(spidy_launcher WIN32 apps/launcher/main.cpp apps/launcher/ui.cpp apps/launcher/system.cpp
+                 apps/launcher/update.cpp src/vr_settings.cpp apps/launcher/launcher.rc
+                 apps/launcher/launcher.manifest
+                 ${SPIDY_IMGUI}/imgui.cpp ${SPIDY_IMGUI}/imgui_draw.cpp ${SPIDY_IMGUI}/imgui_tables.cpp
+                 ${SPIDY_IMGUI}/imgui_widgets.cpp ${SPIDY_IMGUI}/backends/imgui_impl_win32.cpp
+                 ${SPIDY_IMGUI}/backends/imgui_impl_dx11.cpp)
+  target_include_directories(spidy_launcher PRIVATE include ${SPIDY_IMGUI} ${SPIDY_IMGUI}/backends)
+  target_compile_definitions(spidy_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+                             SPIDY_VERSION="${PROJECT_VERSION}"
+                             SPIDY_VERSION_NUMBERS=${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0)
+  set_source_files_properties(apps/launcher/main.cpp apps/launcher/ui.cpp apps/launcher/system.cpp
+                              apps/launcher/update.cpp PROPERTIES COMPILE_OPTIONS "/W4;/permissive-")
+  # The resource script compiles the fonts and the controls pictures in; a changed one builds it again.
+  file(GLOB SPIDY_LAUNCHER_FONTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/apps/launcher/fonts/*.ttf")
+  file(GLOB SPIDY_LAUNCHER_PICTURES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/docs/images/readme/controls-*.jpg")
+  set_source_files_properties(apps/launcher/launcher.rc PROPERTIES OBJECT_DEPENDS
+                              "${SPIDY_LAUNCHER_FONTS};${SPIDY_LAUNCHER_PICTURES}")
+  target_link_libraries(spidy_launcher PRIVATE d3d11 dxgi d3dcompiler dwmapi bcrypt version urlmon wintrust crypt32
+                        shell32 ole32 uuid advapi32 winhttp windowscodecs)
+  # Static runtime: the launcher starts on a PC that has no Visual C++ runtime yet and offers to install it.
+  set_property(TARGET spidy_launcher PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()

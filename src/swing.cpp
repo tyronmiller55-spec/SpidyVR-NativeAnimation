@@ -1,0 +1,1965 @@
+#include "spidy/swing.hpp"
+#include "spidy/run_update.hpp"
+#include <stdexcept>
+
+namespace spidy {
+namespace {
+// A body this close to the end of its rope is held by it. After an exact
+// projection the distance equals the length only to float rounding, about a
+// millimetre at game world coordinates; an exact comparison let rounding
+// choose which of two ropes acted on the velocity in a step.
+constexpr float nearlyTaut = .005f;
+// A web shot from a hand on the wall the body is on starts at least this far
+// out of the wall's face. The web shooter sits on the forearm, 10 cm behind
+// the grip, and with the eyes 40 cm off the wall (hand climbing's view) a
+// shot aimed away from the wall from a palm at it begins inside the wall: the
+// game's rays meet a face from behind too, so it would meet the wall it left,
+// too near the body for a web.
+constexpr float shotOutOfWall = .15f;
+Vec3 projectBall(Vec3 p, Vec3 center, float radius) {
+    return center + limited(p - center, radius);
+}
+
+// A web with its anchor at `hold`.
+struct Rope {
+    Vec3 anchor{};
+    float length{};
+};
+Vec3 projectTwoWebs(Vec3 p, const Rope& a, const Rope& b) {
+    // Exact projection onto the intersection of two rope-length spheres.
+    // Alternating single-rope projections converge poorly near opposing anchors.
+    const auto onA = projectBall(p, a.anchor, a.length);
+    if (length(onA - b.anchor) <= b.length)
+        return onA;
+    const auto onB = projectBall(p, b.anchor, b.length);
+    if (length(onB - a.anchor) <= a.length)
+        return onB;
+    const Vec3 span = b.anchor - a.anchor;
+    const float distance = length(span);
+    if (distance < 1e-5f)
+        return projectBall(p, a.anchor, std::min(a.length, b.length));
+    const Vec3 axis = span / distance;
+    const float along = (a.length * a.length - b.length * b.length + distance * distance) / (2 * distance);
+    const Vec3 center = a.anchor + axis * along;
+    const float radius = std::sqrt(std::max(0.f, a.length * a.length - along * along));
+    Vec3 radial = p - center - axis * dot(p - center, axis);
+    if (length(radial) < 1e-5f)
+        radial = cross(axis, std::abs(axis.y) > .95f ? Vec3{1, 0, 0} : Vec3{0, 1, 0});
+    return center + normalized(radial) * radius;
+}
+} // namespace
+
+Swing::Swing(SwingConfig c) : config_(c) {
+    const float positive[] = {c.radius,    c.maxRange,     c.minRope,    c.maxSpeed,      c.yankSpeed,
+                              c.yankDistance, c.yankWindow, c.fixedStep,  c.wallClearance, c.wallSlope,
+                              c.bendOut,   c.bendClearance, c.bendRope,  c.maxHandSpeed,  c.thinDepth};
+    for (float v : positive)
+        if (!std::isfinite(v) || v <= 0)
+            throw std::invalid_argument("Invalid swing configuration");
+    const float nonnegative[] = {
+        c.gravity,          c.reelSpeed,       c.airAcceleration, c.groundAcceleration, c.zipMultiplier,
+        c.maxZipImpulse,    c.jumpSpeed,       c.pointLaunchWindow, c.zipLandingWindow, c.obstructionTime,
+        c.anchorClearance,  c.wallStep,        c.wallCarry,       c.wallWalkSpeed,   c.wallAcceleration,   c.wallBrake,
+        c.wallJumpOut,      c.wallJumpUp,      c.wallJumpPause,   c.wallGrace,          c.crestSeconds,
+        c.crestPush,        c.crestHop,        c.strandReach,     c.handSlack,          c.groundClearance,
+        c.groundTurn,       c.arcadeClearance, c.gripAim};
+    for (float v : nonnegative)
+        if (!std::isfinite(v) || v < 0)
+            throw std::invalid_argument("Invalid swing configuration");
+    if (c.minRope > c.maxRange || c.fixedStep > .02f)
+        throw std::invalid_argument("Invalid rope range or fixed timestep");
+    if (!std::isfinite(c.wallReach) || c.wallReach < c.wallClearance || c.wallReach > 10 || c.wallSlope >= 1)
+        throw std::invalid_argument("Invalid wall reach or slope");
+    if (!std::isfinite(c.hugClearance) || c.hugClearance < 0 || c.hugClearance > c.wallClearance)
+        throw std::invalid_argument("Invalid hug clearance");
+    if (c.wallStep > 1)
+        throw std::invalid_argument("Invalid wall step");
+    if (!std::isfinite(c.mountReach) || c.mountReach < 0 || c.mountReach > 10 || !(c.mountSeconds >= 0) ||
+        !(c.mountHold >= 0) || !std::isfinite(c.mountHeight))
+        throw std::invalid_argument("Invalid wall mount");
+    if (!std::isfinite(c.handHeight) || c.bendRope > c.minRope || c.strandReach > 1)
+        throw std::invalid_argument("Invalid physical web");
+    if ((c.groundClearance > 0 || c.arcadeClearance > 0) && !(c.groundTurn > 0))
+        throw std::invalid_argument("Invalid ground clearance");
+}
+void Swing::allowPhysical(bool allowed) {
+    config_.physical = allowed;
+}
+void Swing::allowArcade(bool allowed) {
+    config_.arcade = allowed;
+}
+bool Swing::thin(const RayHit& hit, const WorldQueries& world) const {
+    const Vec3 face = finite(hit.normal) ? normalized(hit.normal) : Vec3{};
+    if (length(face) < .5f || !finite(hit.point))
+        return false;
+    // From thinDepth behind the face, back out to it: past a thin thing the
+    // ray starts in the open and meets its far face, turned away from this
+    // one. Inside a building it meets this face from within (the game's rays
+    // meet faces from either side), turned the same way, or nothing.
+    const auto back = world.raycast(hit.point - face * config_.thinDepth, face, config_.thinDepth - .02f);
+    return back && finite(back->normal) && dot(normalized(back->normal), face) < -.5f;
+}
+std::optional<RayHit> Swing::solid(Vec3 from, Vec3 way, float reach, const WorldQueries& world,
+                                   int* passed) const {
+    // The body's clear line to an open-air anchor WEB RANGE (up to 1000 m) from
+    // the hand is longer than that by the hand's reach: the world takes 1000 m.
+    reach = std::min(reach, maxRayDistance);
+    auto hit = world.raycast(from, way, reach);
+    if (!config_.arcade)
+        return hit;
+    // A few thin things at most; past them, what comes next holds as anything does.
+    Vec3 at = from;
+    float left = reach;
+    for (int through = 0; hit && finite(hit->point) && through < 6; ++through) {
+        // Inside a thin thing the ray goes out through its far face, which
+        // the game's rays meet too: turned along the ray.
+        const bool leaving = through > 0 && finite(hit->normal) && dot(hit->normal, way) > 0;
+        if (!leaving && hit->fixed && !thin(*hit, world))
+            return hit;
+        if (!leaving && passed)
+            ++*passed;
+        const float past = dot(hit->point - at, way) + .02f;
+        at += way * past;
+        left -= past;
+        if (left < .02f)
+            return {};
+        hit = world.raycast(at, way, left);
+    }
+    return hit;
+}
+Vec3 Swing::hold(int i) const {
+    return config_.physical ? webs_[i].anchor - hands_[i].offset : webs_[i].anchor;
+}
+bool Swing::onStrand(int i) const {
+    if (i < 0 || i > 1 || !(config_.strandReach > 0))
+        return false;
+    const int o = 1 - i;
+    const auto& held = webs_[o];
+    if (webs_[i].attached || !held.ready() || !hands_[i].sample || !hands_[o].sample)
+        return false;
+    // The web from the hand that holds it to what it hangs from, and this
+    // hand from that one.
+    const Vec3 line = held.anchor - body_.position - hands_[o].reach, to = hands_[i].reach - hands_[o].reach;
+    const float span = dot(line, line);
+    const float along = span > 1e-6f ? std::clamp(dot(to, line) / span, 0.f, 1.f) : 0.f;
+    return length(to - line * along) <= config_.strandReach;
+}
+bool Swing::onStrand(int i, const Input& in) const {
+    if (i < 0 || i > 1 || !in.focused || !in.hands[i].tracked || !in.hands[1 - i].tracked ||
+        webs_[i].attached || !webs_[1 - i].ready())
+        return false;
+    const auto turn = trackingTurn(in);
+    const Vec3 start =
+        body_.position + turn.rotate(in.hands[1 - i].gripRelativeToHead) + Vec3{0, config_.handHeight, 0};
+    const Vec3 end = webs_[1 - i].anchor;
+    const Vec3 point =
+        body_.position + turn.rotate(in.hands[i].gripRelativeToHead) + Vec3{0, config_.handHeight, 0};
+    if (!finite(start) || !finite(end) || !finite(point))
+        return false;
+    const Vec3 line = end - start;
+    const float span = dot(line, line);
+    const float along = span > 1e-6f ? std::clamp(dot(point - start, line) / span, 0.f, 1.f) : 0;
+    const float reach = betterClimbing_ ? std::max(config_.strandReach, .24f) : config_.strandReach;
+    return reach > 0 && length(point - start - line * along) <= reach;
+}
+void Swing::setSlingshotSpeed(float speed) {
+    if (!std::isfinite(speed) || (speed != 0 && speed < 20) || speed > 300)
+        throw std::invalid_argument("Invalid slingshot speed");
+    slingshotSpeed_ = speed;
+}
+void Swing::webTravel(float range, int mode) {
+    if (!std::isfinite(range) || range < 10 || range > 1000 || mode < 0 || mode > 3)
+        throw std::invalid_argument("Invalid web travel settings");
+    config_.maxRange = range;
+    webSpeedMode_ = mode;
+}
+bool Swing::bears(int i) const {
+    if (i < 0 || i > 1 || !webs_[i].ready())
+        return false;
+    return !shared() || webs_[i].length <= webs_[1 - i].length + 1e-4f;
+}
+void Swing::payOut(Vec3 position, float slack) {
+    if (!config_.physical || !finite(position) || !(slack >= 0))
+        return;
+    for (int i = 0; i < 2; ++i)
+        if (auto& w = webs_[i]; w.attached)
+            w.length = std::max(w.length, length(hold(i) - position) + slack);
+}
+bool Swing::wrap(int i, Vec3 before, const RayHit& first, const WorldQueries& world) {
+    auto& w = webs_[i];
+    const Vec3 pivot = w.anchor, now = body_.position;
+    if (w.bent >= maxBends || !finite(before) || length(now - before) < 1e-4f)
+        return false;
+    const bool bend = w.bent > 0;
+    const auto blocker = [&](Vec3 from) -> std::optional<RayHit> {
+        const Vec3 d = pivot - from;
+        const float dist = length(d);
+        if (dist < .2f)
+            return {};
+        const auto hit = solid(from, d / dist, std::max(0.f, dist - .1f), world);
+        if (hit && finite(hit->point) && blocks(*hit, from, pivot, bend))
+            return hit;
+        return {};
+    };
+    // The line was clear a step ago: the edge it met lies in between. Halving
+    // the step finds the line that just meets it, and where.
+    if (blocker(before))
+        return false;
+    Vec3 clear = before;
+    RayHit edge = first;
+    float low = 0, high = 1;
+    for (int n = 0; n < 5; ++n) {
+        const float middle = (low + high) / 2;
+        const Vec3 at = before + (now - before) * middle;
+        if (const auto hit = blocker(at)) {
+            high = middle;
+            edge = *hit;
+        } else {
+            low = middle;
+            clear = at;
+        }
+    }
+    // Out of the edge: off the face the line met, and toward the line that
+    // still passed it.
+    const Vec3 face = finite(edge.normal) ? normalized(edge.normal) : Vec3{};
+    const Vec3 line = clear - pivot;
+    const float span2 = dot(line, line);
+    const float along = span2 > 1e-6f ? std::clamp(dot(edge.point - pivot, line) / span2, 0.f, 1.f) : 0.f;
+    Vec3 aside = pivot + line * along - edge.point;
+    aside = length(aside) > 1e-4f ? normalized(aside) : Vec3{};
+    Vec3 out = face + aside;
+    if (length(out) < .1f)
+        out = length(face) > .5f ? face : aside;
+    if (length(out) < .1f)
+        return false;
+    out = normalized(out);
+    const Vec3 point = edge.point + out * config_.bendOut;
+    const float span = length(point - pivot);
+    if (!finite(point) || span < config_.bendOut)
+        return false;
+    w.bends[w.bent++] = {pivot, out, span};
+    w.anchor = point;
+    // The rope beyond the bend: what is left of it, and no shorter than the
+    // way to the hand is now (the bend lies a little off the straight line).
+    w.length = std::max({config_.bendRope, w.length - span, length(hold(i) - now)});
+    events_.push_back({EventKind::Wrap, i, .3f});
+    return true;
+}
+void Swing::unwrap(int i, const WorldQueries& world) {
+    auto& w = webs_[i];
+    if (!w.bent)
+        return;
+    const Bend& last = w.bends[w.bent - 1];
+    const Vec3 line = body_.position - last.from;
+    const float span = length(line);
+    if (span < .2f)
+        return;
+    // The straight rope from before the bend would pass the edge on its
+    // outside: it lies free of it.
+    const float along = std::clamp(dot(w.anchor - last.from, line) / (span * span), 0.f, 1.f);
+    if (dot(last.from + line * along - w.anchor, last.out) < config_.bendOut * .5f)
+        return;
+    // And of everything else.
+    const auto hit = solid(body_.position, line * (-1 / span), std::max(0.f, span - .1f), world);
+    if (hit && blocks(*hit, body_.position, last.from, w.bent > 1))
+        return;
+    w.anchor = last.from;
+    w.length += last.span;
+    --w.bent;
+    events_.push_back({EventKind::Unwrap, i, .2f});
+}
+void Swing::limitSpeed(float maxSpeed) {
+    if (!std::isfinite(maxSpeed) || maxSpeed <= 0)
+        throw std::invalid_argument("Invalid swing speed limit");
+    config_.maxSpeed = maxSpeed;
+}
+void Swing::setGravity(float gravity) {
+    if (!std::isfinite(gravity) || gravity < 0)
+        throw std::invalid_argument("Invalid swing gravity");
+    config_.gravity = gravity;
+}
+void Swing::setPoseCoupling(float inertia) {
+    if (!std::isfinite(inertia))
+        inertia = 1.f;
+    poseSteer_ = 1.f / std::clamp(inertia, .55f, 1.35f);
+}
+void Swing::allowAirAnchors(bool allowed) {
+    config_.airAnchors = allowed;
+}
+void Swing::allowWalls(bool allowed) {
+    config_.walls = allowed;
+    if (!allowed)
+        leaveWall();
+}
+void Swing::leaveWall() {
+    if (wall_.on)
+        events_.push_back({EventKind::WallOff, -1, .2f});
+    wall_ = {};
+    climbing_ = {};
+    wallLost_ = 0;
+    wrapWay_ = {};
+}
+void Swing::joinWall(const RayHit& hit) {
+    const Vec3 n = hit.normal;
+    // A wall the body is behind is the inside of one. Off the game's own
+    // crawl the body is on the wall's surface, inside its collision, and a ray
+    // from there meets a face turned back toward the body: taken, it held the
+    // player half a metre "behind" his own wall and stood his view 1.7 m out
+    // along that backward normal - through the wall, into the void (October
+    // 14, the first mission's shaft: normal (+0.71, 0, +0.71) on a wall facing
+    // (-0.71, 0, -0.71), distance -0.35 to -0.67, "got oob completely").
+    if (!finite(n) || dot(body_.position - hit.point, n) < -.05f)
+        return;
+    if (wall_.on && dot(n, wall_.normal) < .8f && !handClimb_)
+        climbing_ = {};
+    // Nor the face of the wall the game's crawl had the body on, met from
+    // behind it (supportSurface).
+    if (backLeft_ > 0 && dot(n, back_.normal) < -.5f && dot(hit.point - back_.point, back_.normal) < .05f)
+        return;
+    const float into = -dot(body_.velocity, n);
+    Vec3 along = body_.velocity + n * into;
+    // Part of the speed into the wall goes on along it, the more the body
+    // already went that way: grazing the wall it keeps its speed, head on
+    // it stops.
+    if (const float speed = length(along), total = length(body_.velocity); into > 0 && speed > 1e-3f)
+        along = along * std::min(total / speed, 1 + config_.wallCarry * into / total);
+    // What still closes on the wall ends at its clearance (holdWall).
+    body_.velocity = along - n * into;
+    if (!wall_.on) {
+        wall_.seconds = 0;
+        events_.push_back({EventKind::WallOn, -1, std::clamp(into / 20, .2f, 1.f)});
+    }
+    wall_.on = true;
+    wall_.normal = n;
+    wall_.point = hit.point;
+    wall_.distance = dot(body_.position - hit.point, n);
+    wallLost_ = crest_ = 0;
+    wrapWay_ = {};
+}
+void Swing::offerWall(const RayHit& wall) {
+    const Vec3 n = normalized(wall.normal);
+    if (!config_.walls || !newWalls_ || !wall.fixed || !finite(wall.point) || length(n) < .5f ||
+        std::abs(n.y) > config_.wallSlope)
+        return;
+    mountWall_ = {wall.point, n, wall.surface, true};
+    offered_ = true;
+}
+void Swing::senseWall(float dt, const Input& in, const WorldQueries& world) {
+    sinceWallJump_ += dt;
+    backLeft_ = std::max(0.f, backLeft_ - dt);
+    const bool offered = offered_;
+    offered_ = mounting_ = false;
+    if (!config_.walls) {
+        leaveWall();
+        crest_ = mount_ = mountLeft_ = 0;
+        return;
+    }
+    const Vec3 at = body_.position;
+    // The wall a ray meets from outside: fixed, steep, facing the ray. The
+    // game's world takes unit directions only.
+    const auto wallAlong = [&](Vec3 from, Vec3 direction, float reach) -> std::optional<RayHit> {
+        direction = normalized(direction);
+        if (!finite(from) || length(direction) < .9995f || !(reach >= .02f))
+            return {};
+        const auto hit = world.bodyRaycast(from, direction, std::min(reach, 100.f));
+        if (!hit || !hit->fixed || !finite(hit->point) || !finite(hit->normal))
+            return {};
+        const Vec3 n = normalized(hit->normal);
+        if (length(n) < .5f || std::abs(n.y) > config_.wallSlope || dot(n, direction) > -.2f)
+            return {};
+        return RayHit{hit->point, n, hit->surface, true};
+    };
+    // The wall the stick walks the body at, level: within the mount's reach,
+    // and faced within `facing` (a cosine) of head on.
+    const auto walkedAt = [&](float facing) -> std::optional<RayHit> {
+        const Vec3 stick = finite(in.move) ? Vec3{in.move.x, 0, in.move.z} : Vec3{};
+        // From the tilt at which the game walks the player.
+        if (length(stick) < .35f)
+            return {};
+        const Vec3 way = normalized(stick);
+        const auto hit = wallAlong(at, way, config_.mountReach);
+        if (!hit || dot(hit->normal, way) > -facing)
+            return {};
+        return hit;
+    };
+    if (offered) {
+        if (!body_.grounded)
+            mountLeft_ = config_.mountHold;
+        mountOffered_ = true;
+    }
+    if (body_.grounded) {
+        leaveWall();
+        crest_ = 0;
+        // No mounts (mountFromGround, allowMounts): the game's crawl offered
+        // to the swing is not taken from it, nor is a wall the stick walks
+        // the body at.
+        if (!config_.mountFromGround || !mounts_) {
+            mount_ = 0;
+            mountLeft_ = 0;
+            return;
+        }
+        // On the game's own crawl the player stays until he walks on: at rest
+        // there the game's interactions are its own, and one the player asked
+        // for (game_offers) put him there to run it. Nor is a move of the
+        // game's own off the wall taken from it - a vent's way in - only the
+        // jump the walk asks for, which ends on the wall as the walked mount's
+        // does, stick let go of meanwhile or not.
+        if (offered) {
+            mount_ = 0;
+            mounting_ = finite(in.move) && length(in.move) >= .35f;
+            mountLeft_ = mounting_ ? config_.mountHold : std::max(0.f, mountLeft_ - dt);
+            return;
+        }
+        // Hand climbing must let the player walk right up to the facade.
+        // Only an existing native wall crawl (the offer above) may start a
+        // joystick run from support; walking on the floor never asks for a
+        // mount jump. Clear pending mounts too when this option is enabled.
+        if (handClimb_) {
+            mount_ = mountLeft_ = 0;
+            mountOffered_ = false;
+            return;
+        }
+        auto wall = walkedAt(.7f);
+        if (wall) {
+            const auto above =
+                wallAlong(at + Vec3{0, config_.mountHeight, 0}, -wall->normal, config_.mountReach + .5f);
+            if (!above || dot(above->normal, wall->normal) < .9f)
+                wall.reset();
+        }
+        mount_ = wall ? mount_ + dt : 0;
+        if (wall && mount_ >= config_.mountSeconds) {
+            mountWall_ = *wall;
+            mountLeft_ = config_.mountHold;
+            mountOffered_ = false;
+            mounting_ = true;
+        } else {
+            // A jump already asked for still ends on its wall.
+            mountLeft_ = std::max(0.f, mountLeft_ - dt);
+        }
+        return;
+    }
+    mount_ = 0;
+    if (mountLeft_ > 0 && mounts_) {
+        // Off the ground by the mount's jump: onto its wall, up it at a walk
+        // at most. Once more if the game stood the body again meanwhile.
+        mountLeft_ -= dt;
+        const Vec3 n = mountWall_.normal;
+        if (const float distance = dot(at - mountWall_.point, n);
+            !wall_.on && distance > -.2f && distance <= config_.mountReach + .5f) {
+            body_.velocity = mountOffered_ ? Vec3{}
+                                           : limited(body_.velocity - n * dot(body_.velocity, n),
+                                                     config_.wallWalkSpeed);
+            joinWall(mountWall_);
+            return;
+        }
+    }
+    // The game holds the body on a wall of its own: nothing is taken from
+    // there but by the mount's jump, above.
+    if (gameHolds_) {
+        leaveWall();
+        return;
+    }
+    if (wall_.on) {
+        wall_.seconds += dt;
+        const Vec3 n = wall_.normal;
+        const Vec3 along = body_.velocity - n * dot(body_.velocity, n);
+        const float speed = length(along);
+        const bool rounding = length(wrapWay_) > .5f;
+        // A wall ahead along this one (an inside corner): onto it.
+        if (speed > (handClimb_ ? .1f : 1.f) && !rounding)
+            if (const auto next = wallAlong(at, along, speed * dt + config_.wallClearance + .2f);
+                next && dot(next->normal, n) < .9f) {
+                joinWall(*next);
+                return;
+            }
+        const float closing = std::max(0.f, -dot(body_.velocity, n));
+        // Start outside a small projecting sill, so the ray still finds its
+        // front when the body's centre has already passed its edge. Look
+        // ahead before the capsule hits it and below the harness until the
+        // feet have cleared it. All samples must stay on this facade.
+        const float step = config_.wallStep;
+        const auto facade = [&](Vec3 from) -> std::optional<RayHit> {
+            auto hit = wallAlong(from + n * step, -n,
+                                 config_.wallReach + .3f + 2 * step + closing * dt);
+            if (!hit)
+                return {};
+            const float distance = dot(at - hit->point, n);
+            if (distance < -step || distance > config_.wallReach + step)
+                return {};
+            return hit;
+        };
+        auto hit = facade(at);
+        if (!rounding && step > 0) {
+            const Vec3 ahead = speed > .3f ? along / speed : Vec3{};
+            const float look = config_.wallClearance + std::min(speed * .2f, 2.f);
+            for (const Vec3 offset : {ahead * look, Vec3{0, -1.1f, 0}}) {
+                const float span = length(offset);
+                if (span < .01f)
+                    continue;
+                // An endpoint alone skips a thin sill. Trace along the
+                // facade as well, then sample just past its lip to find its
+                // outward face (the lip's own normal points up or down).
+                const float depth = std::max(dot(at - wall_.point, n),
+                                             hit ? dot(at - hit->point, n) : 0.f);
+                const Vec3 start = at - n * (depth - .05f), way = offset / span;
+                const auto edge = world.bodyRaycast(start, way, span);
+                std::optional<RayHit> lip;
+                if (edge && edge->fixed && finite(edge->point)) {
+                    const float travel = dot(edge->point - start, way);
+                    if (travel >= 0 && travel <= span)
+                        lip = facade(at + way * (travel + .02f));
+                }
+                for (const auto& next : {facade(at + offset), lip}) {
+                    if (!next || dot(next->normal, n) < .9f)
+                        continue;
+                    // A nearby parallel face may extend our contact footprint;
+                    // a new building or a deep overhang must not pull us onto it.
+                    const float rise = dot(next->point - wall_.point, n);
+                    if (std::abs(rise) > step || (hit && dot(next->point - hit->point, n) <= 0))
+                        continue;
+                    hit = next;
+                }
+            }
+        }
+        if (hit) {
+            // A facade's sills and pilasters turn the normal for a moment.
+            wall_.normal = normalized(n + (hit->normal - n) * (1 - std::exp(-dt / .08f)));
+            wall_.point = hit->point;
+            wall_.distance = dot(at - hit->point, wall_.normal);
+            wallLost_ = 0;
+            if (rounding && handClimb_) {
+                // Keep going a little past the edge after the new facade is
+                // beside us. Stopping at its first ray leaves the camera and
+                // shoulders hanging out beyond the corner during the turn.
+                if (!wrapSeated_) {
+                    wrapEnd_ = dot(at, wrapWay_) + .85f;
+                    wrapSeated_ = true;
+                }
+                if (dot(at, wrapWay_) >= wrapEnd_ || (wrapLeft_ -= dt) <= 0)
+                    wrapWay_ = {};
+            } else {
+                wrapWay_ = {};
+            }
+            // Carried off it (a web's pull): the wall lets go.
+            const float reach = dot(body_.velocity, n) < .2f
+                                    ? std::max(config_.wallReach, config_.wallClearance + step)
+                                    : config_.wallReach;
+            if (wall_.distance > reach && closing <= 0)
+                leaveWall();
+            return;
+        }
+        // Rounding a corner, the body is not in front of the next face yet.
+        if (rounding && (wrapLeft_ -= dt) > 0)
+            return;
+        // At a walk, round the wall's end onto its next face. The body is
+        // beside that face's edge, a clearance out along the old wall: it
+        // goes on round the corner by itself (wallMotion) until the next
+        // face is beside it.
+        if (!rounding && speed > (handClimb_ ? .05f : .3f) && speed <= config_.wallWalkSpeed + 1) {
+            const Vec3 ahead = along / speed;
+            const Vec3 past = at + ahead * (speed * dt + .3f) - n * (wall_.distance + .4f);
+            if (const auto next = wallAlong(past, -ahead, speed * dt + 1.5f)) {
+                wall_.normal = next->normal;
+                wall_.point = next->point;
+                wall_.distance = dot(at - next->point, next->normal);
+                wallLost_ = 0;
+                wrapWay_ = normalized(-n - next->normal * dot(-n, next->normal));
+                wrapLeft_ = handClimb_ ? 1.3f : .8f;
+                wrapSeated_ = false;
+                body_.velocity = {};
+                return;
+            }
+        }
+        wrapWay_ = {};
+        wallLost_ += dt;
+        if (wallLost_ > config_.wallGrace) {
+            // Over the wall's top edge: on over it, onto the roof.
+            if (along.y > 1) {
+                crest_ = config_.crestSeconds;
+                crestNormal_ = n;
+                body_.velocity.y = std::max(body_.velocity.y, config_.crestHop);
+            }
+            leaveWall();
+        }
+        return;
+    }
+    if (sinceWallJump_ < config_.wallJumpPause)
+        return;
+    // Ahead of the body and to both its sides: a wall it meets head on, and
+    // one it grazes.
+    const Vec3 level{body_.velocity.x, 0, body_.velocity.z};
+    std::optional<RayHit> wall;
+    if (length(level) >= .5f) {
+        const Vec3 heading = normalized(level), side{-heading.z, 0, heading.x};
+        const float reach = 1.5f * config_.wallClearance + length(body_.velocity) * dt + .2f;
+        float nearest{};
+        for (const Vec3 direction : {heading, side, -side}) {
+            const auto hit = wallAlong(at, direction, reach);
+            if (!hit)
+                continue;
+            // Coming into it, and within its clearance by the end of this step.
+            const float distance = dot(at - hit->point, hit->normal),
+                        closing = -dot(body_.velocity, hit->normal);
+            if (closing > .5f && distance - closing * dt <= config_.wallClearance + .05f &&
+                (!wall || distance < nearest)) {
+                wall = hit;
+                nearest = distance;
+            }
+        }
+    }
+    // Pushed at a wall beside the body, the stick takes it with no speed
+    // into it, and none off it: a fall down a facade, a jump beside one.
+    if (!wall && (wall = walkedAt(.5f)))
+        body_.velocity -= wall->normal * std::max(0.f, dot(body_.velocity, wall->normal));
+    // This path is how a wall carries on: the next face of a shaft, the wall
+    // past a gap, the one a climbing body is pushed at. Refusing it here
+    // dropped the player at the vent he was climbing to - the game's own crawl
+    // cannot catch a body held 0.9 m clear of the wall, so a refused wall is a
+    // fall (the player, October 14: "i went forward, wall walked to the vent
+    // and fell"). A climb is never interrupted; only STARTING one is refused
+    // when new walls are off, which offerWall does.
+    if (wall)
+        joinWall(*wall);
+}
+std::optional<RayHit> Swing::wallContact(const HandInput& hand, const WorldQueries& world) const {
+    const Vec3 n = wall_.normal;
+    const float distance = dot(hand.wallPosition - wall_.point, n);
+    if (!finite(hand.wallPosition) || distance > .18f)
+        return {};
+    // Start outside the current wall even when the tracked palm passed into
+    // it. Project the palm onto the facade, then confirm solid wall there.
+    const Vec3 outside = hand.wallPosition + n * (.35f - distance);
+    const auto hit = world.bodyRaycast(outside, -n, .6f);
+    if (hit && hit->fixed && world.exists(hit->surface) && finite(hit->point) && finite(hit->normal) &&
+        dot(hit->normal, n) > .8f)
+        return hit;
+    return {};
+}
+bool Swing::wallHand(int i, const Input& in, const WorldQueries& world) const {
+    if (i < 0 || i > 1 || !handClimb_ || !wall_.on || webs_[i].attached ||
+        (finite(in.move) && length(in.move) > .2f))
+        return false;
+    const auto& h = in.hands[i];
+    if (!in.focused || !h.tracked || !finite(h.wallPosition) || !finite(h.gripRelativeToHead) ||
+        !std::isfinite(h.wallGrip) || h.wallGrip <= .35f)
+        return false;
+    if (climbing_[i].attached)
+        return true;
+    return pointsAtWall(h) && wallContact(h, world).has_value();
+}
+bool Swing::pointsAtWall(const HandInput& hand) const {
+    const Vec3 forward = normalized(hand.aim.orientation.rotate({0, 0, -1}));
+    const float into = -dot(forward, wall_.normal);
+    if (!finite(forward) || !(into > 0))
+        return false;
+    // Along its aim from the palm to the wall's face; none from a palm in it.
+    const float out = std::max(0.f, dot(hand.wallPosition - wall_.point, wall_.normal));
+    return out <= config_.gripAim * into;
+}
+void Swing::climbInputs(const Input& in, const WorldQueries& world) {
+    for (int i = 0; i < 2; ++i) {
+        auto& c = climbing_[i];
+        const auto& h = in.hands[i];
+        const bool valid = handClimb_ && wall_.on && in.focused && h.tracked &&
+                           !(finite(in.move) && length(in.move) > .2f) && finite(h.gripRelativeToHead) &&
+                           finite(h.wallPosition) && std::isfinite(h.wallGrip);
+        const bool held = valid && h.wallGrip > (c.held ? .35f : .65f);
+        const bool press = held && !c.held;
+        c.held = valid ? held : true;
+        if (!held || (c.attached && !world.exists(c.surface)))
+            c.attached = false;
+        if (press && !webs_[i].attached && wallHand(i, in, world)) {
+            const auto hit = wallContact(h, world);
+            if (hit) {
+                c.attached = true;
+                c.surface = hit->surface;
+                c.previous = h.gripRelativeToHead;
+                events_.push_back({EventKind::WallGrip, i, .45f});
+            }
+        }
+        c.rate = {};
+        if (c.attached) {
+            c.rate = limited(trackingTurn(in).rotate(c.previous - h.gripRelativeToHead) /
+                                 std::max(climbSeconds_, 1e-3f), 3.f);
+            c.rate -= wall_.normal * dot(c.rate, wall_.normal);
+            c.previous = h.gripRelativeToHead;
+            hands_[i].held = true;
+        }
+    }
+}
+void Swing::wallMotion(float dt, const Input& in) {
+    const Vec3 n = wall_.normal;
+    if (length(wrapWay_) > .5f) {
+        // The short clearance move around an outside edge must finish even
+        // with a sticky palm. Otherwise its zero normal pull pins the body
+        // beside the new face until the hold times out.
+        const float speed = handClimb_ && wrapSeated_ ? 1.5f : 3.f;
+        body_.velocity = wrapWay_ * speed + n * dot(body_.velocity, n);
+        return;
+    }
+    if (handClimb_ && climbingHands()) {
+        Vec3 pull{};
+        unsigned count{};
+        for (const auto& hand : climbing_)
+            if (hand.attached) {
+                pull += hand.rate;
+                ++count;
+            }
+        // Two hands share the body: equal pulls move it once, never twice.
+        body_.velocity = limited(pull / static_cast<float>(count), config_.maxSpeed);
+        return;
+    }
+    const float out = dot(body_.velocity, n);
+    Vec3 along = body_.velocity - n * out;
+    // What of the stick points into the wall goes up it: pushed at a wall,
+    // the body climbs.
+    const Vec3 up = normalized(Vec3{0, 1, 0} - n * n.y);
+    Vec3 move = finite(in.move) ? limited(in.move, 1) : Vec3{};
+    const float into = -dot(move, n);
+    move = limited(move + n * into + up * into, 1);
+    if (const float tilt = length(move); tilt > .05f) {
+        // The stick walks the wall; a faster run keeps what it has that way.
+        const Vec3 way = move / tilt;
+        const Vec3 wanted = way * std::max(dot(along, way), config_.wallWalkSpeed * tilt);
+        along += limited(wanted - along, config_.wallAcceleration * dt);
+    } else if (!webs_[0].attached && !webs_[1].attached) {
+        if (const float speed = length(along); speed > 1e-4f) {
+            const float slower = speed > config_.wallWalkSpeed ? speed - config_.wallBrake * dt
+                                                               : speed * std::exp(-6 * dt) - dt;
+            along = along * (std::max(0.f, slower) / speed);
+        }
+    }
+    body_.velocity = limited(along + n * (press_ ? -config_.pressSpeed : out), config_.maxSpeed);
+}
+void Swing::holdWall(float dt, float before, const World* collision) {
+    const Vec3 n = wall_.normal;
+    const float distance = dot(body_.position - wall_.point, n), out = dot(body_.velocity, n);
+    // Pressed: no clearance kept, nothing taken off the speed into the wall;
+    // the game's collision is what stops the body there.
+    if (press_) {
+        wall_.distance = distance;
+        return;
+    }
+    // No nearer than the clearance; a body already inside it (the facade
+    // stepped out, a corner) comes out at a walk. One the wall lets drift
+    // off comes back slowly, unless something carries it away.
+    const float held = clearance();
+    const float nearest = std::min(held, before + 4 * dt);
+    float shift{};
+    if (distance < nearest)
+        shift = nearest - distance;
+    else if (distance > held + .1f && out < .2f)
+        shift = -std::min(distance - held, 2 * dt);
+    if (shift != 0)
+        move(body_.position + n * shift, collision);
+    if (out < 0 && distance + shift <= held + 1e-3f)
+        body_.velocity -= n * out;
+    wall_.distance = distance + shift;
+}
+void Swing::reset(Body b) {
+    resetGestures();
+    if (!finite(b.position) || !finite(b.velocity))
+        throw std::invalid_argument("Invalid body");
+    clearSlingshot();
+    body_ = b;
+    endLandCarry();
+    webs_ = {};
+    hands_ = {};
+    climbing_ = {};
+    events_.clear();
+    accumulator_ = 0;
+    sinceZip_ = sinceLanding_ = 100;
+    zipSpeed_ = 0;
+    zipDirection_ = {};
+    jumpHeld_ = jumpQueued_ = false;
+    runJump_ = 0;
+    leapQueued_ = 0;
+    leapHeld_ = false;
+    wall_ = {};
+    wallLost_ = crest_ = 0;
+    wrapWay_ = {};
+    sinceWallJump_ = 100;
+    mount_ = mountLeft_ = 0;
+    mounting_ = offered_ = mountOffered_ = false;
+    strands_ = 0;
+    assistFlight_ = 0;
+    releasePull_ = {};
+    releaseLeft_ = 0;
+    climbTakeoff_ = false;
+    slingshotFlight_ = slingshotAirborne_ = false;
+}
+void Swing::release(int i, EventKind reason) {
+    // SOFT RELEASE: a loaded web let go of keeps its pull for a moment (step()).
+    if (softRelease_ && reason == EventKind::Release && webs_[i].attached && webs_[i].tension > 0 &&
+        !body_.grounded && !wall_.on) {
+        releasePull_ = limited(
+            releasePull_ + normalized(hold(i) - body_.position) * std::min(webs_[i].tension, 30.f), 40.f);
+        releaseLeft_ = .06f + .06f * softRelease_;
+    }
+    if (webs_[i].attached)
+        events_.push_back({reason, i, .2f});
+    // One web in both hands, and the hand that bore the body lets go: the
+    // other has the web where it now is. Its own hold was the slack below,
+    // as long or as short as that hand had moved since.
+    if (const int o = 1 - i; shared() && !bears(o))
+        webs_[o].length =
+            std::max(std::min(config_.minRope, webs_[o].length), length(hold(o) - body_.position));
+    webs_[i] = {};
+    hands_[i].zipUsed = false;
+    hands_[i].ropeClimbing = false;
+    hands_[i].reeling = false;
+    hands_[i].pullDistance = hands_[i].pullTime = hands_[i].obstructed = hands_[i].winch = 0;
+    hands_[i].slack = 0;
+    hands_[i].passing = false;
+}
+bool Swing::blocks(const RayHit& hit, Vec3 from, Vec3 anchor, bool bend) const {
+    const float clearance =
+        bend ? config_.bendClearance : std::max(config_.anchorClearance, .1f * length(anchor - from));
+    return length(hit.point - anchor) > clearance && length(hit.point - from) > config_.radius;
+}
+std::array<float, 2> Swing::reeled(std::array<float, 2> rates, float seconds) const {
+    std::array<float, 2> lengths{webs_[0].length, webs_[1].length}, taken{};
+    for (int i = 0; i < 2; ++i)
+        if (webs_[i].attached) {
+            // A rope that bends round an edge may be shorter beyond it than a
+            // web can be shot: no winch lengthens it.
+            const float wanted =
+                std::max(std::min(config_.minRope, lengths[i]), lengths[i] - rates[i] * seconds);
+            taken[i] = std::max(0.f, lengths[i] - wanted);
+            lengths[i] = wanted;
+        }
+    if (webs_[0].ready() && webs_[1].ready()) {
+        // Opposing winches cannot shorten their combined length below
+        // the span between anchors. Leave clearance for the body too.
+        // Each gives back in proportion to what it took: when one hand's
+        // winch kept the last of the rope, it kicked the body to its side.
+        const float span = length(webs_[0].anchor - webs_[1].anchor) + config_.radius * 2;
+        const float took = taken[0] + taken[1];
+        const float back = std::min(span - lengths[0] - lengths[1], took);
+        if (back > 0)
+            for (int i = 0; i < 2; ++i)
+                lengths[i] += back * taken[i] / took;
+    }
+    return lengths;
+}
+float Swing::follow(int i, Vec3 radial) const {
+    const auto& other = webs_[1 - i];
+    if (!bears(1 - i))
+        return 1;
+    const Vec3 delta = body_.position - hold(1 - i);
+    const float dist = length(delta);
+    if (dist < other.length - nearlyTaut || dist < 1e-5f)
+        return 1; // the other rope is slack
+    // Two taut ropes at an angle carry the body faster than either shortens,
+    // without bound as they come to oppose each other. Follow that exactly up
+    // to a right angle between them; past it, hold the carried speed there.
+    const float cosHalfAngle = std::sqrt(std::max(0.f, (1 + dot(radial, delta / dist)) / 2));
+    return std::min(1.f, cosHalfAngle * 1.4142135f);
+}
+void Swing::skimGround(float dt, const WorldQueries& world) {
+    const float falling = -body_.velocity.y;
+    const float clearance = config_.arcade ? config_.arcadeClearance : config_.groundClearance;
+    if (!(clearance > 0) || !(dt > 0) || !(falling > 0) || !finite(body_.position))
+        return;
+    // Only a body a web holds from above: one on a web to the ground below
+    // it goes down to it.
+    bool held = false;
+    for (int i = 0; i < 2; ++i)
+        if (bears(i)) {
+            const Vec3 up = hold(i) - body_.position;
+            held |= up.y > .3f * length(up);
+        }
+    if (!held)
+        return;
+    const float turn = config_.groundTurn;
+    // As far as the ground matters: the clearance, and what turning this
+    // fall level takes.
+    const float reach = clearance + falling * falling / (2 * turn) + falling * dt + .5f;
+    const auto ground = world.bodyRaycast(body_.position, {0, -1, 0}, std::min(reach, config_.maxRange));
+    if (!ground || !finite(ground->point) || !finite(ground->normal))
+        return;
+    const Vec3 face = normalized(ground->normal);
+    if (length(face) < .5f || face.y < .5f)
+        return;
+    // The fastest fall that still turns level at the clearance; and no more
+    // turn in a step than three times the usual, behind as the body may be.
+    const float height = body_.position.y - ground->point.y;
+    const float allowed = std::sqrt(2 * turn * std::max(0.f, height - clearance));
+    const float kept = std::max(allowed, falling - 3 * turn * dt);
+    if (kept >= falling)
+        return;
+    // What the fall loses goes on along the ground, the way the body goes.
+    const float speed = length(body_.velocity);
+    const float across = length(Vec3{body_.velocity.x, 0, body_.velocity.z});
+    body_.velocity.y = -kept;
+    if (across > .5f) {
+        const float along = std::sqrt(std::max(0.f, speed * speed - kept * kept)) / across;
+        body_.velocity.x *= along;
+        body_.velocity.z *= along;
+    }
+}
+WebShot Swing::shot(Pose aim, Vec3 from, const WorldQueries& world) const {
+    WebShot out;
+    const Vec3 forward = aim.orientation.rotate({0, 0, -1});
+    if (!finite(aim.position) || !finite(from) || !finite(forward) || length(forward) < .9f || length(forward) > 1.1f)
+        return out;
+    if (wall_.on) {
+        // Out of the wall the body is on (shotOutOfWall).
+        const float depth = dot(aim.position - wall_.point, wall_.normal);
+        if (depth < shotOutOfWall)
+            aim.position += wall_.normal * (shotOutOfWall - depth);
+    }
+    const Vec3 direction = normalized(forward);
+    out.hit = solid(aim.position, direction, config_.maxRange, world, &out.passed);
+    // Keep a direct hit exact. With air anchors disabled, catch a nearby
+    // real surface inside a small cone instead of requiring pixel-perfect aim.
+    if (!out.hit && !config_.airAnchors && smartAnchor_) {
+        const Vec3 right =
+            normalized(cross(direction, std::abs(direction.y) < .9f ? Vec3{0, 1, 0} : Vec3{1, 0, 0}));
+        const Vec3 up = cross(right, direction);
+        float nearest = 1e9f;
+        for (int k = 0; k < 8; ++k) {
+            const float angle = 6.2831853f * k / 8;
+            const Vec3 ray =
+                normalized(direction + (right * std::cos(angle) + up * std::sin(angle)) * .14054f);
+            const auto candidate = solid(aim.position, ray, config_.maxRange, world);
+            if (candidate && candidate->fixed && finite(candidate->point) &&
+                world.exists(candidate->surface)) {
+                const float distance = length(candidate->point - aim.position);
+                const float score = distance * (candidate->point.y < from.y + 1 ? 1.6f : 1.f) +
+                                    12.f / std::max(distance, 1.f);
+                if (score < nearest) {
+                    nearest = score;
+                    out.hit = candidate;
+                }
+            }
+        }
+    }
+    const bool airAnchor = !out.hit && config_.airAnchors;
+    if (!out.hit && !airAnchor)
+        return out;
+    const RayHit anchor = airAnchor ? RayHit{aim.position + direction * config_.maxRange, {}, 0, true} : *out.hit;
+    // Confirm the body has a clear line to the same anchor. Hands cannot
+    // shoot through a wall while the body remains on its other side.
+    if (anchor.fixed && (airAnchor || world.exists(anchor.surface)) && finite(anchor.point)) {
+        const Vec3 delta = anchor.point - from;
+        const float dist = length(delta);
+        const auto obstacle = solid(from, normalized(delta), std::max(0.0f, dist - .08f), world);
+        if (length(anchor.point - aim.position) <= config_.maxRange + .01f && dist >= config_.minRope &&
+            !(obstacle && blocks(*obstacle, from, anchor.point)))
+            out.web = Web{true, anchor.point, anchor.surface, dist, 0, airAnchor};
+    }
+    return out;
+}
+void Swing::handOver(int i) {
+    if (i < 0 || i > 1)
+        return;
+    const int soft = softRelease_;
+    softRelease_ = 0;
+    release(i);
+    softRelease_ = soft;
+    hands_[i].sample = false;
+    hands_[i].held = true; // a grip already held is not a new shot
+}
+void Swing::releaseAll() {
+    assistFlight_ = 0;
+    climbTakeoff_ = false;
+    slingshotFlight_ = slingshotAirborne_ = false;
+    resetGestures();
+    clearSlingshot();
+    climbing_ = {};
+    for (int i = 0; i < 2; ++i) {
+        release(i);
+        hands_[i].sample = false;
+        hands_[i].held = true; // a grip already held is not a new shot
+    }
+    releasePull_ = {};
+    releaseLeft_ = 0;
+    jumpQueued_ = false;
+    accumulator_ = 0;
+    sinceZip_ = sinceLanding_ = 100;
+    zipSpeed_ = 0;
+    zipDirection_ = {};
+}
+void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
+    // TWO HAND WEB ZIP: a tracking gap, a long frame or a turn of the view
+    // blocks it, and the one-hand yank, for 0.2 s.
+    zipGestureBlock_ = std::max(0.f, zipGestureBlock_ - dt);
+    if (twoHandZip_ &&
+        (!in.hands[0].tracked || !in.hands[1].tracked || dt > .1f ||
+         (gestureSample_ && std::abs(std::remainder(in.trackingYaw - gestureYaw_, 6.2831853f)) > .12f)))
+        zipGestureBlock_ = .2f;
+    climbSeconds_ = dt;
+    climbInputs(in, world);
+    // JUMP ALWAYS: a press while the swing runs the body on the ground
+    // (SPIDY RUN, the landing carry) ends that run; the game has the body
+    // back and makes the jump (the caller holds its A until then:
+    // game_pad::JumpRelay). With a web held the press stays the swing's too,
+    // the takeoff's, as before.
+    if (in.jump && !jumpHeld_ && !wall_.on && (groundRun_ || landCarry_ > 0)) {
+        const bool webbed =
+            webs_[0].attached || webs_[1].attached || climbing_[0].attached || climbing_[1].attached;
+        // SPIDY RUN JUMP (v6): with no web the swing jumps itself, now, with
+        // the run's speed across: no wait for the game to have the body back.
+        const Vec3 across = groundRun_ ? groundAlong_ : landAlong_;
+        endGroundRun();
+        endLandCarry();
+        standArmed_ = false;
+        standHold_ = 0;
+        ++jumpCancels_;
+        if (!webbed && in.runJump && finite(across)) {
+            runJumpVelocity_ =
+                limited(Vec3{across.x, 0, across.z}, speedLimit()) + Vec3{0, config_.leapUp, 0};
+            runJump_ = runJumpSeconds;
+        }
+        if (!webbed)
+            jumpHeld_ = true; // the game's jump (or the run jump's), not queued for the swing's
+    }
+    jumpQueued_ |= in.jump && !jumpHeld_;
+    const bool leap = std::isfinite(in.leap) && in.leap > 0;
+    if (leap && !leapHeld_)
+        leapQueued_ = std::min(in.leap, 1.f);
+    leapHeld_ = leap;
+    jumpHeld_ = in.jump;
+    // BETTER CLIMBING finds the strand for both hands from this sample, before
+    // either hand's grip changes anything (onStrand(int, const Input&)).
+    const bool onExisting[2]{betterClimbing_ && onStrand(0, in), betterClimbing_ && onStrand(1, in)};
+    for (int i = 0; i < 2; ++i) {
+        const auto& h = in.hands[i];
+        auto& s = hands_[i];
+        auto& w = webs_[i];
+        const bool valid = h.tracked && finite(h.aim.position) && finite(h.gripRelativeToHead) &&
+                           std::isfinite(in.trackingYaw) && std::isfinite(h.trigger) && std::isfinite(h.grip);
+        const Vec3 forward = h.aim.orientation.rotate({0, 0, -1});
+        if (!valid || !finite(forward) || length(forward) < .9f || length(forward) > 1.1f) {
+            release(i, EventKind::TrackingLost);
+            s.sample = false;
+            s.held = true; // require a full release before the next shot
+            s.rate = {};
+            continue;
+        }
+        // The hand that holds the rope: where the grip is from the head,
+        // turned into the world. It follows a jump of that turn (a snap turn)
+        // no faster than a hand moves, and its rate is the arm's own motion.
+        const Quat turn = trackingTurn(in);
+        const Vec3 offset = turn.rotate(h.gripRelativeToHead) + Vec3{0, config_.handHeight, 0};
+        // On the other hand's web, as the samples before this one had both
+        // hands (with BETTER CLIMBING, as this one has them): a press takes
+        // hold of that web.
+        const bool onOther = betterClimbing_ ? onExisting[i] : onStrand(i);
+        s.reach = offset;
+        if (config_.physical) {
+            const float over = std::max({dt, stepSeconds_, 1e-3f});
+            if (s.sample) {
+                const Vec3 was = s.offset;
+                s.offset += limited(offset - s.offset, config_.maxHandSpeed * dt);
+                s.rate = limited(turn.rotate(h.gripRelativeToHead - s.previous) / over, config_.maxHandSpeed);
+                // Toward the web's end the hand makes slack; back from it, it
+                // takes that up first (SwingConfig::taut).
+                if (w.attached)
+                    s.slack = std::clamp(s.slack + length(w.anchor - was - body_.position) -
+                                             length(w.anchor - s.offset - body_.position),
+                                         0.f, config_.handSlack);
+            } else {
+                s.offset = offset;
+                s.rate = {};
+            }
+        } else {
+            s.offset = s.rate = {};
+        }
+        // Squeezing the grip shoots this hand's web; holding it keeps the web.
+        const bool held = s.held ? h.grip > .35f : h.grip > .65f;
+        if (climbing_[i].attached) {
+            s.held = true;
+            s.sample = false;
+            continue;
+        }
+        // HAND WALL CLIMBING: while the other hand holds the wall, this one
+        // starts no web (Adrian's pull request 24; from October 22 to
+        // November 5 a squeeze that missed the wall shot one). The press still
+        // counts as held, so one held on as the wall is let go of shoots nothing.
+        const bool shoot = held && !s.held && !climbingHands();
+        s.held = held;
+        if (w.attached && (!held || (!w.airAnchor && !world.exists(w.surface))))
+            release(i);
+        if (!w.attached && shoot && onOther && webs_[1 - i].attached) {
+            // One web in both hands. This hand holds it where it is, as slack
+            // there as the web is at the hand that had it; and a web zips
+            // once, whichever hand pulls.
+            const int o = 1 - i;
+            const float slack = std::max(0.f, webs_[o].length - length(hold(o) - body_.position));
+            w = webs_[o];
+            w.taken = true;
+            w.tension = 0;
+            w.length = std::max(std::min(config_.minRope, w.length), length(hold(i) - body_.position) + slack);
+            s.triggerReleased = false;
+            s.reeling = false;
+            s.zipUsed = hands_[o].zipUsed;
+            s.pullDistance = s.pullTime = s.obstructed = s.slack = 0;
+            events_.push_back({EventKind::Join, i, .5f});
+            if (betterClimbing_)
+                s.ropeClimbing = hands_[o].ropeClimbing = true;
+        } else if (!w.attached && shoot) {
+            // From the body, stood off a surface the game holds it on.
+            const Vec3 from = length(support_) > .5f ? body_.position + support_ * config_.wallClearance
+                                                     : body_.position;
+            if (const auto fired = shot(h.aim, from, world); fired.web) {
+                w = *fired.web;
+                w.strand = ++strands_;
+                // To the hand that holds it.
+                w.length = std::max(config_.minRope, length(hold(i) - body_.position));
+                s.triggerReleased = false;
+                s.reeling = false;
+                s.zipUsed = false;
+                s.pullDistance = s.pullTime = s.obstructed = s.slack = 0;
+                // WEB SPEED: how fast a shot web flies, m/s; 0 it sticks at once.
+                const float speeds[]{0, 60, 150, 350};
+                w.shotOrigin = h.aim.position;
+                w.flightTotal = w.flightLeft =
+                    webSpeedMode_ ? length(w.end() - w.shotOrigin) / speeds[webSpeedMode_] : 0;
+                w.engageAge = 0;
+                w.catching = false;
+                events_.push_back({w.ready() ? EventKind::Attach : EventKind::Shoot, i, .65f});
+                if (fired.passed)
+                    events_.push_back({EventKind::Pass, i, 0});
+                // From a wall, a web whose end is further out than the body
+                // takes it off the wall, to hang and swing from the web. The
+                // wall holds a body with no gravity, and a web is shot taut:
+                // at rest there nothing pulled, and every web shot from a
+                // wall hung there until a jump (October 22: nine webs in two
+                // rests, no tension, then A each time). One up the wall
+                // keeps it there, for a zip or the reel up it.
+                if (w.ready() && wall_.on && dot(w.anchor - body_.position, wall_.normal) > 0) {
+                    leaveWall();
+                    sinceWallJump_ = 0;
+                    mountLeft_ = 0;
+                }
+            } else {
+                events_.push_back({EventKind::Miss, i, .15f});
+            }
+        }
+        if (w.ready()) {
+            if (h.trigger < .35f)
+                s.triggerReleased = true;
+            const bool reel = s.triggerReleased && h.trigger > .65f;
+            if (reel && !s.reeling) {
+                // A yank/forward swing leaves slack. Starting a winch should
+                // engage at the current distance, not spend seconds winding in
+                // invisible slack before the player feels any response.
+                w.length = std::min(w.length, std::max(std::min(config_.minRope, w.length),
+                                                       length(hold(i) - body_.position)));
+            }
+            s.reeling = reel;
+            // Once both hands have taken this strand, a bearing hand takes
+            // rope in instead of adding a yank impulse. Reaching up again
+            // does not pay that length out; the other hand keeps the height.
+            const bool climbingRope = betterClimbing_ && s.ropeClimbing;
+            if (climbingRope && s.sample && bears(i) && dt > 0 && dt <= .1f) {
+                const Vec3 travel = trackingTurn(in).rotate(h.gripRelativeToHead - s.previous);
+                const float pull = -dot(travel, normalized(w.anchor - body_.position));
+                if (body_.grounded && pull > .002f && normalized(w.anchor - body_.position).y > .15f)
+                    climbTakeoff_ = true;
+                if (pull > 0 && pull <= config_.maxHandSpeed * dt)
+                    w.length = std::max(std::min(config_.minRope, w.length),
+                                        w.length - std::min(pull, 3.f * dt));
+            }
+            // Motion must be both fast and deliberate within a short window.
+            // Head-relative samples remove virtual movement and room-scale translation.
+            if (s.sample && !s.zipUsed && bears(i) && !climbingRope &&
+                !(twoHandZip_ && (twoHandTarget() || zipGestureBlock_ > 0)) &&
+                !(slingshotEnabled_ && body_.grounded) &&
+                !(airSlingshot_ && !body_.grounded && slingshotDrawn())) {
+                const Vec3 delta = trackingTurn(in).rotate(h.gripRelativeToHead - s.previous);
+                const float pull = -dot(delta, normalized(w.anchor - body_.position));
+                if (pull > 0) {
+                    s.pullDistance += pull;
+                    s.pullTime += dt;
+                    if (s.pullTime > config_.yankWindow) {
+                        s.pullDistance = pull;
+                        s.pullTime = dt;
+                    }
+                    const float speed = pull / dt;
+                    if (s.pullDistance >= config_.yankDistance && speed >= config_.yankSpeed) {
+                        const float impulse = std::min(speed * config_.zipMultiplier, config_.maxZipImpulse) *
+                                              singleHandYankStrength_;
+                        body_.velocity =
+                            limited(body_.velocity + normalized(w.anchor - body_.position) * impulse,
+                                    config_.maxSpeed);
+                        sinceZip_ = 0;
+                        zipSpeed_ = length(body_.velocity);
+                        zipDirection_ = normalized(Vec3{body_.velocity.x, 0, body_.velocity.z});
+                        s.zipUsed = true;
+                        if (shared())
+                            hands_[1 - i].zipUsed = true;
+                        events_.push_back({EventKind::Zip, i, 1});
+                    }
+                } else {
+                    s.pullDistance = s.pullTime = 0;
+                }
+            }
+        }
+        s.previous = h.gripRelativeToHead;
+        s.sample = true;
+    }
+    gestures(dt, in, world);
+    slingshot(dt, in, world);
+}
+void Swing::resetGestures() {
+    gestureSample_ = zipUsed_ = gestureTakeoff_ = false;
+    zipGestureBlock_ = 0;
+    gestureLaunch_ = {};
+    zipPull_[0] = zipPull_[1] = zipWindow_ = 0;
+    gestureStrands_[0] = gestureStrands_[1] = 0;
+}
+bool Swing::twoHandTarget() const {
+    return webs_[0].ready() && webs_[1].ready() && !webs_[0].airAnchor && !webs_[1].airAnchor &&
+           length(webs_[0].end() - webs_[1].end()) <= 1.5f;
+}
+void Swing::gestures(float dt, const Input& in, const WorldQueries&) {
+    if (!gesturesEnabled())
+        return;
+    if (!in.focused || !(dt > 0) || dt > .1f || !std::isfinite(in.trackingYaw) || !in.hands[0].tracked ||
+        !in.hands[1].tracked || !finite(in.hands[0].gripRelativeToHead) ||
+        !finite(in.hands[1].gripRelativeToHead)) {
+        gestureSample_ = false;
+        gestureTakeoff_ = false;
+        zipPull_[0] = zipPull_[1] = zipWindow_ = 0;
+        return;
+    }
+    const bool fresh =
+        gestureSample_ && std::abs(std::remainder(in.trackingYaw - gestureYaw_, 6.2831853f)) < .12f;
+    Vec3 delta[2]{};
+    if (fresh)
+        for (int i = 0; i < 2; ++i)
+            delta[i] = trackingTurn(in).rotate(in.hands[i].gripRelativeToHead - gesturePrevious_[i]);
+    if (!fresh) {
+        zipPull_[0] = zipPull_[1] = zipWindow_ = 0;
+    }
+    const bool changed = gestureStrands_[0] != webs_[0].strand || gestureStrands_[1] != webs_[1].strand;
+    if (changed || !twoHandTarget()) {
+        zipUsed_ = false;
+        zipPull_[0] = zipPull_[1] = zipWindow_ = 0;
+    }
+    if (twoHandZip_ && twoHandTarget() && !zipUsed_ && fresh && !changed && !slingshotDrawn()) {
+        const Vec3 target = (webs_[0].end() + webs_[1].end()) * .5f;
+        const Vec3 toward = normalized(target - body_.position);
+        const Vec3 gaze = length(in.look) > .5f ? normalized(in.look) : toward;
+        float speed[2]{};
+        zipWindow_ += dt;
+        if (zipWindow_ > .24f) {
+            zipWindow_ = dt;
+            zipPull_[0] = zipPull_[1] = 0;
+        }
+        for (int i = 0; i < 2; ++i) {
+            const float pull = -dot(delta[i], toward);
+            // Retraction toward the chest, not a downward climbing stroke.
+            if (pull > 0 && -dot(delta[i], gaze) > pull * .5f &&
+                length(delta[i]) < config_.maxHandSpeed * dt) {
+                zipPull_[i] += pull;
+                speed[i] = pull / dt;
+            }
+        }
+        if (dot(toward, gaze) > .55f && std::min(zipPull_[0], zipPull_[1]) >= .12f &&
+            std::min(speed[0], speed[1]) >= 1.1f) {
+            const float force = std::clamp(
+                (speed[0] + speed[1]) * 2.5f + std::min(zipPull_[0], zipPull_[1]) * 12.f, 5.f, 24.f);
+            if (wall_.on) {
+                leaveWall();
+                sinceWallJump_ = 0;
+            }
+            body_.velocity = limited(body_.velocity + toward * force, config_.maxSpeed);
+            gestureLaunch_ = body_.velocity;
+            gestureTakeoff_ = body_.grounded;
+            body_.grounded = false;
+            sinceZip_ = 0;
+            zipSpeed_ = length(body_.velocity);
+            zipDirection_ = normalized(Vec3{body_.velocity.x, 0, body_.velocity.z});
+            zipUsed_ = true;
+            hands_[0].zipUsed = hands_[1].zipUsed = true;
+            events_.push_back({EventKind::Zip, -1, 1});
+        }
+    }
+    if (ropeSteering_ && shared() && webs_[0].attached && webs_[1].attached && fresh && !changed &&
+        !body_.grounded && !wall_.on && !zipUsed_) {
+        const int pulling = webs_[1].taken ? 1 : 0;
+        const Vec3 radial = normalized(webs_[pulling].anchor - body_.position);
+        const Vec3 sideways = delta[pulling] - radial * dot(delta[pulling], radial);
+        const float speed = length(body_.velocity);
+        if (speed > 2 && length(sideways) < config_.maxHandSpeed * dt) {
+            const Vec3 desired = normalized(body_.velocity + sideways * (20.f * poseSteer_)) * speed;
+            // Turn existing momentum; do not create speed or move the anchor.
+            const Vec3 steered = body_.velocity + limited(desired - body_.velocity, 25.f * poseSteer_ * dt);
+            if (length(steered) > .01f)
+                body_.velocity = normalized(steered) * speed;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        gesturePrevious_[i] = in.hands[i].gripRelativeToHead;
+        gestureStrands_[i] = webs_[i].strand;
+    }
+    gestureYaw_ = in.trackingYaw;
+    gestureSample_ = true;
+}
+void Swing::clearSlingshot() {
+    slingshotPair_ = slingshotReleasing_ = false;
+    slingshotCharge_ = slingshotHold_ = slingshotRelease_ = 0;
+}
+bool Swing::slingshotTaut(int i) const {
+    const auto& w = webs_[i];
+    if (!w.ready())
+        return false;
+    // The pull it gave the body over the last step, m/s^2: a hanging body
+    // pulls at a few. Or stretched to its length, at the top of an arc where
+    // it pulls nothing for a moment.
+    return w.tension > .5f || length(body_.position - w.anchor) >= w.length - .1f;
+}
+void Swing::slingshot(float dt, const Input& in, const WorldQueries& world) {
+    // Only real arm travel charges it; walking, a snap turn, loss of tracking,
+    // or a missing anchor cancels the gesture rather than launching later.
+    // In the air (AIR SLINGSHOT) the body moves as it swings, so neither its
+    // speed nor the stick counts; a landing or a takeoff starts it over.
+    const bool air = !body_.grounded;
+    const bool on = air ? airSlingshot_ : slingshotEnabled_;
+    if (!on || !in.focused || wall_.on || in.jump || in.leap > 0 || !in.hands[0].tracked ||
+        !in.hands[1].tracked || !std::isfinite(dt) || dt <= 0 || dt > .1f ||
+        (!air && (!finite(in.move) || length(in.move) > .2f || length(body_.velocity) > 2)) ||
+        (slingshotPair_ && slingshotInAir_ != air)) {
+        clearSlingshot();
+        return;
+    }
+    const bool both = hands_[0].held && hands_[1].held;
+    if (slingshotPair_) {
+        if (std::abs(std::remainder(in.trackingYaw - slingshotYaw_, 6.2831853f)) > .2f ||
+            !world.exists(slingshotSurfaces_[0]) || !world.exists(slingshotSurfaces_[1])) {
+            clearSlingshot();
+            return;
+        }
+        // Releasing one hand opens a short window for the other. A broken web
+        // whose button is still held is not a deliberate release.
+        for (unsigned i = 0; i < 2; ++i)
+            if (hands_[i].held &&
+                (!webs_[i].attached || webs_[i].airAnchor || webs_[i].surface != slingshotSurfaces_[i] ||
+                 length(webs_[i].end() - slingshotEnds_[i]) > .1f)) {
+                clearSlingshot();
+                return;
+            }
+        if (!both || slingshotReleasing_) {
+            slingshotReleasing_ = true;
+            slingshotRelease_ += dt;
+            if (slingshotRelease_ > .2f || both) {
+                clearSlingshot();
+                return;
+            }
+            if (!hands_[0].held && !hands_[1].held) {
+                const float charge = slingshotCharge_;
+                Vec3 direction = normalized((slingshotEnds_[0] + slingshotEnds_[1]) * .5f - body_.position);
+                clearSlingshot();
+                if (charge >= .15f && length(direction) > .9f) {
+                    direction.y = std::max(.25f, direction.y + .25f);
+                    direction = normalized(direction);
+                    slingshotFlight_ = true;
+                    slingshotAirborne_ = false;
+                    const float speed = slingshotSpeed_ > 0 ? slingshotSpeed_ * (.3f + .7f * charge)
+                                                            : std::min(12 + 28 * charge, config_.maxSpeed);
+                    // In the air it never slows him: what he already goes
+                    // along the launch stays, if that is more; across it, it
+                    // goes, as a launch from the ground has none.
+                    body_.velocity =
+                        air ? limited(direction * std::max(speed, dot(body_.velocity, direction)),
+                                      speedLimit())
+                            : direction * speed;
+                    body_.grounded = false;
+                    events_.push_back({EventKind::Slingshot, -1, charge});
+                }
+            }
+            return;
+        }
+    }
+    if (!both || !webs_[0].attached || !webs_[1].attached || webs_[0].airAnchor || webs_[1].airAnchor ||
+        shared() || length(webs_[0].end() - webs_[1].end()) < 1.5f) {
+        clearSlingshot();
+        return;
+    }
+    // In the air the pair starts only with both lines under tension.
+    if (air && !slingshotPair_ && (!slingshotTaut(0) || !slingshotTaut(1)))
+        return;
+    if (!slingshotPair_) {
+        slingshotPair_ = true;
+        slingshotInAir_ = air;
+        slingshotYaw_ = in.trackingYaw;
+        for (unsigned i = 0; i < 2; ++i) {
+            slingshotHands_[i] = in.hands[i].gripRelativeToHead;
+            slingshotEnds_[i] = webs_[i].end();
+            slingshotSurfaces_[i] = webs_[i].surface;
+        }
+    }
+    if (!webs_[0].ready() || !webs_[1].ready()) {
+        slingshotHold_ = slingshotCharge_ = 0;
+        return;
+    }
+    float pull = 1;
+    for (unsigned i = 0; i < 2; ++i) {
+        const Vec3 travel = trackingTurn(in).rotate(in.hands[i].gripRelativeToHead - slingshotHands_[i]);
+        pull = std::min(pull, -dot(travel, normalized(slingshotEnds_[i] - body_.position)));
+    }
+    // In the air a line gone slack holds the charge where it is.
+    if (air && (!slingshotTaut(0) || !slingshotTaut(1))) {
+        slingshotHold_ = 0;
+        return;
+    }
+    if (pull > .16f) {
+        slingshotHold_ += dt;
+        if (slingshotHold_ > .25f)
+            slingshotCharge_ = std::min(std::clamp(pull / .4f, 0.f, 1.f), slingshotCharge_ + dt * .8f);
+    } else {
+        slingshotCharge_ = slingshotHold_ = 0;
+    }
+}
+void Swing::move(Vec3 target, const World* collision) {
+    if (!collision) {
+        // Internal prediction only. No collision has been performed here.
+        body_.position = target;
+        return;
+    }
+    const auto result = collision->sweep(body_.position, target, config_.radius);
+    if (!finite(result.position))
+        return;
+    body_.position = result.position;
+    if (result.hit) {
+        const Vec3 n = normalized(result.normal);
+        const float vn = dot(body_.velocity, n);
+        if (vn < 0)
+            body_.velocity -= n * vn;
+        if (n.y > .65f)
+            body_.grounded = true;
+    }
+}
+// SWING ASSIST: five rays the body's size along its travel; at a surface
+// ahead, only the speed into it that could not be shed at 30 m/s^2 in time
+// is taken away.
+void Swing::avoidObstacles(float dt, const Input& in, const WorldQueries& world) {
+    if (!swingAssist_)
+        return;
+    const bool connected = webs_[0].attached || webs_[1].attached;
+    assistFlight_ = connected ? .8f : std::max(0.f, assistFlight_ - dt);
+    const float speed = length(body_.velocity);
+    if (!in.focused || body_.grounded || wall_.on || assistFlight_ <= 0 || speed < .05f || in.wallRotate ||
+        hands_[0].ropeClimbing || hands_[1].ropeClimbing)
+        return;
+    const Vec3 direction = body_.velocity / speed;
+    const Vec3 right =
+        normalized(cross(direction, std::abs(direction.y) < .9f ? Vec3{0, 1, 0} : Vec3{1, 0, 0}));
+    const float look = std::clamp(speed * .6f + speed * speed / 100.f, 2.f, 100.f);
+    const float radius = config_.radius + .15f;
+    float nearest = look;
+    Vec3 normal{};
+    for (const Vec3 offset : {Vec3{}, right * radius, -right * radius, Vec3{0, .65f, 0}, Vec3{0, -.65f, 0}}) {
+        const Vec3 origin = body_.position + offset;
+        const auto hit = world.bodyRaycast(origin, direction, look);
+        if (!hit || !finite(hit->point) || !finite(hit->normal))
+            continue;
+        const Vec3 n = normalized(hit->normal);
+        const float distance = dot(hit->point - origin, direction);
+        if (length(n) < .9f || dot(n, direction) > -.1f || distance < 0 || distance >= nearest)
+            continue;
+        nearest = distance;
+        normal = n;
+    }
+    if (length(normal) < .9f)
+        return;
+    // Keep the player's chosen lane. Only remove excess velocity INTO the
+    // surface; never invent a sideways/upwards destination from ray scores.
+    const float closing = -dot(body_.velocity, normal);
+    const float safeClosing = std::sqrt(2.f * 30.f * std::max(0.f, nearest - radius - .4f));
+    if (closing <= safeClosing)
+        return;
+    const float reduction = std::min(closing - safeClosing, 50.f * dt);
+    body_.velocity += normal * reduction;
+}
+void Swing::step(float dt, const Input& in, const WorldQueries& world, const World* collision) {
+    sinceZip_ += dt;
+    sinceLanding_ += dt;
+    const bool wasGrounded = body_.grounded;
+    if (body_.grounded || wall_.on) {
+        releasePull_ = {};
+        releaseLeft_ = 0;
+    }
+    if (leapQueued_ > 0) {
+        // A charged leap: up, and along the stick. From the ground only.
+        if (body_.grounded && !wall_.on) {
+            const Vec3 run = body_.velocity;
+            const Vec3 stick = finite(in.move) ? Vec3{in.move.x, 0, in.move.z} : Vec3{};
+            const float tilt = std::min(length(stick), 1.f);
+            const Vec3 along = tilt > .1f ? stick * (config_.leapForward * (.5f + .5f * leapQueued_) / length(stick) * tilt)
+                                          : Vec3{};
+            body_.velocity = limited(
+                along + Vec3{0, config_.leapUp + (config_.leapUpFull - config_.leapUp) * leapQueued_, 0},
+                config_.maxSpeed);
+            // RUNNING LEAP: the run's speed along the leap's way kept, the charge on top.
+            if (momentumLeap_)
+                body_.velocity = run_update::leapVelocity(run_update::momentumLeap, run, in.move, leapQueued_,
+                                                          config_.leapUp, config_.leapUpFull,
+                                                          config_.leapForward, config_.maxSpeed);
+            body_.grounded = false;
+            events_.push_back({EventKind::Leap, -1, leapQueued_});
+            jumpQueued_ = false;
+        }
+        leapQueued_ = 0;
+    }
+    // SPIDY RUN JUMP: off the ground with the run's speed, as long as the
+    // body is still seen on it (the command takes a native step to land).
+    if (runJump_ > 0 && body_.grounded && !wall_.on) {
+        body_.velocity = runJumpVelocity_;
+        body_.grounded = false;
+        jumpQueued_ = false;
+    }
+    if (jumpQueued_) {
+        if (wall_.on) {
+            // Off the wall: out from it and up, with what the body had along it.
+            const Vec3 n = wall_.normal;
+            body_.velocity = limited(body_.velocity - n * dot(body_.velocity, n) + n * config_.wallJumpOut +
+                                         Vec3{0, config_.wallJumpUp, 0},
+                                     config_.maxSpeed);
+            leaveWall();
+            sinceWallJump_ = 0;
+            mountLeft_ = 0;
+            events_.push_back({EventKind::WallJump, -1, 1});
+        } else if (body_.grounded) {
+            body_.velocity.y = config_.jumpSpeed;
+            if (pointLaunchReady()) {
+                Vec3 horizontal = normalized(Vec3{body_.velocity.x, 0, body_.velocity.z});
+                if (length(horizontal) < .1f)
+                    horizontal = normalized(Vec3{in.move.x, 0, in.move.z});
+                if (length(horizontal) < .1f)
+                    horizontal = zipDirection_;
+                const float speed = std::min(zipSpeed_, config_.maxSpeed);
+                body_.velocity.x = horizontal.x * speed;
+                body_.velocity.z = horizontal.z * speed;
+                body_.velocity.y = config_.jumpSpeed * 1.5f;
+                sinceZip_ = 100;
+                events_.push_back({EventKind::PointLaunch, -1, 1});
+            }
+            body_.grounded = false;
+        }
+        jumpQueued_ = false;
+    }
+    const float wallBefore = wall_.on ? dot(body_.position - wall_.point, wall_.normal) : 0.f;
+    const Vec3 before = body_.position;
+    if (wall_.on) {
+        // On a wall the stick walks it, and gravity does not pull along it.
+        wallMotion(dt, in);
+        body_.grounded = false;
+    } else if (groundRun_ && body_.grounded) {
+        // SPIDY RUN: the run's own speed across the ground, pressed onto it.
+        groundAlong_ = standRun_ ? run_update::standRunStep(groundAlong_, in.move, dt)
+                                 : run_update::groundRunStep(groundAlong_, in.move, dt);
+        const bool stick = finite(in.move) && std::hypot(in.move.x, in.move.z) > .05f;
+        groundIdle_ = stick ? 0 : groundIdle_ + dt;
+        body_.velocity = limited(groundAlong_ + Vec3{0, -run_update::groundRun.press, 0}, speedLimit());
+    } else {
+        Vec3 steering = finite(in.move) ? limited(Vec3{in.move.x, 0, in.move.z}, 1) : Vec3{};
+        body_.velocity +=
+            steering * ((body_.grounded ? config_.groundAcceleration : config_.airAcceleration * poseSteer_) * dt);
+        if (body_.grounded && landCarry_ > 0) {
+            // SMOOTH WEB LANDING: the landing's speed carried, decaying to a
+            // jog, steered as on the ground, in place of the ground's brake.
+            landAlong_ =
+                web_landing::carryStep(landAlong_ + steering * (config_.groundAcceleration * dt), dt);
+            body_.velocity.x = landAlong_.x;
+            body_.velocity.z = landAlong_.z;
+        } else if (body_.grounded) {
+            const float damping = std::exp(-5 * dt);
+            body_.velocity.x *= damping;
+            body_.velocity.z *= damping;
+        }
+        if (releaseLeft_ > 0) {
+            if (body_.grounded || !in.focused) {
+                releaseLeft_ = 0;
+                releasePull_ = {};
+            } else {
+                const float duration = .06f + .06f * softRelease_;
+                body_.velocity += releasePull_ * (std::clamp(releaseLeft_ / duration, 0.f, 1.f) * dt);
+                releaseLeft_ = std::max(0.f, releaseLeft_ - dt);
+                if (releaseLeft_ == 0)
+                    releasePull_ = {};
+            }
+        }
+        // A native prediction has no sweep to cancel gravity at the floor. Keep
+        // the measured support until a jump or rope pull actually lifts the body.
+        const bool supported = !collision && body_.grounded && body_.velocity.y <= 0;
+        if (supported)
+            body_.velocity.y = 0;
+        else
+            body_.velocity.y -= config_.gravity * dt;
+        if (crest_ > 0) {
+            // Over a wall's top edge: on over the roof behind it.
+            crest_ -= dt;
+            body_.velocity -= crestNormal_ * (config_.crestPush * dt);
+        }
+        if (softGround_ >= 0 && !supported && !wall_.on)
+            body_.velocity.y = webSoft_ ? web_landing::easeFall(body_.velocity.y, softGround_, dt)
+                                        : run_update::softLandVertical(body_.velocity.y, softGround_, dt);
+        body_.velocity = limited(body_.velocity, speedLimit());
+        body_.grounded = supported;
+        if (!supported && !wasGrounded)
+            skimGround(dt, world);
+    }
+    move(body_.position + body_.velocity * dt, collision);
+    for (int i = 0; i < 2; ++i) {
+        auto& w = webs_[i];
+        if (!w.attached)
+            continue;
+        if (!w.airAnchor && !world.exists(w.surface)) {
+            release(i, EventKind::Obstructed);
+            continue;
+        }
+        if (!w.ready())
+            continue;
+        const Vec3 d = w.anchor - body_.position;
+        const float dist = length(d);
+        int passed{};
+        const auto hit = solid(body_.position, normalized(d), std::max(0.0f, dist - .1f), world, &passed);
+        // Swung past a thin or loose thing (arcade webs): once as the line comes onto it.
+        if (passed && !hands_[i].passing)
+            events_.push_back({EventKind::Pass, i, 0});
+        hands_[i].passing = passed > 0;
+        // Swinging along a facade, the line grazes ledges and sills near the
+        // anchor every few frames. Only a wall that stays in the way releases:
+        // one a physical web cannot bend round (no edge found, too many).
+        auto& obstructed = hands_[i].obstructed;
+        bool blocked = hit && blocks(*hit, body_.position, w.anchor, w.bent > 0);
+        if (config_.physical) {
+            if (blocked)
+                blocked = !wrap(i, before, *hit, world);
+            else
+                unwrap(i, world);
+        }
+        obstructed = blocked ? obstructed + dt : 0;
+        if (obstructed > 0 && obstructed >= config_.obstructionTime) {
+            release(i, EventKind::Obstructed);
+            continue;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        auto& w = webs_[i];
+        if (!w.attached)
+            continue;
+        if (w.flightLeft > 0) {
+            w.flightLeft = std::max(0.f, w.flightLeft - dt);
+            if (w.flightLeft <= 0) {
+                w.length = std::max(config_.minRope, length(hold(i) - body_.position));
+                hands_[i].slack = 0;
+                w.engageAge = 0;
+                w.catching = true;
+                if (wall_.on && dot(w.anchor - body_.position, wall_.normal) > 0) {
+                    leaveWall();
+                    sinceWallJump_ = 0;
+                    mountLeft_ = 0;
+                }
+                events_.push_back({EventKind::Attach, i, .65f});
+            }
+        } else if (w.flightTotal > 0)
+            w.engageAge += dt;
+        // ELASTIC WEB: the spring is the soft catch. Its web keeps the length
+        // it arrived with and stretches from there; grown with the body, it
+        // never stretched, damping alone held him above the catch's 0.5 m/s,
+        // the catch never ended, and he sank on a web that paid out.
+        if (w.catching && !elasticWeb_)
+            w.length = std::max(w.length, length(hold(i) - body_.position));
+    }
+    std::array<float, 2> rates{};
+    for (int i = 0; i < 2; ++i)
+        if (webs_[i].ready() && !webs_[i].catching && hands_[i].reeling)
+            rates[i] = config_.reelSpeed;
+    const auto lengths = reeled(rates, dt);
+    for (int i = 0; i < 2; ++i) {
+        hands_[i].winch = (webs_[i].length - lengths[i]) / dt;
+        webs_[i].length = lengths[i];
+    }
+    const bool bearing[2] = {bears(0), bears(1)};
+    // Taut, in the air: no web slacker than its hand made it. After the
+    // winch, and with the hand's own pull in this step, or the rope's own
+    // pulls are taken in twice and the body climbs at twice their speed. On
+    // the ground the game walks the body, its webs paying out (payOut), and
+    // on a wall the stick walks it.
+    if (config_.taut && !body_.grounded && !wall_.on)
+        for (int i = 0; i < 2; ++i) {
+            auto& w = webs_[i];
+            const Vec3 out = body_.position - hold(i);
+            const float span = length(out);
+            if (!bearing[i] || w.catching || span < 1e-5f)
+                continue;
+            const float pulled = std::max(0.f, dot(hands_[i].rate, out / span)) * dt;
+            const float slackest = span + hands_[i].slack + pulled;
+            w.length = std::min(w.length, std::max(std::min(config_.minRope, w.length), slackest));
+        }
+    // What each rope holds the body to: its anchor, or with physical webs
+    // the point that keeps the hand on it.
+    const Rope ropes[2] = {{hold(0), webs_[0].length}, {hold(1), webs_[1].length}};
+    if (!elasticWeb_ && bearing[0] && bearing[1] && !webs_[0].catching && !webs_[1].catching)
+        move(projectTwoWebs(body_.position, ropes[0], ropes[1]), collision);
+
+    // Unilateral, tension-only constraints. Slack rope never pushes the player.
+    // Alternate order to reduce left/right bias with two simultaneous ropes.
+    float pull[2]{}; // speed each rope has taken out of the body in this step
+    for (int pass = 0; pass < 8; ++pass)
+        for (int j = 0; j < 2; ++j) {
+            const int i = (pass % 2) ? 1 - j : j;
+            auto& w = webs_[i];
+            if (!bearing[i])
+                continue;
+            const Vec3 delta = body_.position - ropes[i].anchor;
+            const float dist = length(delta);
+            if (dist < w.length - nearlyTaut || dist < 1e-5f)
+                continue;
+            const Vec3 radial = delta / dist;
+            if (dist > w.length && !elasticWeb_ && !w.catching)
+                move(ropes[i].anchor + radial * w.length, collision);
+            // A taut rope that is being reeled carries the body inward at the
+            // winch rate. With the pull applied to position only, the velocity
+            // never held it, and letting go mid-reel stopped the body dead.
+            // A hand that pulls on its rope does the same (physical webs).
+            const float outward = dot(body_.velocity, radial) + hands_[i].winch * follow(i, radial) +
+                                  dot(hands_[i].rate, radial);
+            // Once the other rope has pulled too, this one may have taken more
+            // than the two need together. It hands that back, never more than
+            // it took: kept, the surplus pushed the body sideways every step.
+            // An elastic web is a damped spring instead: no snap back to its
+            // length, its pull (per unit mass) bounded and shared by the passes.
+            if (elasticWeb_) {
+                const float stiffness = elasticWeb_ == 1 ? 65.f : elasticWeb_ == 2 ? 40.f : 24.f;
+                const float stretch = std::max(0.f, dist - w.length);
+                const float acceleration =
+                    std::clamp(stiffness * stretch + 2.f * std::sqrt(stiffness) * outward, 0.f, 180.f);
+                const float change = acceleration * dt / 8;
+                pull[i] += change;
+                body_.velocity -= radial * change;
+                continue;
+            }
+            // A web that has just arrived (WEB SPEED) catches softly: its pull
+            // grows with its coupling, at most 160 m/s^2.
+            const float change =
+                w.catching ? std::clamp(std::max(outward, -pull[i]), -pull[i], 160.f * w.coupling() * dt / 8)
+                           : std::max(outward, -pull[i]);
+            pull[i] += change;
+            body_.velocity -= radial * change;
+        }
+    for (int i = 0; i < 2; ++i) {
+        auto& w = webs_[i];
+        if (w.catching && w.engageAge >= .18f &&
+            dot(body_.velocity, normalized(body_.position - hold(i))) <= .5f)
+            w.catching = false;
+    }
+    // A web may pull along a wall or off it, never through it.
+    if (wall_.on)
+        holdWall(dt, wallBefore, collision);
+    for (int i = 0; i < 2; ++i)
+        webs_[i].tension = webs_[i].attached ? pull[i] / dt : 0;
+    if (body_.grounded && !wasGrounded)
+        sinceLanding_ = 0;
+}
+void Swing::update(float seconds, const Input& input, const World& world) {
+    events_.clear();
+    if (!std::isfinite(seconds) || seconds <= 0)
+        return;
+    if (!input.focused || seconds > .1f) {
+        releaseAll();
+        jumpHeld_ = input.jump;
+        return;
+    }
+    inputs(seconds, input, world);
+    avoidObstacles(seconds, input, world);
+    senseWall(seconds, input, world);
+    accumulator_ += seconds;
+    int steps = 0;
+    while (accumulator_ + 1e-9 >= config_.fixedStep && steps++ < 13) {
+        step(config_.fixedStep, input, world, &world);
+        accumulator_ -= config_.fixedStep;
+    }
+}
+void Swing::settleStep(float predictedSeconds, float actualSeconds) {
+    float extra = actualSeconds - predictedSeconds;
+    if (!std::isfinite(extra) || std::abs(extra) > .1f)
+        return;
+    // A step longer than the longest was predicted as that one: the body
+    // went that share of the way, and the rope is wound for as much.
+    if (predictedSeconds > longestNativeStep)
+        extra *= longestNativeStep / predictedSeconds;
+    // Only what the winch really took in: a rope held at its shortest length
+    // did not shorten, and must not start breathing with the frame time.
+    const auto lengths = reeled({hands_[0].winch, hands_[1].winch}, extra);
+    for (int i = 0; i < 2; ++i)
+        if (webs_[i].attached)
+            webs_[i].length = lengths[i];
+}
+MotionIntent Swing::predictNativeStep(float seconds, const Input& input, const WorldQueries& world,
+                                      Body actual) {
+    return predictNativeStep(seconds, input, world, actual, seconds);
+}
+MotionIntent Swing::predictNativeStep(float seconds, const Input& input, const WorldQueries& world,
+                                      Body actual, float inputSeconds) {
+    events_.clear();
+    accumulator_ = 0;
+    if (!std::isfinite(seconds) || seconds <= 0 || !input.focused ||
+        !std::isfinite(inputSeconds) || inputSeconds < 0 || !finite(actual.position) ||
+        !finite(actual.velocity) || length(actual.velocity) > speedLimit() * 2) {
+        releaseAll();
+        endGroundRun();
+        endLandCarry();
+        runJump_ = 0;
+        return {};
+    }
+    // A long step is a slow game, not stale input. Over 50 ms used to be
+    // refused here: the caller let go of a swinging player, whom the game
+    // then dropped at its own fall speed (October 10 headset report).
+    seconds = std::min(seconds, longestNativeStep);
+    // SPIDY RUN JUMP: done once the body is off the ground; given up after
+    // runJumpSeconds, or on a wall, a web or a mount.
+    if (runJump_ > 0) {
+        if (!actual.grounded) {
+            runJump_ = 0;
+            ++runJumps_;
+        } else if ((runJump_ -= seconds) <= 0 || wall_.on || mounting_ || mount_ > 0 || webs_[0].attached ||
+                   webs_[1].attached) {
+            runJump_ = 0;
+        }
+    }
+    const bool touchdown = actual.grounded && !body_.grounded && runJump_ <= 0;
+    if (actual.grounded && !body_.grounded)
+        sinceLanding_ = 0;
+    if (!actual.grounded)
+        climbTakeoff_ = false;
+    if (slingshotFlight_) {
+        if (!actual.grounded)
+            slingshotAirborne_ = true;
+        else if (slingshotAirborne_)
+            slingshotFlight_ = slingshotAirborne_ = false;
+    }
+    if (!actual.grounded)
+        gestureTakeoff_ = false;
+    // The swing's own velocity as the last step left it: what a landing came in at.
+    const Vec3 flown = body_.velocity;
+    body_ = actual;
+    body_.velocity = limited(body_.velocity, speedLimit());
+    stepSeconds_ = seconds;
+    // A hand moves its rope once per sample of it.
+    if (!(inputSeconds > 0))
+        for (auto& hand : hands_)
+            hand.rate = {};
+    if (!(inputSeconds > 0))
+        for (auto& hand : climbing_)
+            hand.rate = {};
+    if (inputSeconds > 0) {
+        // The first sample after a gap in input (a long frame, a moment
+        // without focus) starts each hand's motion afresh: travel across the
+        // gap is no yank. Releasing the webs there dropped the player.
+        if (inputSeconds > .1f)
+            for (auto& hand : hands_)
+                hand.sample = false;
+        if (inputSeconds > .1f)
+            climbing_ = {};
+        inputs(inputSeconds, input, world);
+    }
+    avoidObstacles(seconds, input, world);
+    senseWall(seconds, input, world);
+    // SOFT LANDING: the ground under a fall with no web, for its last metres.
+    softGround_ = -1;
+    if (softLanding_ && !actual.grounded && !wall_.on && !webs_[0].attached && !webs_[1].attached &&
+        body_.velocity.y < -run_update::softFall && finite(body_.position)) {
+        const float reach = std::min(run_update::softLandReach(-body_.velocity.y, seconds), config_.maxRange);
+        const auto ground = world.bodyRaycast(body_.position, {0, -1, 0}, reach);
+        if (ground && finite(ground->point) && finite(ground->normal) && normalized(ground->normal).y > .5f)
+            softGround_ = std::max(0.f, body_.position.y - 1 - ground->point.y);
+    }
+    // SMOOTH WEB LANDING: the same for a fall with a web held, below the
+    // impact speed, to web_landing's gentler fall.
+    webSoft_ = false;
+    const bool webHeld = webs_[0].attached || webs_[1].attached;
+    if (webLandSmooth_ && softGround_ < 0 && webHeld && !actual.grounded && !wall_.on &&
+        body_.velocity.y < -web_landing::tuning.fallTarget && finite(body_.position) &&
+        web_landing::gentle(body_.velocity, webLandImpact_)) {
+        const float reach = std::min(web_landing::reach(-body_.velocity.y, seconds), config_.maxRange);
+        const auto ground = world.bodyRaycast(body_.position, {0, -1, 0}, reach);
+        if (ground && finite(ground->point) && finite(ground->normal) && normalized(ground->normal).y > .5f) {
+            softGround_ = std::max(0.f, body_.position.y - 1 - ground->point.y);
+            webSoft_ = true;
+        }
+    }
+    // SPIDY RUN: a landing faster than the sprint goes on at its speed; it
+    // ends off the ground, on a web, a wall or a mount's way up one.
+    const bool webbed =
+        webs_[0].attached || webs_[1].attached || climbing_[0].attached || climbing_[1].attached;
+    // COMBAT RESPONSIVE (Input::fighting): no run of the swing's own on the
+    // ground in a fight, nor its carry; the game's blows and dodges move him.
+    const bool fighting = input.fighting;
+    if (fighting)
+        endLandCarry();
+    if (groundRun_ &&
+        (!spidyRun_ || !actual.grounded || wall_.on || mounting_ || mount_ > 0 || webbed || fighting))
+        endGroundRun();
+    if (spidyRun_ && touchdown && !groundRun_ && !wall_.on && !webbed && !mounting_ && mount_ <= 0 &&
+        !fighting && runJump_ <= 0) {
+        const Vec3 along = run_update::groundRunEntry(body_.velocity);
+        if (length(along) > run_update::groundRun.enterAbove) {
+            groundRun_ = true;
+            groundAlong_ = along;
+            groundIdle_ = 0;
+        }
+    }
+    // SPIDY RUN FROM STANDING: on the ground, the stick held past standTilt
+    // for standHold starts the run from the body's own speed across.
+    if (spidyRun_ && standRunEnabled_ && !groundRun_ && actual.grounded && !touchdown && !wall_.on &&
+        !webbed && !mounting_ && mount_ <= 0 && !fighting && runJump_ <= 0) {
+        const auto& k = run_update::groundRun;
+        const float tilt = finite(input.move) ? std::hypot(input.move.x, input.move.z) : 0.f;
+        if (tilt < k.standRearm)
+            standArmed_ = true;
+        standHold_ = standArmed_ && run_update::standHeld(input.move) ? standHold_ + seconds : 0.f;
+        if (standHold_ >= k.standHold) {
+            const Vec3 across{body_.velocity.x, 0, body_.velocity.z};
+            groundRun_ = standRun_ = true;
+            groundAlong_ = finite(across) ? limited(across, k.entryMax) : Vec3{};
+            groundIdle_ = 0;
+            standHold_ = 0;
+        }
+    } else if (!groundRun_) {
+        standHold_ = 0;
+    }
+    // SMOOTH WEB LANDING: a landing with a web held, below the impact
+    // speed and faster across than the carry's floor, keeps that speed
+    // across the ground for a moment (the caller drives meanwhile). It ends
+    // off the ground, on a wall, a mount, SPIDY RUN, or with the setting.
+    if (landCarry_ > 0 &&
+        (!webLandSmooth_ || !actual.grounded || wall_.on || mounting_ || mount_ > 0 || groundRun_))
+        endLandCarry();
+    if (webLandSmooth_ && touchdown && webHeld && !groundRun_ && !wall_.on && !mounting_ && mount_ <= 0 &&
+        !fighting && web_landing::gentle(flown, webLandImpact_)) {
+        const Vec3 across{flown.x, 0, flown.z};
+        if (length(across) > web_landing::tuning.floor + .05f) {
+            landCarry_ = web_landing::tuning.carryMax;
+            landAlong_ = across;
+        }
+    }
+    const auto count = static_cast<unsigned>(std::ceil(seconds / config_.fixedStep));
+    const float dt = seconds / count;
+    for (unsigned i = 0; i < count; ++i)
+        step(dt, input, world, nullptr);
+    // SPIDY RUN: at the sprint, or a second without the stick, it is the game's run again.
+    // A run from standing held past standTilt is still building: not yet.
+    const bool building = standRun_ && run_update::standHeld(input.move);
+    if (groundRun_ &&
+        ((!building && length(groundAlong_) <= run_update::groundRun.sprint + .01f) || groundIdle_ >= 1))
+        endGroundRun();
+    if (landCarry_ > 0) {
+        landCarry_ = std::max(0.f, landCarry_ - seconds);
+        if (landCarry_ <= 0 || length(landAlong_) <= web_landing::tuning.floor + .05f)
+            endLandCarry();
+    }
+    MotionIntent result{body_.position, body_.velocity, true};
+    // Native collision owns position and ground contact. Do not publish the
+    // prediction as if the game had already accepted it.
+    body_.position = actual.position;
+    body_.grounded = actual.grounded;
+    return result;
+}
+} // namespace spidy
