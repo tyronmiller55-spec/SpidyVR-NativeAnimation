@@ -9,17 +9,20 @@ Insomniac, Sony or Marvel. Original authorship, support links and notices remain
 ## Current integrated source
 
 This cumulative snapshot contains working source
-[`09526f19f00b54819641f0bde080894105b10e85`](https://github.com/tyronmiller55-spec/SpidyVR/commit/09526f19f00b54819641f0bde080894105b10e85).
-Runtime, tests and build tools match that source exactly. Only this README,
-[publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md) and the deliberate
-omission of the release workflow differ. Publication history is retained.
+[`fbd114ec56f9d9fe4f42e89de8697e7f6c1fb211`](https://github.com/tyronmiller55-spec/SpidyVR/commit/fbd114ec56f9d9fe4f42e89de8697e7f6c1fb211)
+(branch `fix/review-launch-run-softball`, cumulative on earlier `fd56775` /
+`40c0cb9` / `09526f1`). Runtime, tests and build tools match that source exactly.
+Only this README, [publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md)
+and the deliberate omission of the release workflow differ. Publication history
+is retained.
 
 **Development build, not headset acceptance.** Windows compilation, all **6/6
-CTest suites**, **187 Python tests** and packaged embedded-Python import checks
-passed in [this exact-source Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42544305988).
-These checks do not run the live game/headset. Final torso alignment, indicator
-readability, physical damage and no-shot grip cancellation still require testing
-of this exact cumulative build; earlier gameplay logs identify an older source.
+CTest suites**, **192 Python tests** and packaged embedded-Python import checks
+passed in [this exact-source Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42578019609).
+These checks do not run the live game/headset. Exact-build headset validation of
+this snapshot remains pending. Point-launch facing is **reported still incorrect**
+in headset testing of this line; a separate ownership-update pass is in progress
+and is **not** included here.
 
 ## Native Animation work included
 
@@ -41,13 +44,36 @@ of this exact cumulative build; earlier gameplay logs identify an older source.
   mapped look/gaze, actual-camera wrist/phone/wheel presentation and stale pose/
   ownership/render-generation guards. No blanket replacement of physical tracking
   inputs with solved poses.
-- Grip cancellation is intended to activate original SpidyVR **without firing a
-  web**; the held cancel gesture stays suppressed. Releasing on eligible ground
-  restores native ownership that update. Independent ordinary OG grip web actions
-  remain. **This contract still needs exact-build headset verification.**
+- **No-shot grip cancel stay:** grip cancel activates original SpidyVR without
+  firing a web and stays in SpidyVR until another native animation starts (fight,
+  dodge, parkour, crawl or game zip). Walking/running/standing alone do not end
+  the stay. Ordinary OG grip webs remain available while staying.
+- **Position lock at handoffs:** animation↔SpidyVR switches seat the VR origin on
+  the actor's feet (not the animated head camera), carry yaw, and log discarded
+  eye-offset / residual distances for verification.
+- **Point-launch facing:** intended to face travel momentum briefly on eligible
+  launches; SpidyVR airborne path also holds OG body facing during that window.
+  **Headset reports this is still incorrect** — not claimed fixed.
+- **Run speed slider** (50–200%, default 100%): scales SpidyVR's own ground run
+  only; the game's native run/sprint is unchanged. Hand-back blends the scale to
+  1 over the last stretch above sprint so control returns near the game's 9 m/s
+  sprint instead of stepping at 50%/200%.
+- **Slow-mo length slider:** 6 s through 1:30, then INFINITE (L3 toggles off);
+  default remains 12 s. Refill / L3 toggle behavior otherwise unchanged.
+- **Wrist marker smoothing:** one-euro filter on each free hand's final command
+  aim so markers and shots share one steadied line (held webs keep raw aim).
+- **Soft lock:** 0 (off)–40 m, default 15 m; prefers closer enemies/throwables for
+  grip webs; trigger web balls follow the same grip-marker enemy when one is
+  shown (eye aim still picks when enabled). Ledges/zip points are not exposed as
+  queryable targets and are not included.
+- **Session summary JSON:** each session also writes a capped `-summary.json`
+  (under ~20 MB) beside the full report, keeping punch/strike/web/slow-mo counters
+  and adding cancel/switch/position-lock digests for easier sharing.
 - Earlier airborne-adoption, actual-game Y/zip handoff and shooter diagnostics
   remain included. No new procedural-leg selector, synthetic strafe/backpedal
-  animation, extra cancel binding or unrequested mechanics.
+  animation, extra cancel binding or unrequested mechanics. The in-progress
+  ownership-update (animation owns ground/parkour/jumps/landings; SpidyVR owns
+  air and wallrun) is **not** part of this snapshot.
 
 The underlying SpidyVR suite still provides physical swinging, web shooters and
 existing gadgets/grabs/web ties/web lines, walls, VR UI and optional effects.
@@ -55,20 +81,23 @@ Their original controls/settings remain documented below and in the
 [player guide](docs/PLAYERS.md); original ranged-punch behavior described below
 is not the animation-owned physical-contact policy above. Existing saved
 settings/profiles retain their choices. The launcher has a **Native Animation**
-panel and the headset's **NATIVE ANIMATION** settings block; player torso work
-uses the existing ARMS/TORSO options, not a new binding.
+panel and the headset's **NATIVE ANIMATION** settings block; new personal keys
+(`run_speed_percent`, `slow_motion_seconds`, `soft_lock_metres`) are not reset by
+gameplay presets. Player torso work uses the existing ARMS/TORSO options, not a
+new binding.
 
 ## Install / playtest
 
-Use the **latest cumulative 09526f1 launcher**, not three separate earlier slices.
+Use the **latest cumulative fbd114e launcher**, not older slice ZIPs.
 The existing verified Windows ZIP is available in the
-[build run's artifacts](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42544305988/artifacts/13642064266)
+[build run's artifacts](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42578019609/artifacts/13656610376)
 (GitHub sign-in may be required; artifact retention is limited). It was also
-provided directly to the owner. **No new GitHub release/tag is created by this
-source integration.** The binary diagnostic stamp is `09526f19f0`, not this
-publication commit's hash.
+provided directly to the owner as
+`Spidy-0.8.5-review-fixes-fbd114e-win64.zip`. **No new GitHub release/tag is
+created by this source integration.** The binary diagnostic stamp is
+`fbd114ec56`, not this publication commit's hash.
 
-ZIP SHA-256: `f560c7b42669da8281170132a3f384ea32c9f30e4bfd340e2bff4ceee35fd4bc`.
+ZIP SHA-256: `5d7ae797ccbfa373471a7dab1b6adb2358be005ea69e97431c13f081c4d2e342`.
 
 1. Back up shared `%APPDATA%\Spidy` settings/profiles and keep older builds.
 2. Extract the **entire** ZIP into a **new writable folder**, outside the game's
@@ -77,10 +106,12 @@ ZIP SHA-256: `f560c7b42669da8281170132a3f384ea32c9f30e4bfd340e2bff4ceee35fd4bc`.
    Windows, supported Steam game build, VC++ x64 and OpenXR prerequisites apply.
 4. Read [the latest acceptance sheet](docs/NATIVE_ARM_FEEDBACK_PLAYTEST.md),
    [torso playtest](docs/PLAYER_UPPER_TORSO_PLAYTEST.md) and
-   [diagnostic counter caveats](docs/WEB_BALL_DIAGNOSTICS.md). Test both hands,
-   root/HMD turns, held-web endpoints, stationary cancel/hold/release, ground
-   idle/walk/run and air/wallrun transitions. Returned/fired counters do not prove
-   visible effects or damage. Send exact-source session logs and visual evidence.
+   [diagnostic counter caveats](docs/WEB_BALL_DIAGNOSTICS.md). Test grip-cancel
+   stay / no-shot, position-lock residuals, run-speed / slow-mo / soft-lock
+   sliders, marker smoothing, soft-locked grip webs and trigger balls, and
+   point-launch facing (known still incorrect). After a session, prefer sending
+   the `-summary.json` plus `-diag.log`. Returned/fired counters do not prove
+   visible effects or damage.
 
 This publication repository intentionally omits the release workflow; source
 build commands below remain available on Windows. Original upstream download/
@@ -89,12 +120,13 @@ Do not use an upstream launcher update as if it were a Native Animation update.
 
 ## Remaining gates
 
-Headset evidence is still needed for the integrated behaviors. The older crash
-needs a dump/stack, not an exception-code guess. Procedural-leg direction-to-pose
-mapping and a remappable physical selector remain undecided/unbound. Genuine
-normal-locomotion strafe/backpedal clips and supported facing/control hooks have
-not been proven; no synthetic substitute is included. Existing tuck controls
-remain unchanged. Integration approval is not a claim these gates are resolved.
+Headset validation of this exact fbd114e snapshot is still pending. Point-launch
+facing remains reported incorrect; the ownership-update redesign is in progress
+elsewhere and not merged here. Procedural-leg direction-to-pose mapping and a
+remappable physical selector remain undecided/unbound. Genuine normal-locomotion
+strafe/backpedal clips and supported facing/control hooks have not been proven;
+no synthetic substitute is included. Existing tuck controls remain unchanged.
+Integration approval is not a claim these gates are resolved.
 
 ---
 
