@@ -1036,6 +1036,7 @@ DWORD WINAPI run(void*) {
         uint64_t forearmJob{};
         uint32_t forearmStaleFrames{};
         float forearmLogSeconds{};
+        float shooterLogSeconds{};
         diag_log::ChangeOnly forearmDiag[2];
         // STEADY STATES' RT (ground_state::RiseDelay), and the state changes'
         // lines in the diagnostics (ground_state::StateLog).
@@ -1064,10 +1065,10 @@ DWORD WINAPI run(void*) {
         // frame, for the owner's update further down the same frame.
         bool hybridZipPress{};
         bool hybridYWas{};
-        // ANIMATED HYBRID jump adopt (hybrid_owner::Frame::jumpAsk): a real jump or leap asked for
-        // on the ground this frame. hybridLeapAir: an adopted jump is in the air (its legs keep
-        // the jump's shape, body::Targets::airborne). The adopt's first-frame diag waits on
-        // native_body::jumpAdopt's count.
+        // ANIMATED HYBRID jump / air adopt (hybrid_owner::Frame::jumpAsk): a real jump or leap
+        // asked for on the ground this frame, or any other mid-air takeover. hybridLeapAir: the
+        // body was adopted in the air (its legs keep that pose, body::Targets::airborne). The
+        // adopt's first-frame diag waits on native_body::jumpAdopt's count.
         bool hybridJumpAsk{};
         bool hybridLeapAir{};
         bool hybridAdoptWaiting{};
@@ -1098,6 +1099,10 @@ DWORD WINAPI run(void*) {
             float enterEyeDYaw{};
             float landSpeed{};
             bool clearLook{};
+            // After an owner edge: refresh sticks and hold CameraLook off
+            // through the blend and a held run, so leftover look does not
+            // orbit the walk camera until a jump.
+            bool recheckMove{};
             // Slice C: the source eyes' player position; they travel with him from it.
             Vec3 fromAnchor{};
         } hybridBlend{};
@@ -1119,6 +1124,7 @@ DWORD WINAPI run(void*) {
         // The check that keeps that reference seated on the neck over every switch (head_seat.hpp).
         head_seat::Glide animHeadSeat{};
         int animSeatStateWas = -1;
+        uint32_t animSeatActionWas = 0xffffffffu;
         uint32_t animSeatCount{};
         int64_t animSeatDiagAt{};
         float animHeadTurn{};
@@ -2981,6 +2987,25 @@ DWORD WINAPI run(void*) {
                             input.wallPositions[i] = motion.grips[i].position;
                             input.wallGrips[i] = hand.tracked ? frame.hands[i].squeeze : 0.f;
                         }
+                        // Native Animation: gloves sit in the head-bone frame while the
+                        // animation owns. Aim web balls and markers from those same
+                        // gloves. A web-hold on a hand is how you leave the animation —
+                        // that hand keeps the tracking-rig aim so the SpidyVR web leaves
+                        // the controller.
+                        if (values.animatedHybrid && values.animatedArms &&
+                            animatedMovesHandoff.yielding) {
+                            const auto overlay = native_body::overlayTracking();
+                            if (overlay.targetFrame != animated_view::Frame::none) {
+                                for (unsigned i = 0; i < 2; ++i) {
+                                    if (!overlay.valid[i] || !input.hands[i].tracked)
+                                        continue;
+                                    if (mapAimToDisplayedGrip(input.hands[i].aim,
+                                                              {overlay.grip[i], overlay.gripOri[i]}, i,
+                                                              input.hands[i].grip))
+                                        motion.swing.hands[i].aim = input.hands[i].aim;
+                                }
+                            }
+                        }
                         // WEB AIM: MODEL FOREARM (off by default): each hand's webs turn
                         // from the controller's line onto the body's forearm, carried on
                         // the controller's pose now (web_aim::forearmTurn), smoothed, and
@@ -3028,31 +3053,30 @@ DWORD WINAPI run(void*) {
                                         : aimNow;
                                 Quat target{};
                                 float alignDeg = -1.f;
-                                if (why == Fallback::none) {
+                                float signedDeg = 0.f;
+                                if (why == Fallback::none || f.valid) {
                                     const Vec3 forearmDir = normalized(f.wrist - f.elbow);
                                     alignDeg =
                                         std::acos(std::clamp(dot(forearmDir, solvedAim.rotate({0, 0, -1})),
                                                              -1.f, 1.f)) *
                                         57.29578f;
-                                    if (std::isfinite(alignDeg) && alignDeg > web_aim::forearmAlignDegrees)
-                                        why = Fallback::misaligned;
+                                    signedDeg =
+                                        web_aim::signedPalmAngle(forearmDir, aimNow, static_cast<int>(i)) *
+                                        57.29578f;
                                 }
-                                // ANIMATED ARMS yield: keep controller-line overlay
-                                // fallback until softlock remap makes forearms healthy.
-                                // Drop fallback only when overlay weight is high and
-                                // forearm vs controller is under the align threshold.
+                                // A large forearm-vs-controller angle is no longer a
+                                // fallback: the world-frame clamp keeps the web on the
+                                // forearm instead of snapping to the controller.
+                                // ANIMATED ARMS yield: wait only until the overlay
+                                // weight is up; do not require the old 45° align check.
                                 if (why == Fallback::none && animatedMovesHandoff.yielding &&
                                     values.animatedArms) {
-                                    const float w = animatedArmsState.arms[i].weight;
-                                    const bool healthy = w > .85f && std::isfinite(alignDeg) &&
-                                                         alignDeg <= web_aim::forearmAlignDegrees;
-                                    if (!healthy)
+                                    if (animatedArmsState.arms[i].weight <= .85f)
                                         why = Fallback::armsOverlay;
                                 }
                                 if (why == Fallback::none) {
-                                    target =
-                                        web_aim::forearmTurn(web_aim::forearmInGrip(f.elbow, f.wrist, f.grip),
-                                                             motion.grips[i].orientation, aimNow, 180.f);
+                                    target = web_aim::forearmWorldTurn(f.wrist - f.elbow, aimNow,
+                                                                      static_cast<int>(i));
                                     if (forearmAims[i].primed)
                                         forearmJitter[i] = std::max(
                                             forearmJitter[i],
@@ -3060,10 +3084,11 @@ DWORD WINAPI run(void*) {
                                                 57.29578f);
                                     forearmTargets[i] = target;
                                 }
-                                const float limit = static_cast<float>(values.forearmAimLimit);
+                                const float limit = web_aim::forearmInwardDegrees;
                                 const bool clamped =
-                                    why == Fallback::none && web_aim::turnAngle(target) * 57.29578f > limit + .05f;
-                                forearmAims[i].update(why == Fallback::none, target, dt, limit);
+                                    why == Fallback::none && signedDeg < -limit + .05f;
+                                // 180: do not pull the turn back toward the controller.
+                                forearmAims[i].update(why == Fallback::none, target, dt, 180.f);
                                 // WRIST SHOOTERS without MODEL FOREARM takes all of it.
                                 webTurnsNow[i] = forearmAims[i].turn(
                                     values.webAimSource == static_cast<int>(web_aim::Source::forearm)
@@ -3115,6 +3140,13 @@ DWORD WINAPI run(void*) {
                                         game_prompts::note(line, false);
                                     if (diagNow)
                                         diag_log::write(line);
+                                    if (logNow || diagNow)
+                                        diag_log::writef(
+                                            "forearm sign: %s %+.1f deg (positive toward palm, treated as "
+                                            "out; inward cap %.0f)%s",
+                                            i ? "R" : "L", static_cast<double>(signedDeg),
+                                            static_cast<double>(web_aim::forearmInwardDegrees),
+                                            clamped ? ", inward capped" : "");
                                     if (logNow)
                                         forearmJitter[i] = 0;
                                 }
@@ -3675,6 +3707,26 @@ DWORD WINAPI run(void*) {
                                     eyeShots += input.eyeAim != 0;
                                 }
                                 shotsBefore[i] = shots.hands[i].shots;
+                            }
+                            shooterLogSeconds +=
+                                std::isfinite(frame.seconds) && frame.seconds > 0 ? frame.seconds : 0;
+                            if (shooterLogSeconds >= 1.f) {
+                                shooterLogSeconds = 0;
+                                diag_log::writef(
+                                    "web balls: requested %llu fired %llu targeted %llu resolved %llu "
+                                    "webbed %llu collisions %llu pushed %llu dropped %llu empty %llu "
+                                    "(L %llu R %llu)",
+                                    static_cast<unsigned long long>(listed.requested),
+                                    static_cast<unsigned long long>(listed.fired),
+                                    static_cast<unsigned long long>(listed.targeted),
+                                    static_cast<unsigned long long>(listed.resolved),
+                                    static_cast<unsigned long long>(listed.webbed),
+                                    static_cast<unsigned long long>(listed.collisions),
+                                    static_cast<unsigned long long>(listed.pushed),
+                                    static_cast<unsigned long long>(listed.dropped),
+                                    static_cast<unsigned long long>(listed.emptyPulls),
+                                    static_cast<unsigned long long>(listed.hands[0].shots),
+                                    static_cast<unsigned long long>(listed.hands[1].shots));
                             }
                         }
                         fightNear = input.focused && ((fighting && strikes.cueTarget != 0) || punch.bots != 0);
@@ -4409,9 +4461,9 @@ DWORD WINAPI run(void*) {
                                     (walk.zip || walk.aim || walk.interact);
                         // ANIMATED HYBRID: a web zip asked of the game - its zip to a point
                         // (the stick up, LT + RT) or its Y in the air (a web strike; a car's
-                        // in a chase) - is the game's animation from this press frame on
-                        // (hybrid_owner zip hold). Y on the ground or on Spidy's wall is
-                        // interact, not a zip.
+                        // in a chase) - is noted this press frame (hybrid_owner zip hold).
+                        // The owner leaves SpidyVR only if the game then begins that zip.
+                        // Y on the ground or on Spidy's wall is interact, not a zip.
                         {
                             const bool yDown = steering && (origins.play() & buttonY) != 0;
                             // The floor-crawl flag lights in rooftop parkour: not a wall here.
@@ -4792,11 +4844,24 @@ DWORD WINAPI run(void*) {
                                     ? hybrid_steer::clearsLook(
                                           modelYawOwns, frame.hands[1].valid ? frame.hands[1].stickX : 0.f)
                                     : modelYawOwns;
+                            const bool blendHold =
+                                hybridBlend.active &&
+                                !hybrid_handoff::blendDone(blendNowNs - hybridBlend.startNs);
+                            if (hybridBlend.recheckMove &&
+                                hybrid_steer::doneRecheck(blendHold, hybridInputL)) {
+                                cameraLook.reset();
+                                cameraPitch.reset();
+                                hybridViewYaw.reset();
+                                hybridBlend.recheckMove = false;
+                            }
                             if (modelYawClears || airSpinOwnsStick || hybridYawHold ||
-                                hybridBlend.clearLook) {
+                                hybridBlend.clearLook || hybridBlend.recheckMove) {
                                 // Free the right stick from CameraLook so it does not
                                 // also yaw the follow camera (HMD free look stays XR;
-                                // tracking yaw / AIR SPIN keep the stick).
+                                // tracking yaw / AIR SPIN keep the stick). After a
+                                // handoff, keep it off through the blend and until the
+                                // run stick is released, so CameraLook cannot orbit a
+                                // held forward under the turning walk camera.
                                 walk.look = 0;
                                 hybridBlend.clearLook = false;
                             } else if (hybridViewSteer && hybridViewOk) {
@@ -5741,18 +5806,21 @@ DWORD WINAPI run(void*) {
                                     if (validTrackedPose(frame.head))
                                         rig.adoptEyes(worldEyes, worldYaw, frame.head);
                                 }
-                                // A real jump or leap: SpidyVR picks the body up from the pose the
-                                // game's takeoff left it in (snapshot + seed on the next pose job),
-                                // the arms on the controllers at once, the legs in the jump's shape.
-                                const bool jumpAdopt = hybridOwner.lastEnterVr == hybrid_owner::EnterVr::jump;
-                                if (jumpAdopt) {
+                                // A real jump or leap, or any other takeover while the hero is in
+                                // the air (web, grip, rotate, speed, swing, wallrun): snapshot the
+                                // pose the animation left and seed SpidyVR from it on the next pose
+                                // job, arms on the controllers at once, legs kept airborne. A
+                                // grounded takeover still reclaims without a seed.
+                                const bool airAdopt =
+                                    hybrid_owner::adoptsFromAir(hybridOwner.lastEnterVr, animState.grounded);
+                                if (airAdopt) {
                                     hybridAdoptSeen = native_body::jumpAdopt().count;
                                     native_body::beginJumpAdopt();
                                 } else {
                                     native_body::beginReclaim();
                                 }
-                                hybridLeapAir = jumpAdopt;
-                                hybridAdoptWaiting = jumpAdopt;
+                                hybridLeapAir = airAdopt;
+                                hybridAdoptWaiting = airAdopt;
                                 hybridBlend = {};
                                 hybridBlend.active = true;
                                 hybridBlend.toTraversal = true;
@@ -5817,6 +5885,11 @@ DWORD WINAPI run(void*) {
                                 hybridBlend.enterEyeDPos = dPos >= 0.f ? dPos : 0.f;
                                 hybridBlend.enterEyeDYaw = dYaw;
                                 hybridBlend.clearLook = true; // clear Walk::look next pad frame
+                                hybridBlend.recheckMove = true;
+                                hybridViewYaw.reset();
+                                cameraLook.reset();
+                                cameraPitch.reset();
+                                game_fp::relatchHeadFrame();
                                 diag_log::writef(
                                     "hybrid: anim->vr (%s) speed %.1f rot %.0f, G->T (%s) eyes dPos %.2f m "
                                     "dYaw %.0f, ikWarm 1, overlay->body %.0f ms",
@@ -5829,7 +5902,7 @@ DWORD WINAPI run(void*) {
                             if (hybridOwner.enterAnim) {
                                 if (hybridAdoptWaiting)
                                     diag_log::write(
-                                        "hybrid: jump adopt never seeded (no SpidyVR body frame before "
+                                        "hybrid: adopt never seeded (no SpidyVR body frame before "
                                         "the animation took him back)");
                                 hybridLeapAir = hybridAdoptWaiting = false;
                                 // Slice 3 T→G (vr→anim): blend eyes back to the headbone; keep
@@ -5896,6 +5969,12 @@ DWORD WINAPI run(void*) {
                                 hybridBlend.seedActorYawValid =
                                     fromOk && hybrid_owner::seedsFacing(hybridOwner.lastEnterAnim);
                                 hybridBlend.landSpeed = landSpeed;
+                                hybridBlend.clearLook = true;
+                                hybridBlend.recheckMove = true;
+                                hybridViewYaw.reset();
+                                cameraLook.reset();
+                                cameraPitch.reset();
+                                game_fp::relatchHeadFrame();
                                 const char* why = hybrid_owner::enterAnimName(hybridOwner.lastEnterAnim);
                                 // The head is often not sampled yet on the edge frame (head follow
                                 // turns on below): say so rather than log a 0.00 m that never was.
@@ -5922,9 +6001,11 @@ DWORD WINAPI run(void*) {
                                 hybridAdoptSeen = adopt.count;
                                 hybridAdoptWaiting = false;
                                 diag_log::writef(
-                                    "hybrid: jump adopt seeded from the live pose (%u joints): first "
+                                    "hybrid: %s adopt seeded from the live pose (%u joints): first "
                                     "frame hips %.3f m legs %.3f m off it, body %.2f in, wrists %.3f "
                                     "/ %.3f m from the controllers",
+                                    hybridOwner.lastEnterVr == hybrid_owner::EnterVr::jump ? "jump"
+                                                                                           : "air",
                                     adopt.joints, adopt.hips, adopt.legs, adopt.weight, adopt.handError[0],
                                     adopt.handError[1]);
                             }
@@ -6060,6 +6141,16 @@ DWORD WINAPI run(void*) {
                         // recenter starts the lock afresh; the others glide back onto the head.
                         if (headFollow && hybridOn) {
                             const int stateNow = static_cast<int>(head_probe::classify(animState));
+                            uint32_t actionNow = 0;
+                            actionNow |= animState.fighting ? 1u : 0u;
+                            actionNow |= animState.dodging ? 2u : 0u;
+                            actionNow |= animState.zipping ? 4u : 0u;
+                            actionNow |= (static_cast<uint32_t>(animState.wall) & 7u) << 3;
+                            actionNow |= phone.open() ? (1u << 6) : 0u;
+                            actionNow |= gadgetWheel.open() ? (1u << 7) : 0u;
+                            actionNow |= padLayer.latched() ? (1u << 8) : 0u;
+                            actionNow |= (namedPress.claimed() & 0x3fu) << 9;
+                            actionNow |= (static_cast<uint32_t>(listed.equipped) & 0xffu) << 16;
                             if (hybridOwner.enterAnim || hybridOwner.enterVr)
                                 seatWhy = head_seat::Why::owner;
                             else if (frame.recentered)
@@ -6071,9 +6162,13 @@ DWORD WINAPI run(void*) {
                                 seatWhy = head_seat::Why::mode;
                             else if (animSeatStateWas >= 0 && stateNow != animSeatStateWas)
                                 seatWhy = head_seat::Why::state;
+                            else if (animSeatActionWas != 0xffffffffu && actionNow != animSeatActionWas)
+                                seatWhy = head_seat::Why::action;
                             animSeatStateWas = stateNow;
+                            animSeatActionWas = actionNow;
                         } else {
                             animSeatStateWas = -1;
+                            animSeatActionWas = 0xffffffffu;
                         }
                         const int modeNow = headFollow ? static_cast<int>(animHeadMode) : -1;
                         if (headFollow != animatedHeadFollowWas || modeNow != animatedHeadModeWas) {

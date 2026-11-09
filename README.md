@@ -10,15 +10,13 @@ Controls. The headset has the same contiguous **NATIVE ANIMATION** settings bloc
 under SPIDY VR. New installations start in the recommended mode; existing saved
 settings and profiles retain their stored choices. [Player guide](docs/PLAYERS.md).
 
-Playtest builds and Native Animation support live in this repository:
-https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation
-Download the latest [Release](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest),
-extract it into a writable folder outside the game install, and run **Spidy Launcher.exe**.
-Never copy the mod into the game's folder.
+Use this fork for community-build support:
+https://github.com/tyronmiller55-spec/SpidyVR . The original Spidy launcher name,
+author credits, Discord and Ko-fi links are retained; Native Animation bugs do
+not belong in upstream Spidy's bug tracker. Source is provided under GPL-3.0.
 
-The original Spidy launcher name, author credits, Discord and Ko-fi links are
-retained; Native Animation bugs do not belong in upstream Spidy's bug tracker.
-Source is provided under GPL-3.0.
+Windows package: **Spidy-0.8.1-win64-native-animation.zip**. Extract into a writable
+folder outside the game install. Never copy the mod into the game's folder.
 
 ---
 
@@ -28,7 +26,7 @@ Source is provided under GPL-3.0.
 > **Community build — SpidyVR 0.8.0 + Native Run Beta.** This fork offers an unofficial beta with opt-in NATIVE RUN and other movement/web features: [download](https://github.com/tyronmiller55-spec/SpidyVR/releases/tag/v0.8.0-native-run-beta1) · [what it is & how to enable](docs/NATIVE_RUN_BETA.md). Not endorsed by Ilya; report bugs on [this fork's Issues](https://github.com/tyronmiller55-spec/SpidyVR/issues). The official Spidy is at [IlyaMez/SpidyVR](https://github.com/IlyaMez/SpidyVR).
 
 <p align="center">
-  <a href="https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest"><img src="docs/images/readme/hero.jpg" alt="Spider-Man in full VR. Spidy is a free PC VR mod for Marvel's Spider-Man Remastered, recorded in the headset on Quest 3." width="100%"></a>
+  <a href="https://github.com/IlyaMez/SpidyVR/releases/latest"><img src="docs/images/readme/hero.jpg" alt="Spider-Man in full VR. Spidy is a free PC VR mod for Marvel's Spider-Man Remastered, recorded in the headset on Quest 3." width="100%"></a>
 </p>
 
 <h1 align="center">Spidy</h1>
@@ -39,14 +37,14 @@ Source is provided under GPL-3.0.
 </p>
 
 <p align="center">
-  <a href="https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest"><img src="docs/images/readme/btn-download.png" alt="Download Spidy: free, the latest release" width="232"></a>
+  <a href="https://github.com/IlyaMez/SpidyVR/releases/latest"><img src="docs/images/readme/btn-download.png" alt="Download Spidy: free, the latest release" width="232"></a>
   <a href="https://discord.gg/x27ZXDpdNt"><img src="docs/images/readme/btn-discord.png" alt="Join the Discord: news, help, clips" width="238"></a>
   <a href="https://ko-fi.com/ilyamezerowsky"><img src="docs/images/readme/btn-kofi.png" alt="Support on Ko-fi: keeps the updates coming" width="242"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest"><img src="https://img.shields.io/github/v/release/IlyaMez/SpidyVR?label=latest&color=e3262f&style=flat-square&labelColor=0b0a14" alt="Latest release"></a>
-  <a href="https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases"><img src="https://img.shields.io/github/downloads/IlyaMez/SpidyVR/total?label=downloads&color=ffe14d&style=flat-square&labelColor=0b0a14" alt="Downloads"></a>
+  <a href="https://github.com/IlyaMez/SpidyVR/releases/latest"><img src="https://img.shields.io/github/v/release/IlyaMez/SpidyVR?label=latest&color=e3262f&style=flat-square&labelColor=0b0a14" alt="Latest release"></a>
+  <a href="https://github.com/IlyaMez/SpidyVR/releases"><img src="https://img.shields.io/github/downloads/IlyaMez/SpidyVR/total?label=downloads&color=ffe14d&style=flat-square&labelColor=0b0a14" alt="Downloads"></a>
   <a href="https://github.com/IlyaMez/SpidyVR/stargazers"><img src="https://img.shields.io/github/stars/IlyaMez/SpidyVR?label=stars&color=12d6ff&style=flat-square&labelColor=0b0a14" alt="Stars"></a>
   <a href="https://discord.gg/x27ZXDpdNt"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2Fx27ZXDpdNt%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&color=3b1fb3&style=flat-square&labelColor=0b0a14" alt="Discord members"></a>
 </p>
@@ -94,13 +92,11 @@ one **START VR** button.
 - **Grab and throw.** Web a prop or an enemy, reel or yank it in, swing it on
   the web and let go to throw it. Heavy things feel heavy. Pulled enemies fly
   flailing, and get hurt when they slam into walls, the ground or each other.
-- **Web them to the wall.** With **WEB TIE** on (EXPERIMENTAL in the SPIDY VR
-  settings), web an enemy up, put one web on a wall (the floor, a lamp post,
+- **Web them to the wall.** With **WEB TIE** on (experimental, in Settings > VR WEBS), web an enemy up, put one web on a wall (the floor, a lamp post,
   a crate) and the other on him, bring your hands together and click the
   right stick: he is pulled onto it and stays stuck there until the fight is
   over ([web tie](docs/WEB-TIE.md)).
-- **Web lines.** With **WEB LINES** on (EXPERIMENTAL in the SPIDY VR
-  settings), put one web on a wall and the other on another, bring your hands
+- **Web lines.** With **WEB LINES** on (experimental, in Settings > VR WEBS), put one web on a wall and the other on another, bring your hands
   together and click the right stick: a taut line of web between them. Hold
   the right stick's click to aim at a line and let go to zip onto it; walk
   along it, jump and dodge on it, swing from it, and with WEB TIE on too,
@@ -126,9 +122,10 @@ one **START VR** button.
   X, and its LB + RB too (its prompt then shows X); your triggers its LT, LB,
   RT and RB, the stick clicks its L3 and R3, the right stick its D-pad. While
   it asks for X, a punch is that X.
-- **VR settings in the game's menu.** A SPIDY VR tab in the game's own
-  Settings for aim markers, snap or smooth turning, vibration, swing speed,
-  how heavy you swing, screen size, the HUD and more. Changes apply at once.
+- **VR settings in the game's menu.** Seven short categories in the game's own
+  Settings: Setup, Webs, Swinging, Movement, Flips, Haptics and Display.
+  Changes apply at once; reset one category without changing the others.
+  The launcher's Options sidebar uses the same categories.
 - **Menus and cutscenes on a screen.** Cutscenes in 3D: the game draws
   them once for each eye. Or turn on **First-person cutscenes** in the
   launcher: scenes then play all round you from inside Spider-Man's head,
@@ -208,7 +205,7 @@ find the real download.
 
 Prefer to watch? [Set up Spidy in five steps](https://www.youtube.com/watch?v=aq-DvGblB3Q) on YouTube.
 
-1. Download the zip from [Releases](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)
+1. Download the zip from [Releases](https://github.com/IlyaMez/SpidyVR/releases/latest)
    and extract it to a folder you can write to, such as `Documents\Spidy`.
 2. Start **Spidy Launcher.exe**. If Windows says it protected your PC, choose
    *More info*, then *Run anyway*.
@@ -233,6 +230,7 @@ windows. If the headset shows a still picture, click the game window once.
 - Starts the game with the larger render memory VR needs, in a small window that
   saves GPU time, without frame generation, vertical sync or ray-traced reflections, and puts your settings back afterwards.
 - Gives each eye the game's own anti-aliasing and upscaling (*Upscaling* in its options; the game's DLSS setting does not reach the headset), and shows your left eye in the game window while you are in VR.
+- Switches Arcade, Balanced, Pro and saved profiles directly from Play. [Gameplay presets](docs/GAMEPLAY-PRESETS.md) preserve your personal setup.
 - Remembers your options (its Options tab, with profiles to save and share), and saves a report of every session in `reports\`.
 - Offers each new Spidy release when it starts, and updates itself in place with one click.
 
@@ -245,7 +243,7 @@ Spidy changes nothing in the game's folder.
 <p align="center">
   <a href="docs/images/readme/controls-quest3.jpg"><img src="docs/images/readme/controls-quest3.jpg" alt="Spidy's controls on Quest 3 Touch Plus controllers. Left: Menu pauses; left stick walks and runs, click for slow motion; Y interacts, hold to step up to the thing; X held opens the gadget wheel, and where the game shows LB + RB, X throws a prop or tears off a door. Right: right stick turns, up and hold to zip to a point or into a vent, down and hold to heal; both sticks clicked give the pad layer; B dodges the way the left stick points; A jumps, hold on the ground for a charged leap. Both hands: trigger reels in, or shoots a web ball or your gadget with no web; grip shoots a web and swings, catches a prop or an enemy and throws it on release. With your hands: a sharp pull zips or yanks, a fast fist punches or flies you to an enemy up to 10 m off, a grip behind your hip brought up draws your phone, a hand at your temple with the trigger scans, a free hand on the web with its grip climbs it. Where the game shows a button, press that one: LB + RB is X, and LT, LB, RT or RB alone is one of your triggers." width="100%"></a>
   <br><br>
-  <a href="docs/images/readme/controls-moves.jpg"><img src="docs/images/readme/controls-moves.jpg" alt="The moves, by where you are. On a web: a sharp pull zips to where the web holds; pull the hand in and the web is a rope you go along; your free hand on the web with its grip takes the same web, to climb hand over hand; with a prop or an enemy on the web, a sharp pull yanks and letting go of the grip throws; swing into a wall and you stay on it, running along it when fast. In a fight: a fast fist lands a blow as hard as it moved; a punch at the ringed enemy up to 10 m off flies you in to strike; swing the way the arrow shows for a called blow (hook, uppercut, blow down), the yellow arrow for the finisher; swing, zip or fall fast into the ringed enemy for a dive kick; both fists down hard in the air with no web, an enemy near, is the Ground Strike. Spider-Sense lines over an enemy about to hit you: blue, throw a fist to counter; red, step, lean, duck or press B to dodge; yellow, A to jump over it; swinging or zipping, the web dodges for you. Anywhere: a hand at your temple with its trigger scans; both hands at your chest with both triggers is the suit power, once its meter is full; a grip behind your hip brought up draws your phone; a T-pose with both triggers, when asked, fits the body to your size. Off until switched on in Settings, SPIDY VR: realistic flips (swing your arms in the air to spin) and hand wall climbing (grip a wall and pull)." width="100%"></a>
+  <a href="docs/images/readme/controls-moves.jpg"><img src="docs/images/readme/controls-moves.jpg" alt="The moves, by where you are. On a web: a sharp pull zips to where the web holds; pull the hand in and the web is a rope you go along; your free hand on the web with its grip takes the same web, to climb hand over hand; with a prop or an enemy on the web, a sharp pull yanks and letting go of the grip throws; swing into a wall and you stay on it, running along it when fast. In a fight: a fast fist lands a blow as hard as it moved; a punch at the ringed enemy up to 10 m off flies you in to strike; swing the way the arrow shows for a called blow (hook, uppercut, blow down), the yellow arrow for the finisher; swing, zip or fall fast into the ringed enemy for a dive kick; both fists down hard in the air with no web, an enemy near, is the Ground Strike. Spider-Sense lines over an enemy about to hit you: blue, throw a fist to counter; red, step, lean, duck or press B to dodge; yellow, A to jump over it; swinging or zipping, the web dodges for you. Anywhere: a hand at your temple with its trigger scans; both hands at your chest with both triggers is the suit power, once its meter is full; a grip behind your hip brought up draws your phone; a T-pose with both triggers, when asked, fits the body to your size. Off until switched on in Settings, VR FLIPS: realistic flips (swing your arms in the air to spin) and VR MOVEMENT: hand wall climbing (grip a wall and pull)." width="100%"></a>
   <br><br>
   <a href="docs/images/readme/controls-phone.jpg"><img src="docs/images/readme/controls-phone.jpg" alt="Your phone, from your back pocket. Draw it: squeeze a grip with that hand behind your hip and bring it up in front, still squeezed; it opens in the hand that drew it. While it is out the stick picks an app or a button, A opens or presses, B goes back or puts the phone away, and the left and right triggers turn the music down and up. Its apps: MUSIC plays your songs (MP3, WAV and more) from the Music folder beside the launcher, and goes on with the phone away; MENU opens the game menu (map, suits, skills), which B closes; GEAR lists each gadget and its charges; CAMERA takes out the game's camera for the research stations' photos: left trigger for the viewfinder, right trigger for the photo, right stick up to put it away." width="100%"></a>
   <br><br>
@@ -283,7 +281,7 @@ Spidy changes nothing in the game's folder.
 | Throw a prop, tear off a door or a grate (the game's LB + RB) | **X** where the game shows LB + RB (its prompt and the marker over the prop then show X), or hold it as long as the game wants the two held. A prop goes where your other hand points: at the enemy its aim marker is on, or that way |
 | Heal (the game's D-pad down) | Push the **right stick** straight down and hold it a moment |
 | Zip to a point, enter a vent (the game's LT + RT) | Push the **right stick** straight up and hold it, swinging too: the game takes you from your webs once its zip begins. No point to zip to? Keep holding: time slows as the game aims; look at a point and let go to zip there |
-| Pause (VR settings: Settings > SPIDY VR) | **Menu** button, or hold both sticks in for a moment (under SteamVR a Quest's menu button opens SteamVR's dashboard) |
+| Pause (Settings > the VR category tabs) | **Menu** button, or hold both sticks in for a moment (under SteamVR a Quest's menu button opens SteamVR's dashboard) |
 | Game menu (map, suits, skills) | Your phone's **MENU**: squeeze a **grip** with that hand behind your hip, bring it up in front still squeezed, pick MENU with the stick and press **A**. **B** closes the game menu |
 | Gadget wheel | Hold **X**, move the hand toward a gadget and let go of **X** to equip it; your free hand's **trigger** fires it. Before the game gives you a gadget it shows the web shooter alone: NO GADGETS YET |
 | The whole gamepad, for a moment | Click both sticks (and let go): the grips are the game's LB and RB, the triggers its LT and RT, the right stick its D-pad; your webs are off meanwhile. Click both again, or press nothing for 20 seconds, to leave |
@@ -371,7 +369,7 @@ Please share the original release zip with its credit intact, so players get
 working files and know where updates come from.
 
 <p align="center">
-  <a href="https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest"><img src="docs/images/readme/footer.jpg" alt="Spidy: free VR mod for Marvel's Spider-Man Remastered. PC, Steam version, OpenXR headsets. Early public alpha." width="100%"></a>
+  <a href="https://github.com/IlyaMez/SpidyVR/releases/latest"><img src="docs/images/readme/footer.jpg" alt="Spidy: free VR mod for Marvel's Spider-Man Remastered. PC, Steam version, OpenXR headsets. Early public alpha." width="100%"></a>
 </p>
 
 Spidy is Copyright (C) 2026 Ilya Mezerowsky, and free software under the

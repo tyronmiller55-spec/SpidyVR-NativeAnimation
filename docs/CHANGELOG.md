@@ -3,6 +3,62 @@
 Every build, newest first, with what changed, why, and what was measured.
 Per-check results are in [VALIDATION.md](VALIDATION.md).
 
+## Native Animation: 0.8.5 compatibility playtest
+
+- Integrates upstream gameplay presets and category pages without replacing the
+  four Nov 8 handoff, visible-glove frame and forearm-clamp fixes.
+- Keeps animation profile preferences when selecting a built-in gameplay preset.
+- Adds a Native Animation headset category; category reset preserves independent
+  movement settings. Launcher navigation retains the dedicated animation tab.
+- Adds profile-preservation and category-reset regression tests. Windows CI and
+  headset validation must be reported for the exact build, not inferred from the
+  previous 0.8.1 playtest.
+
+
+## Native Animation: forearm-clamped web shooters
+
+**MODEL FOREARM stays on the world's elbow-to-wrist line. Tilting a palm out never pulls the web past it; tilting inward angles it a little toward your midline.**
+
+- The forearm was stored on the controller and re-applied as you moved, so the shot turned with your wrist. It also snapped back to the controller whenever the two lines differed by more than 45° — about a third of the Nov 8 session.
+- The web now follows the solved elbow→wrist in world space (it moves with the hand, not the wrist's rotation). Palm-out (toward that hand's palm) is clamped to the forearm. Palm-in may follow up to 15°. The old 45° snap is gone, and animation ownership no longer falls back just because the forearm and controller differ.
+- Diagnostics print a `forearm sign:` line with the signed palm angle (positive toward the palm, treated as out) so a tilt each way can confirm the sense. FOREARM AIM LIMIT no longer pulls the line back toward the controller.
+- Tests: neutral and a roll around the forearm stay put; left and right palm-out stay on the forearm; a 20° palm-in caps at 15°. Not headset-tested.
+
+## Native Animation: web balls aim from the gloves you see
+
+**While the animation owns, web balls and aim markers leave from the same place as the visible gloves.**
+
+- The gloves already sit in the hero's head-bone frame so they stay on your controllers in the view you are watching. Web balls and aim markers still aimed from the tracking rig, which at a takeover sat a median 0.82 m and 45° away from that view — so a ball left beside the thug you were looking at. They now use the same mapped grip the overlay placed, then the usual web-shooter offset on top.
+- Squeezing the web-hold button (grip by default) still leaves the animation and shoots a SpidyVR web from the tracking-rig controller, not from the remapped glove.
+- Diagnostics print a `web balls:` line about once a second: requested, fired, targeted, resolved, webbed, collisions, pushed, dropped, empty pulls, and each hand's shot count. That survives a crash that cuts off the launcher's closing summary.
+- Tests: a mapped grip's shooter matches mapping the shooter itself; a free hand's aim moves onto that displayed shooter; a web-hold keeps the rig aim. Not headset-tested.
+
+## Native Animation: no mid-air round trip on a Y the game doesn't take
+
+**Leave SpidyVR for a web zip only once the game actually starts it.**
+
+- A Y in the air or a zip to a point, pressed while swinging or on Spidy's wall, used to flip to the animation on the press itself. If the game refused that press (nothing to strike or zip to), SpidyVR took you back about 0.4 s later — a visible round trip. Those presses now stay in SpidyVR until the swing yields (the game began the move). A press it never takes never leaves.
+- A zip pressed while already on the animation, or during a speed or rotate flight with no swing to watch, still goes to the animation on the press, so the game can play the move. A fresh grip is still the way out of an animation zip. Ownership otherwise unchanged.
+- Tests: a swing or wall press stays in SpidyVR until the game takes it; a refused press never leaves; a speed flight with no swing still yields on the press. Not headset-tested.
+
+## Native Animation: air adopt on every mid-air takeover
+
+**Taking over in the air now starts from the pose the animation left, the way a jump already did.**
+
+- A web, grip, mid-air turn or speed, a swing after a zip, or a wall-run leap used to reclaim SpidyVR from a standing blend with no air flag, so the body could hitch or plant the legs for a moment. Those takeovers now use the same snapshot and seed as a jump: the first SpidyVR frame is the live pose, the arms go to the controllers at once, and the legs stay airborne until you land.
+- A grounded takeover (a web from the ground, a wall run you start on the wall) still reclaims without a seed. Ownership rules are unchanged.
+- Diag: `hybrid: air adopt seeded from the live pose ...` for those takeovers; jumps still log `jump adopt seeded`. `hybrid: adopt never seeded` if the animation took him back before a body frame.
+- Tests: every mid-air reason adopts; a grounded web or wall run does not; a jump still adopts even if the ground flickers. Not headset-tested.
+
+## Native Animation: handoff polish
+
+**State switches reseat the head more often, refresh movement after each handoff, and no longer lock the free hand's webs.**
+
+- The head-locked view now reseats on the neck for weapon, gadget, phone and prompt changes as well as owner, move, zip, HEAD and recenter edges. The drift backstop is 20 cm (was 35 cm), so a walk in the room is brought back sooner. A glide already heading onto the neck chases a small headset move without restarting its 180 ms clock, so rapid actions do not hitch the view.
+- Every SpidyVR ↔ animation handoff resets the view-yaw filter and the camera-look / camera-pitch sticks, then holds CameraLook off through the blend and until you release a held run. Landing and keeping forward no longer orbits you until you jump.
+- Web balls treat climb and crawl as per-hand busy flags. A leftover climb or crawl on one hand no longer marks both triggers busy during midair animations. Web balls still do not change owner; grip is still how you leave the animation.
+- Tests: glide follow without restart; 20 cm backstop; action diag name; CameraLook reset drops a leftover turn; one-hand climb does not busy the other; handoff look-hold until the run stick is released. Not headset-tested.
+
 ## Native Animation: web balls, grip-out, and always-on aim markers
 
 **Shoot web balls during any animation; squeeze grip to leave it; keep the aim
@@ -717,6 +773,24 @@ order; historical opt-in defaults/row placements are superseded by this package.
   `forearm aim:`; run_game_vr.py reads it into the console and
   `reports\game-vr-<time>-diag.log` with the rest.
 **Latest build (November 6): pull request #79 by HaNToP - WEB LINES, a
+**Unreleased: gameplay presets on Play.** The Play screen now switches directly
+between built-in Arcade, Balanced and Pro presets and saved profiles. The three
+presets explicitly cover 52 gameplay settings while preserving personal setup;
+they are never applied automatically. Custom profiles remain compatible, and
+unsaved settings are backed up before switching. Manage opens the Profiles page.
+The preset definitions and Discord review are in [GAMEPLAY-PRESETS.md](GAMEPLAY-PRESETS.md).
+
+**Unreleased: shorter VR settings screens.** The long settings tab is now
+seven native categories: Setup, Webs, Swinging, Movement, Flips, Haptics
+and Display, with 5 to 19 controls each. Y resets only the current category.
+The launcher has matching sidebar pages, separate Profiles and Diagnostics,
+and collapsible fine rotation tuning. Dependent or overridden controls keep
+their saved values and show when they are inactive. Blow sounds, previously
+missing from the launcher, is available under Haptics. Aiming, flip and
+combat descriptions now explain their actual interactions. No gameplay
+defaults, saved settings keys or profile formats changed.
+
+**Previous build (November 6): pull request #79 by HaNToP - WEB LINES, a
 taut web between two walls.** WEB LINES (SPIDY VR > EXPERIMENTAL after WEB
 TIE, off by default; `web_lines` in spidy_vr.ini and profiles; the
 launcher's Webs card): one web on a wall and the other on another (a post, a

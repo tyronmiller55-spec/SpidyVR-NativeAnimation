@@ -23494,7 +23494,107 @@ int main() {
               "NaN assist accepted");
         check(!bad([](ShooterConfig&) {}), "defaults rejected");
     });
-    test("VR settings tab: seven sections, every setting once, a list's choices one per step", [] {
+    test("VR categories: every control once, bounded screens, stable row numbers", [] {
+        using namespace vr_settings;
+        std::bitset<256> seen;
+        for (const auto& screen : screens()) {
+            check(screen.title && screen.tabTitle && !screen.items.empty(), "empty category");
+            size_t inGame = 0;
+            for (Item item : screen.items) {
+                check(!seen.test(static_cast<size_t>(item)), "duplicate category control");
+                seen.set(static_cast<size_t>(item));
+                const Row* row = rowFor(item);
+                check(row && row->item != Item::none && row->place != Place::page, "invalid category row");
+                inGame += row->place == Place::tab;
+            }
+            check(inGame > 0 && inGame <= 20, "category grew beyond a short screen");
+        }
+        for (const Row& row : rows())
+            check(seen.test(static_cast<size_t>(row.item)) ==
+                      (row.item != Item::none && row.place != Place::page), "missing setting destination");
+        check(rowFor(Item::none) == nullptr, "headings are not settings");
+    });
+    test("Native Animation category reset preserves independent movement settings", [] {
+        using namespace vr_settings;
+        Values v;
+        v.nativeRun = v.spidyRun = false;
+        v.animatedMoves = v.animatedHybrid = false;
+        v.animatedHead = 0;
+        v.animatedHybridSpeedMs = 500;
+        v.webAimSource = 1;
+        const auto reset = resetCategory(Category::nativeAnimation, v);
+        check(!reset.nativeRun && !reset.spidyRun, "animation reset enabled movement");
+        check(reset.webAimSource == 1, "animation reset changed web aim");
+        check(reset.animatedMoves == Values{}.animatedMoves &&
+                  reset.animatedHybrid == Values{}.animatedHybrid &&
+                  reset.animatedHead == Values{}.animatedHead &&
+                  reset.animatedHybridSpeedMs == Values{}.animatedHybridSpeedMs,
+              "animation concrete defaults not restored");
+        const auto movement = resetCategory(Category::movement, v);
+        check(movement.animatedHead == v.animatedHead &&
+                  movement.animatedMoves == v.animatedMoves &&
+                  movement.animatedHybridSpeedMs == v.animatedHybridSpeedMs,
+              "movement reset changed animation choices");
+    });
+    test("VR category reset preserves other screens, hidden tuning and off-grid values", [] {
+        using namespace vr_settings;
+        Values v;
+        v.swingSpeed = 33;
+        v.snapTurn = 45;
+        v.smoothTurn = 60;
+        v.automaticResponse = 750;
+        v.realisticFlips = true;
+        v.flatScreen = true;
+        v.webShooter = false;
+        auto setup = resetCategory(Category::setup, v);
+        auto expected = v;
+        expected.snapTurn = Values{}.snapTurn;
+        expected.smoothTurn = Values{}.smoothTurn;
+        check(setup == expected, "setup reset leaked into another category");
+        auto flips = resetCategory(Category::flips, v);
+        expected = v;
+        expected.realisticFlips = false;
+        check(flips == expected, "flip reset touched hidden tuning or another category");
+        check(resetCategory(Category::count, v) == v, "invalid category changed values");
+    });
+    test("VR dependency hints follow effective modes without changing saved preferences", [] {
+        using namespace vr_settings;
+        Values v;
+        v.nativeRun = v.spidyRun = false;
+        check(inactiveReason(Item::smartAnchor, v), "open-air webs override smart anchor");
+        v.airWebs = false;
+        check(!inactiveReason(Item::smartAnchor, v), "real anchors enable smart anchor");
+        v.smoothTurn = 60;
+        check(inactiveReason(Item::snapTurn, v) && v.snapTurn == 30, "snap preference was lost");
+        v.smoothTurn = 0;
+        check(!inactiveReason(Item::snapTurn, v), "snap did not become available");
+        check(inactiveReason(Item::slingshotSpeed, v), "inactive slingshot speed");
+        v.airSlingshot = true;
+        check(!inactiveReason(Item::slingshotSpeed, v), "air slingshot works independently");
+        v.controlledFlips = true;
+        check(inactiveReason(Item::flips, v), "controlled flips overrides basic flips");
+        v.realisticFlips = true;
+        check(!inactiveReason(Item::flips, v) && inactiveReason(Item::controlledFlips, v),
+              "realistic flips still needs the basic switch for stick steering");
+        v.webAimSource = 1;
+        check(inactiveReason(Item::wristShooters, v) && !inactiveReason(Item::forearmBlend, v),
+              "forearm aim makes wrist shortcut redundant");
+        check(!inactiveReason(Item::palmShooters, v), "palm rotation can compose with forearm aim");
+        check(inactiveReason(Item::nativeRunAt, v) && inactiveReason(Item::steadyStates, v), "native run tuning");
+        v.nativeRun = true;
+        check(!inactiveReason(Item::nativeRunAt, v) && !inactiveReason(Item::steadyStates, v), "native run on");
+        check(inactiveReason(Item::spidyRunFromStanding, v), "standing run requires Spidy run");
+        check(inactiveReason(Item::webLandingImpact, v), "landing threshold requires smooth web landing");
+        v.webLandingSmooth = true;
+        check(!inactiveReason(Item::spidyRunJump, v), "landing carry also uses the run jump");
+        v.haptics = v.bodyHaptics = v.hud = 0;
+        check(inactiveReason(Item::reelHaptics, v) && inactiveReason(Item::hapticWebs, v) &&
+                  inactiveReason(Item::steadyHud, v), "feedback and HUD parent settings");
+        check(inactiveReason(Item::recordingSmoothing, v), "smoothing requires recording view");
+        v.recordingFov = 140;
+        check(!inactiveReason(Item::recordingSmoothing, v), "recording view enables smoothing");
+    });
+    test("VR settings catalog: stable legacy sections, every setting once, a list's choices one per step", [] {
         using namespace vr_settings;
         const auto& all = rows();
         check(all[5].item == Item::smartAnchor && all[4].item == Item::airWebs,
@@ -27239,6 +27339,30 @@ int main() {
              0.f);
         check(!animated_view::headFrame({}, {}, {}, {}, rebuilt), "invalid head accepted");
     });
+    test("Native Animation: web balls aim from the displayed glove, not the tracking rig", [] {
+        const Pose authored{{5, 9, 12}, Quat::yaw(-1.3f) * Quat::around({1, 0, 0}, .5f)};
+        const Pose ref{{.2f, 1.6f, -.1f}, Quat::yaw(.7f)};
+        const Pose grip{{.6f, 1.2f, -.4f}, Quat::yaw(.4f) * Quat::around({0, 0, 1}, -.3f)};
+        const Mat4 anchor = animated_view::toNative(authored);
+        const float turn = .35f;
+        const auto shownGrip = animated_view::resolve(anchor, animated_view::relative(grip, ref, turn));
+        const auto shownShooter =
+            animated_view::resolve(anchor, animated_view::relative(webShooter(grip, 0), ref, turn));
+        check(length(shownShooter.position - webShooter(shownGrip, 0).position) < 1e-4f,
+              "displayed shooter is not on the displayed grip");
+        near(body::angle(shownShooter.orientation * webShooter(shownGrip, 0).orientation.conjugate()), 0.f);
+        Pose aim = webShooter(grip, 0);
+        check(length(aim.position - shownShooter.position) > .5f, "rig and displayed frames were not apart");
+        check(mapAimToDisplayedGrip(aim, shownGrip, 0, 0.f), "free hand did not map");
+        check(length(aim.position - shownShooter.position) < 1e-4f, "mapped aim missed the displayed shooter");
+        near(body::angle(aim.orientation * shownShooter.orientation.conjugate()), 0.f);
+        Pose held = webShooter(grip, 1);
+        const auto before = held;
+        check(!mapAimToDisplayedGrip(held, shownGrip, 1, .6f), "web-hold should keep the rig aim");
+        check(length(held.position - before.position) < 1e-6f, "web-hold changed the aim");
+        Pose bad{};
+        check(!mapAimToDisplayedGrip(bad, {{NAN, 0, 0}, {}}, 0, 0.f), "invalid grip mapped");
+    });
     test("HYBRID hands: idle is tracked at full weight; independent loss and entry/exit ramps", [] {
         animated_arms::State st;
         animated_arms::Sample hands[2] = {{{.3f, 1.2f, 0}, true}, {{-.3f, 1.2f, 0}, true}};
@@ -27400,6 +27524,28 @@ int main() {
         check(a.weight == 0 && !a.primed, "invalid does not prime");
         const Quat id = web_aim::forearmTurn({0, 0, -1}, {}, {}, 180.f);
         check(web_aim::turnAngle(id) < .01f, "aligned forearm should be near identity");
+    });
+    test("Native Animation: forearm clamp stays on the world forearm, palm-in a little", [] {
+        const Vec3 F{0, 0, -1};
+        const float deg = 3.14159265f / 180;
+        check(web_aim::turnAngle(web_aim::forearmWorldTurn(F, {}, 0)) < 1e-3f, "neutral left turned");
+        check(web_aim::turnAngle(web_aim::forearmWorldTurn(F, {}, 1)) < 1e-3f, "neutral right turned");
+        const Quat out20 = Quat::around({0, 1, 0}, -20 * deg);
+        const Vec3 webOut = (out20 * web_aim::forearmWorldTurn(F, out20, 0)).rotate({0, 0, -1});
+        check(length(webOut - F) < 1e-3f, "palm-out left left the forearm");
+        check(web_aim::signedPalmAngle(F, out20, 0) > .2f, "palm-out left was not positive");
+        const Quat in20 = Quat::around({0, 1, 0}, 20 * deg);
+        const Vec3 webIn = (in20 * web_aim::forearmWorldTurn(F, in20, 0)).rotate({0, 0, -1});
+        check(web_aim::signedPalmAngle(F, in20, 0) < -.2f, "palm-in left was not negative");
+        const float inDeg = std::acos(std::clamp(dot(normalized(webIn), F), -1.f, 1.f)) * 57.29578f;
+        check(std::abs(inDeg - web_aim::forearmInwardDegrees) < .25f, "palm-in was not capped at 15");
+        const Quat roll = Quat::around({0, 0, -1}, .7f);
+        check(web_aim::turnAngle(web_aim::forearmWorldTurn(F, roll, 0)) < 1e-3f,
+              "a roll around the forearm steered the web");
+        const Quat rightOut = Quat::around({0, 1, 0}, 20 * deg);
+        const Vec3 webR = (rightOut * web_aim::forearmWorldTurn(F, rightOut, 1)).rotate({0, 0, -1});
+        check(length(webR - F) < 1e-3f, "palm-out right left the forearm");
+        check(web_aim::signedPalmAngle(F, rightOut, 1) > .2f, "palm-out right was not positive");
     });
 
 
@@ -28374,7 +28520,7 @@ int main() {
               "fresh grip did not leave the zip");
     });
 
-    test("ANIMATED HYBRID web zip: pressed while swinging in vr switches to anim on the press frame", [] {
+    test("ANIMATED HYBRID web zip: pressed while swinging in vr switches to anim when the game takes it", [] {
         using namespace hybrid_owner;
         HybridOwner o;
         Frame f{};
@@ -28384,20 +28530,24 @@ int main() {
         f.webRising = f.state.webbed = f.state.owned = true;
         check(o.update(f, 1'000'000'000) == Domain::vr, "swing not vr");
         f.webRising = false;
-        // Well under the VR minimum and in the air: the press still switches now.
+        // Well under the VR minimum and in the air: the press stays VR until
+        // the game begins the zip (the swing yields).
         f.zipPress = true;
         int64_t t = 1'000'000'000 + 50'000'000;
-        check(o.update(f, t) == Domain::anim && o.enterAnim && o.lastEnterAnim == EnterAnim::zip &&
-                  !o.enterVr,
-              "zip press in vr not anim on the press frame");
+        check(o.update(f, t) == Domain::vr && !o.enterAnim && o.zipNs == t,
+              "zip press in vr left before the game took it");
         check(std::strcmp(enterAnimName(EnterAnim::zip), "zip") == 0 &&
                   std::strcmp(enterAnimName(EnterAnim::land), "land") == 0,
               "enter-anim names");
         f.zipPress = false;
+        check(o.update(f, t += 11'000'000) == Domain::vr && !o.enterAnim,
+              "zip press in vr left while still waiting");
         // The game takes him (game_swing::AirYield): the swing lets go and its webs too.
-        check(o.update(f, t += 11'000'000) == Domain::anim, "web still held the press frame after");
         f.state.webbed = f.state.owned = false;
         f.state.zipping = true; // its zip's keys still going out
+        check(o.update(f, t += 11'000'000) == Domain::anim && o.enterAnim &&
+                  o.lastEnterAnim == EnterAnim::zip && !o.enterVr,
+              "game zip start not anim");
         f.speedH = 28.f;
         for (int i = 0; i < 200; ++i) {
             if (i == 30)
@@ -28410,7 +28560,7 @@ int main() {
         check(o.update(f, t += 11'000'000) == Domain::anim && o.zipNs < 0 && !o.enterVr, "zip landing");
     });
 
-    test("ANIMATED HYBRID web zip: a press the game refuses gives the swing back after the ask window", [] {
+    test("ANIMATED HYBRID web zip: a press the game refuses never leaves vr", [] {
         using namespace hybrid_owner;
         for (int webbed = 0; webbed < 2; ++webbed) {
             HybridOwner o;
@@ -28424,18 +28574,18 @@ int main() {
             f.state.webbed = webbed != 0;
             const int64_t press = 2'000'000'000;
             f.zipPress = true;
-            check(o.update(f, press) == Domain::anim, "refused: press not anim");
+            check(o.update(f, press) == Domain::vr && !o.enterAnim && o.zipNs == press,
+                  "refused: press left vr");
             f.zipPress = false;
             // The swing goes on carrying him (no point, nothing to strike).
             int64_t t = press;
             while ((t += 11'000'000) < press + zipAskNs)
-                check(o.update(f, t) == Domain::anim, "refused: left anim inside the ask window");
-            check(o.update(f, press + zipAskNs) == Domain::vr && o.enterVr &&
-                      o.lastEnterVr == (webbed ? EnterVr::web : EnterVr::swing),
-                  "refused: swing not given back");
+                check(o.update(f, t) == Domain::vr && !o.enterAnim, "refused: left vr inside the ask window");
+            check(o.update(f, press + zipAskNs) == Domain::vr && !o.enterVr && !o.enterAnim && o.zipNs < 0,
+                  "refused: left vr or kept a pending zip");
         }
         check(std::strcmp(enterVrName(EnterVr::swing), "swing") == 0, "swing name");
-        // Spidy's wall: the game's zip from it refused, the wall run is back.
+        // Spidy's wall: the game's zip from it refused, the wall run never left.
         HybridOwner o;
         Frame f{};
         f.state.playing = f.state.fresh = true;
@@ -28443,11 +28593,31 @@ int main() {
         f.state.owned = true;
         check(o.update(f, 0) == Domain::vr && o.lastEnterVr == EnterVr::wallRun, "wall run");
         f.zipPress = true;
-        check(o.update(f, 10'000'000) == Domain::anim && o.lastEnterAnim == EnterAnim::zip, "wall zip press");
+        check(o.update(f, 10'000'000) == Domain::vr && !o.enterAnim && o.zipNs == 10'000'000,
+              "wall zip press left vr");
         f.zipPress = false;
-        check(o.update(f, 10'000'000 + zipAskNs / 2) == Domain::anim, "wall zip held");
-        check(o.update(f, 10'000'000 + zipAskNs) == Domain::vr && o.lastEnterVr == EnterVr::wallRun,
-              "refused wall zip not back on the wall");
+        check(o.update(f, 10'000'000 + zipAskNs / 2) == Domain::vr && !o.enterAnim, "wall zip waiting");
+        check(o.update(f, 10'000'000 + zipAskNs) == Domain::vr && !o.enterVr && o.zipNs < 0,
+              "refused wall zip left vr");
+    });
+
+    test("ANIMATED HYBRID web zip: a speed flight with no swing still yields on the press", [] {
+        using namespace hybrid_owner;
+        HybridOwner o;
+        Frame f{};
+        f.state.playing = f.state.fresh = f.state.grounded = true;
+        o.update(f, 0);
+        f.state.grounded = false;
+        f.speedH = 20.f;
+        int64_t t = 0;
+        while (o.update(f, t += 11'000'000) == Domain::anim && t < speedHoldNs + 100'000'000) {
+        }
+        check(o.domain == Domain::vr && o.lastEnterVr == EnterVr::speed && !f.state.owned,
+              "set-up: speed flight not vr");
+        f.zipPress = true;
+        check(o.update(f, t += 11'000'000) == Domain::anim && o.enterAnim &&
+                  o.lastEnterAnim == EnterAnim::zip,
+              "unowned speed zip press stayed vr");
     });
 
     test("ANIMATED HYBRID web zip: hold ends at the game's longest yield; cutscene clears it", [] {
@@ -28494,8 +28664,11 @@ int main() {
         check(o.update(f, 1'000'000'000) == Domain::vr, "swing not vr");
         f.webRising = false;
         f.zipPress = true;
-        check(o.update(f, 1'300'000'000) == Domain::anim && o.lastEnterAnim == EnterAnim::zip &&
-                  !seedsFacing(o.lastEnterAnim) && o.lastVrNs == 300'000'000,
+        check(o.update(f, 1'300'000'000) == Domain::vr && !o.enterAnim, "zip edge setup: press left vr");
+        f.zipPress = false;
+        f.state.webbed = f.state.owned = false;
+        check(o.update(f, 1'311'000'000) == Domain::anim && o.lastEnterAnim == EnterAnim::zip &&
+                  !seedsFacing(o.lastEnterAnim) && o.lastVrNs == 311'000'000,
               "zip edge: no facing seed, or VR stint not kept");
         // And a landing after a later swing: seeded, its own stint.
         o = {};
@@ -28778,6 +28951,21 @@ int main() {
                            t - std::max(land + landHoldNs, leave + vrMinDwellNs) <= 11'000'000,
                        "the landing skipped the land confirm or the VR minimum");
              }
+         });
+
+    test("ANIMATED HYBRID air adopt: every mid-air takeover snapshots; a grounded non-jump does not", [] {
+             using namespace spidy::hybrid_owner;
+             check(adoptsFromAir(EnterVr::jump, true), "jump on the leave-ground frame");
+             check(adoptsFromAir(EnterVr::jump, false), "jump still airborne");
+             check(adoptsFromAir(EnterVr::airWeb, false), "grip in the air");
+             check(adoptsFromAir(EnterVr::web, false), "web attach in the air");
+             check(adoptsFromAir(EnterVr::rotate, false), "rotate");
+             check(adoptsFromAir(EnterVr::speed, false), "speed");
+             check(adoptsFromAir(EnterVr::swing, false), "swing after a zip");
+             check(adoptsFromAir(EnterVr::wallRun, false), "wallrun leap");
+             check(!adoptsFromAir(EnterVr::web, true), "grounded web");
+             check(!adoptsFromAir(EnterVr::wallRun, true), "grounded wallrun");
+             check(!adoptsFromAir(EnterVr::none, true), "no reason on the ground");
          });
 
     test("ANIMATED HYBRID jump adopt: the first SpidyVR frame is the takeoff's pose, the arms on the "
@@ -29404,6 +29592,12 @@ int main() {
         check(!clearsLook(true, 0.f) && !clearsLook(true, .1f) && clearsLook(true, .6f) &&
                   clearsLook(true, -.6f) && !clearsLook(false, 1.f),
               "CameraLook clear rule");
+        check(!suppressLook(false, true, 1.f), "recheck off still suppressed look");
+        check(suppressLook(true, true, 0.f), "blend still suppressed look");
+        check(suppressLook(true, false, .5f), "held run after handoff still suppressed look");
+        check(!suppressLook(true, false, .05f), "released stick after blend still suppressed look");
+        check(!doneRecheck(true, 0.f) && !doneRecheck(false, .5f) && doneRecheck(false, .05f),
+              "handoff recheck settle");
     });
 
     // HEAD SEAT (head_seat.hpp): the head-locked view, built exactly as game_xr builds it
@@ -29522,8 +29716,8 @@ int main() {
         check(!head_seat::reseat(g, ref, ref.position + Vec3{.01f, 0, 0}, 0) && !g.active &&
                   length(ref.position - Vec3{1, 1.7f, 1}) < 1e-7f,
               "a 1 cm offset should leave the view alone");
-        check(!head_seat::overDrift(g, ref, ref.position + Vec3{.3f, 0, 0}) &&
-                  head_seat::overDrift(g, ref, ref.position + Vec3{0, 0, .4f}),
+        check(!head_seat::overDrift(g, ref, ref.position + Vec3{.15f, 0, 0}) &&
+                  head_seat::overDrift(g, ref, ref.position + Vec3{0, 0, .25f}),
               "backstop threshold");
         check(!head_seat::reseat(g, ref, {NAN, 0, 0}, 0) && !g.active, "a bad head reseated");
         // While gliding, the backstop measures from where the glide lands (no re-trigger every frame).
@@ -29533,8 +29727,50 @@ int main() {
                   head_seat::glideNs == hybrid_handoff::handoffNs,
               "glide window is the handoff's 180 ms");
         check(std::string(head_seat::whyName(head_seat::Why::owner)) == "owner switch" &&
-                  std::string(head_seat::whyName(head_seat::Why::drift)) == "drift",
+                  std::string(head_seat::whyName(head_seat::Why::drift)) == "drift" &&
+                  std::string(head_seat::whyName(head_seat::Why::action)) == "action",
               "diag names");
+    });
+
+    test("HEAD SEAT: a glide already heading there does not restart for a small chase", [] {
+        head_seat::Glide g;
+        Pose ref{{1, 1.7f, 1}, Quat::yaw(.2f)};
+        const Vec3 head0 = ref.position + Vec3{.15f, 0, 0};
+        check(head_seat::reseat(g, ref, head0, 0), "start");
+        const int64_t started = g.startNs;
+        const Vec3 from0 = g.from;
+        check(!head_seat::reseat(g, ref, head0 + Vec3{.03f, 0, 0}, 50'000'000) && g.active &&
+                  g.startNs == started && length(g.from - from0) < 1e-7f &&
+                  length(g.to - (head0 + Vec3{.03f, 0, 0})) < 1e-6f,
+              "a small chase restarted the glide");
+        check(!head_seat::reseat(g, ref, g.to, 80'000'000) && g.startNs == started, "same target reseated");
+        head_seat::step(g, ref, 80'000'000);
+        const Vec3 at = ref.position;
+        check(head_seat::reseat(g, ref, head0 + Vec3{.3f, 0, 0}, 80'000'000) && g.startNs == 80'000'000 &&
+                  length(ref.position - at) < 1e-6f,
+              "a large jump did not retarget");
+    });
+
+    test("HANDOFF polish: CameraLook reset drops a leftover turn; one hand climb does not busy the other", [] {
+        game_pad::CameraLook look;
+        const Vec3 north{0, 0, -1};
+        const auto at = [](float deg) {
+            const float r = deg * (3.14159265f / 180.f);
+            return Vec3{std::sin(r), 0.f, -std::cos(r)};
+        };
+        check(look.update(at(30), north, true) != 0 && look.turns() == 1, "setup turn");
+        look.reset();
+        check(look.error() == 0.f &&
+                  look.update(at(game_pad::CameraLook::startDegrees - 2), north, true) == 0,
+              "reset left a leftover turn");
+        check(!spidy::handBusy(0, false, false, 2u, 0u) && spidy::handBusy(1, false, false, 2u, 0u),
+              "right climb locked the left");
+        check(!spidy::handBusy(1, false, false, 0u, 1u) && spidy::handBusy(0, false, false, 0u, 1u),
+              "left crawl locked the right");
+        check(spidy::handBusy(0, true, false, 0u, 0u) && spidy::handBusy(1, false, true, 0u, 0u),
+              "own grab/web not busy");
+        check(!spidy::handBusy(0, false, false, 0u, 0u) && !spidy::handBusy(2, true, true, 3u, 3u),
+              "free hand or bad index");
     });
 
     test("ANIMATED HYBRID handoff: adoptEyesOrigin matches world eyes within 1 mm / 0.1 deg", [] {
