@@ -285,7 +285,7 @@ JumpAdopt jumpAdopt();
 // ANIMATED ARMS: per-arm overlay weights (0..1) read by the next pose job when
 // Flags::armsOverlay is set. Cleared by resyncAfterYield. No Command layout change.
 void setArmOverlay(float left, float right);
-// ANIMATED TORSO: when true with armsOverlay, body::Targets::torsoAssist bounds
+// ANIMATED TORSO: with armsOverlay and mapped head, player articulation drives
 // waist→chest toward controller reaches. Cleared by resyncAfterYield. No
 // Command layout / version change (side channel, like setArmOverlay).
 void setTorsoAssist(bool on);
@@ -316,8 +316,20 @@ struct OverlayTracking {
     uint64_t job{};
     uint64_t serial{};
     animated_view::Frame targetFrame = animated_view::Frame::none;
+    // Positions are offsets from player feet, already rotated into WORLD axes.
+    // Absolute action/ray inputs add the current actual actor root exactly once.
     Vec3 grip[2]{}, wrist[2]{}, solvedWrist[2]{}, elbow[2]{};
-    Quat gripOri[2]{}, aim[2]{};
+    Quat gripOri[2]{}, aim[2]{}, sourceGripOri[2]{};
+    // Actual controller-equivalent pose reconstructed from rendered hand axes;
+    // requested grip/wrist above remain diagnostics, never silently relabeled.
+    float headError{}, rootDrift{};
+    uint32_t playerTorso{};
+    Vec3 root{}; // actual CURRENT actor origin for this internal snapshot
+    Pose mappedHead{}; // same-job HMD target, relative to root in WORLD axes
+    uint32_t headValid{};
+    Pose actualGrip[2]{};
+    uint32_t actualValid[2]{};
+    uint64_t deadlineMs{}; // originating body command lease, not last read time
     float residual[2]{-1, -1}, angle[2]{-1, -1};
     uint32_t valid[2]{}, reachClamped[2]{};
     float requestedWeight[2]{}, armWeight[2]{};
@@ -326,6 +338,10 @@ struct OverlayTracking {
     uint32_t remapped{}; // 1 when armsOnly chest remap ran
     uint32_t softlock{}; // 1 when remap used softlock/headbone player frame
 };
+// Gameplay only: 1 fresh original calibrated eye anchor in current world transform,
+// 0 not managed by player torso, -1 managed but missing/expired (never read
+// our modified head as the next camera anchor). Cinematics never call this.
+int authoredHead(uintptr_t instance, Mat4& world);
 OverlayTracking overlayTracking();
 // A render frame begins (the stereo module's render setup, main thread).
 void renderFrame();
@@ -367,6 +383,10 @@ struct Forearms {
 static_assert(sizeof(Forearm) == 60 && sizeof(Forearms) == 160);
 // The latest Forearms (a copy); `job` 0 before any.
 Forearms forearms();
+// One pose-job snapshot for animation actions: origin, physical-frame mapping
+// and the rendered forearm must not come from independently sampled jobs.
+struct ActionFrame { OverlayTracking tracking; Forearms forearms; };
+ActionFrame actionFrame();
 // HEAD PROBE (head_probe.hpp; off by default): while on, each hero pose job
 // also notes the head bone as the game's animation wrote it and as the body
 // left it - read only, nothing written to the pose. The latest (a copy; job

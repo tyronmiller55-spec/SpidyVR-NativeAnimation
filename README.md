@@ -1,22 +1,100 @@
-# SpidyVR Native Animation
+# SpidyVR Native Animation — cumulative 0.8.5 development playtest
 
-A modified community build on **Ilya Mezerowsky's SpidyVR 0.8.1 / main**.
-Insomniac's original animation suite keeps playing while SpidyVR controls,
-your headset and controller-tracked arms are layered over it. Inspired by
-**vrfloofy's first-person mod**. GPL-3.0; not an official Marvel or Insomniac product.
+An experimental community extension of **Ilya Mezerowsky's SpidyVR 0.8.5** for
+Marvel's Spider-Man Remastered. Insomniac's native animations supply locomotion
+while SpidyVR provides VR interaction and player-controlled upper-body actions.
+Inspired by **vrfloofy's first-person mod**. GPL-3.0; not endorsed by Ilya,
+Insomniac, Sony or Marvel. Original authorship, support links and notices remain.
 
-Open **Spidy Launcher.exe** and select **Native Animation**, between Options and
-Controls. The headset has the same contiguous **NATIVE ANIMATION** settings block
-under SPIDY VR. New installations start in the recommended mode; existing saved
-settings and profiles retain their stored choices. [Player guide](docs/PLAYERS.md).
+## Current integrated source
 
-Use this fork for community-build support:
-https://github.com/tyronmiller55-spec/SpidyVR . The original Spidy launcher name,
-author credits, Discord and Ko-fi links are retained; Native Animation bugs do
-not belong in upstream Spidy's bug tracker. Source is provided under GPL-3.0.
+This cumulative snapshot contains working source
+[`09526f19f00b54819641f0bde080894105b10e85`](https://github.com/tyronmiller55-spec/SpidyVR/commit/09526f19f00b54819641f0bde080894105b10e85).
+Runtime, tests and build tools match that source exactly. Only this README,
+[publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md) and the deliberate
+omission of the release workflow differ. Publication history is retained.
 
-Windows package: **Spidy-0.8.1-win64-native-animation.zip**. Extract into a writable
-folder outside the game install. Never copy the mod into the game's folder.
+**Development build, not headset acceptance.** Windows compilation, all **6/6
+CTest suites**, **187 Python tests** and packaged embedded-Python import checks
+passed in [this exact-source Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42544305988).
+These checks do not run the live game/headset. Final torso alignment, indicator
+readability, physical damage and no-shot grip cancellation still require testing
+of this exact cumulative build; earlier gameplay logs identify an older source.
+
+## Native Animation work included
+
+- Ground idle, walking and running default to native animation when no genuine
+  blocking action is active. Original SpidyVR operation is retained in its air/
+  wallrun ownership paths; native airborne animation options remain available.
+- HMD/controller-driven upper torso, articulated spine/head/clavicles and arm IK
+  layered over native lower-body locomotion. Root position, collision and momentum
+  are not replaced. The explicit ANIMATED AIR SPIN policy remains intact.
+- Web balls, game-rope/zip wrist endpoints and arm feedback share actual solved
+  hand/world frames, with current actor-root rotation and translation applied once.
+  Existing held-web physics aim is preserved. Mirrored forearm clamp policy stays
+  outward 0 degrees / inward 15 degrees.
+- Animation-owned punches require genuine player-swung contact and physical
+  motion; passive animation alone must not damage. No automatic ranged-punch
+  teleport/lunge or automated punching is enabled in that mode. Target/cue artwork
+  is feedback, not a guarantee of a hit or permission to teleport.
+- SpidyVR targeting/aim and combat/sense indicators under native animation,
+  mapped look/gaze, actual-camera wrist/phone/wheel presentation and stale pose/
+  ownership/render-generation guards. No blanket replacement of physical tracking
+  inputs with solved poses.
+- Grip cancellation is intended to activate original SpidyVR **without firing a
+  web**; the held cancel gesture stays suppressed. Releasing on eligible ground
+  restores native ownership that update. Independent ordinary OG grip web actions
+  remain. **This contract still needs exact-build headset verification.**
+- Earlier airborne-adoption, actual-game Y/zip handoff and shooter diagnostics
+  remain included. No new procedural-leg selector, synthetic strafe/backpedal
+  animation, extra cancel binding or unrequested mechanics.
+
+The underlying SpidyVR suite still provides physical swinging, web shooters and
+existing gadgets/grabs/web ties/web lines, walls, VR UI and optional effects.
+Their original controls/settings remain documented below and in the
+[player guide](docs/PLAYERS.md); original ranged-punch behavior described below
+is not the animation-owned physical-contact policy above. Existing saved
+settings/profiles retain their choices. The launcher has a **Native Animation**
+panel and the headset's **NATIVE ANIMATION** settings block; player torso work
+uses the existing ARMS/TORSO options, not a new binding.
+
+## Install / playtest
+
+Use the **latest cumulative 09526f1 launcher**, not three separate earlier slices.
+The existing verified Windows ZIP is available in the
+[build run's artifacts](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42544305988/artifacts/13642064266)
+(GitHub sign-in may be required; artifact retention is limited). It was also
+provided directly to the owner. **No new GitHub release/tag is created by this
+source integration.** The binary diagnostic stamp is `09526f19f0`, not this
+publication commit's hash.
+
+ZIP SHA-256: `f560c7b42669da8281170132a3f384ea32c9f30e4bfd340e2bff4ceee35fd4bc`.
+
+1. Back up shared `%APPDATA%\Spidy` settings/profiles and keep older builds.
+2. Extract the **entire** ZIP into a **new writable folder**, outside the game's
+   installation. Never mix DLLs/tools or run from inside the ZIP.
+3. Run that folder's **Spidy Launcher.exe**, not an older shortcut. Existing
+   Windows, supported Steam game build, VC++ x64 and OpenXR prerequisites apply.
+4. Read [the latest acceptance sheet](docs/NATIVE_ARM_FEEDBACK_PLAYTEST.md),
+   [torso playtest](docs/PLAYER_UPPER_TORSO_PLAYTEST.md) and
+   [diagnostic counter caveats](docs/WEB_BALL_DIAGNOSTICS.md). Test both hands,
+   root/HMD turns, held-web endpoints, stationary cancel/hold/release, ground
+   idle/walk/run and air/wallrun transitions. Returned/fired counters do not prove
+   visible effects or damage. Send exact-source session logs and visual evidence.
+
+This publication repository intentionally omits the release workflow; source
+build commands below remain available on Windows. Original upstream download/
+update links below point to **Spidy**, not this experimental fork's current ZIP.
+Do not use an upstream launcher update as if it were a Native Animation update.
+
+## Remaining gates
+
+Headset evidence is still needed for the integrated behaviors. The older crash
+needs a dump/stack, not an exception-code guess. Procedural-leg direction-to-pose
+mapping and a remappable physical selector remain undecided/unbound. Genuine
+normal-locomotion strafe/backpedal clips and supported facing/control hooks have
+not been proven; no synthetic substitute is included. Existing tuck controls
+remain unchanged. Integration approval is not a claim these gates are resolved.
 
 ---
 
@@ -320,8 +398,9 @@ Needs Visual Studio 2022 C++ Build Tools with CMake and Ninja, and a Windows SDK
 ```
 
 `Launch Spidy VR.cmd` runs VR straight from a checkout, and `Launch Spidy Lab.cmd`
-opens a standalone OpenXR swinging lab that needs no game. Releases are built on
-GitHub: **Actions > Release > Run workflow**.
+opens a standalone OpenXR swinging lab that needs no game. The original upstream/working repository builds releases on GitHub. This
+publication snapshot deliberately has no release workflow; use the verified
+working-build artifact linked above or build locally on Windows.
 
 ## How it works
 

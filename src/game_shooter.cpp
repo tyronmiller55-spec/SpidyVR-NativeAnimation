@@ -1,3 +1,4 @@
+#include "spidy/animation_cancel.hpp"
 // The web shooter in the game: pulls from the swing's input samples, the
 // game's own web-shooter shots fired through the hero's gadget on the main
 // thread, and what they do where they land (game_shooter.hpp).
@@ -366,10 +367,20 @@ struct Pending {
     uint64_t record{}; // the player's actor, and where it stood for the sample
     Vec3 feet{};
     uint64_t queuedMs{};
+    uint64_t inputSerial{}, generation{};
 };
 constexpr unsigned queueSize = 8;
 Pending queue[queueSize];
 unsigned queued{};
+// Dispatch lease serializes cancellation against an engine call already begun.
+SRWLOCK dispatchLease = SRWLOCK_INIT;
+struct DispatchMutex {
+    void lock_shared() { AcquireSRWLockShared(&dispatchLease); }
+    void unlock_shared() { ReleaseSRWLockShared(&dispatchLease); }
+    void lock() { AcquireSRWLockExclusive(&dispatchLease); }
+    void unlock() { ReleaseSRWLockExclusive(&dispatchLease); }
+} dispatchMutex;
+std::atomic<uint64_t> actionGeneration{1}, actionFloor{};
 
 template <class F> void publish(F change) {
     AcquireSRWLockExclusive(&output);
@@ -466,6 +477,8 @@ uintptr_t gameWebShooter();
 struct Fired {
     uint64_t shot{};
     bool resolved{}, gadget{}, empty{};
+    uint32_t gadgetCalls{}, fallbackCalls{};
+    Vec3 origin{}, direction{};
 };
 // The equipped gadget fired from the hand: with a charge to fire, as the
 // game asks before its own; its own event from the aim written into it; the
@@ -501,6 +514,7 @@ bool fireGadget(uintptr_t weapon, const Pending& p, Vec3 origin, Vec3 forward, F
     event[0xb] = 1;
     std::memcpy(event + 0xc, &id, 4);
     muzzleMatrix(origin, forward, firingMatrix);
+    ++out.gadgetCalls;
     if (!fire(weapon, event))
         return false;
     out.gadget = true;
@@ -516,6 +530,8 @@ bool fireNow(const Pending& p, Fired& out) {
     const Vec3 forward = normalized(p.shot.aimPoint - origin);
     if (!finite(origin) || !finite(p.shot.aimPoint) || length(forward) < .5f)
         return false;
+    out.origin = origin;
+    out.direction = forward;
     if (const auto gadget = equippedGadget())
         return fireGadget(gadget, p, origin, forward, out);
     // The game's own Web Shooter, where it is the gadget the game has equipped
@@ -531,7 +547,11 @@ bool fireNow(const Pending& p, Fired& out) {
         if (fireGadget(own, p, origin, forward, out))
             return true;
         const bool empty = out.empty;
+        const auto gadgetCalls = out.gadgetCalls;
         out = {};
+        out.gadgetCalls = gadgetCalls;
+        out.origin = origin;
+        out.direction = forward;
         out.empty = empty;
     }
     const auto weapon = gadgets.current();
@@ -567,6 +587,7 @@ bool fireNow(const Pending& p, Fired& out) {
     event[0x3a] = 0;
     event[0x3b] = 1;
     muzzleMatrix(origin, forward, firingMatrix);
+    ++out.fallbackCalls;
     if (!fire(weapon, event))
         return false;
     out.resolved = ref && (value<uint32_t>(weapon + 0x68) & 1);
@@ -868,10 +889,26 @@ void fireQueued() {
     for (unsigned i = 0; i < count; ++i) {
         const auto& p = batch[i];
         Fired fired;
-        const bool ok = now - p.queuedMs < leaseMs && fireNow(p, fired);
+        bool expired = now - p.queuedMs >= leaseMs;
+        const bool ok = animation_cancel::dispatchAction(dispatchMutex, p.inputSerial, p.generation,
+            [&] { return animation_cancel::ActionEpoch{actionGeneration.load(), actionFloor.load()}; },
+            [&] {
+                expired = GetTickCount64() - p.queuedMs >= leaseMs;
+                return !expired && fireNow(p, fired);
+            });
         publish([&](Data& d) {
             // A gadget without a charge: its pull dropped, or for the game's
             // Web Shooter answered with the ball.
+            auto& debug = d.diagnostic;
+            shooter_diagnostics::record(debug, expired, ok, fired.shot != 0);
+            debug.gadgetCalls += fired.gadgetCalls;
+            debug.fallbackCalls += fired.fallbackCalls;
+            debug.route = fired.fallbackCalls ? 2 : fired.gadgetCalls ? 1 : 0;
+            debug.hand = static_cast<uint32_t>(p.shot.hand);
+            debug.target = p.shot.target;
+            debug.aimPoint = p.shot.aimPoint;
+            debug.origin = fired.origin;
+            debug.direction = fired.direction;
             d.emptyPulls += fired.empty;
             if (!ok) {
                 ++d.dropped;
@@ -921,11 +958,18 @@ uint64_t frame(void* self, float seconds, uint64_t a, uint64_t b) {
 }
 bool enqueue(const Pending& p) {
     AcquireSRWLockExclusive(&queueLock);
+    const bool current = animation_cancel::validAction(p.inputSerial, p.generation,
+        actionGeneration.load(), actionFloor.load());
     const bool room = queued < queueSize;
-    if (room)
+    if (room && current)
         queue[queued++] = p;
     ReleaseSRWLockExclusive(&queueLock);
-    return room;
+    publish([&](Data& d) {
+        d.diagnostic.queued += room && current;
+        d.diagnostic.queueFull += !room;
+        d.diagnostic.rejected += !current;
+    });
+    return room && current;
 }
 } // namespace
 
@@ -1052,9 +1096,13 @@ uint32_t game_shooter::start(uintptr_t gameBase) {
         AcquireSRWLockExclusive(&updating);
         shooter.reset();
         ReleaseSRWLockExclusive(&updating);
-        AcquireSRWLockExclusive(&queueLock);
-        queued = 0;
-        ReleaseSRWLockExclusive(&queueLock);
+        animation_cancel::revokeActions(dispatchMutex, [&] {
+            actionFloor = 0;
+            ++actionGeneration;
+            AcquireSRWLockExclusive(&queueLock);
+            queued = 0;
+            ReleaseSRWLockExclusive(&queueLock);
+        });
         AcquireSRWLockExclusive(&flyingLock);
         for (auto& f : flying)
             f = {};
@@ -1125,7 +1173,7 @@ bool game_shooter::running() {
     return enabled.load(std::memory_order_relaxed);
 }
 void game_shooter::update(float seconds, const Input& in, uint32_t busy, uint64_t record, Vec3 feet,
-                          const WorldQueries& world) {
+                          const WorldQueries& world, uint64_t inputSerial) {
     if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
         return;
     struct Release {
@@ -1139,6 +1187,7 @@ void game_shooter::update(float seconds, const Input& in, uint32_t busy, uint64_
         gadgets.around(feet);
     if (record)
         heroRecord.store(record, std::memory_order_relaxed);
+    const uint64_t generation = actionGeneration.load();
     std::array<ShooterHand, 2> hands{};
     for (int i = 0; i < 2; ++i) {
         const auto& h = in.hands[static_cast<size_t>(i)];
@@ -1179,7 +1228,7 @@ void game_shooter::update(float seconds, const Input& in, uint32_t busy, uint64_
                     shot = shooter.aim(i, aim, {}, world, gaze);
             }
             ++requested;
-            if (!enqueue({shot, record, feet, GetTickCount64()}))
+            if (!enqueue({shot, record, feet, GetTickCount64(), inputSerial, generation}))
                 ++dropped;
         }
     }
@@ -1207,6 +1256,22 @@ bool game_shooter::webbedUp(uint64_t record) {
         up |= w.record == record && w.upAt && now - w.upAt <= static_cast<uint64_t>(webbedSeconds * 1000);
     ReleaseSRWLockShared(&webbingLock);
     return up;
+}
+void game_shooter::invalidatePending(uint64_t inputSerial) {
+    // Never hold the swing control lock while waiting for an in-flight engine
+    // callback. Once this returns, no older batch may begin a dispatch.
+    unsigned revoked{};
+    animation_cancel::revokeActions(dispatchMutex, [&] {
+        actionFloor.store(std::max(actionFloor.load(), inputSerial));
+        ++actionGeneration;
+        AcquireSRWLockExclusive(&queueLock);
+        revoked = queued;
+        queued = 0;
+        ReleaseSRWLockExclusive(&queueLock);
+        // gadgetFire is persistent wheel selection, not an action latch.
+        // Revocation must not silently turn the selected gadget off.
+    });
+    publish([&](Data& d) { d.dropped += revoked; d.diagnostic.rejected += revoked; });
 }
 void game_shooter::cancel() {
     if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
@@ -1265,7 +1330,7 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyShooterTest(void* input) {
     shot.direction = normalized(t.aimPoint - t.origin);
     shot.target = t.target;
     shot.surface = true;
-    if (!enqueue({shot, 0, {}, GetTickCount64()}))
+    if (!enqueue({shot, 0, {}, GetTickCount64(), 0, actionGeneration.load()}))
         return 9505;
     const auto limit = GetTickCount64() + 1000;
     for (;;) {

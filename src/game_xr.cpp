@@ -1,3 +1,4 @@
+#include "spidy/animation_cancel.hpp"
 // Bounded first-person OpenXR integration using the game's two native views.
 #include "spidy/native_appearance.hpp"
 #include "spidy/native_body.hpp"
@@ -39,6 +40,7 @@
 #include "spidy/swing_coupling.hpp"
 #include "spidy/game_time.hpp"
 #include "spidy/game_tracking.hpp"
+#include "spidy/feedback_frame.hpp"
 #include "spidy/game_warp.hpp"
 #include "spidy/hand_pose.hpp"
 #include "spidy/headset_smoothing.hpp"
@@ -1052,6 +1054,10 @@ DWORD WINAPI run(void*) {
         animated_moves::Handoff animatedMovesHandoff{};
         // ANIMATED ONLY (off by default): cutscene/stale grace and state diag.
         animated_moves::StayLatch animatedOnlyLatch{};
+        animation_cancel::Gate gripCancelGate;
+        uint32_t gripCancelToken{};
+        uint64_t actionFrameFloor{};
+        uint64_t cancellationSerialFloor{};
         bool animatedOnlyHeldWas{};
         int animatedOnlyStateWas = -1;
         // ANIMATED AIR SPIN (off by default): smoothed spherical / momentum turn.
@@ -2922,7 +2928,42 @@ DWORD WINAPI run(void*) {
                         // both are optional and, like the grab, can be switched on later.
                         applySettings();
                     }
+                    // Raw motion.grips remains the next IK input. Action emitters
+                    // use a separate completed-job pose; never feed solved hands back.
+                    std::array<Pose,2> actionGrips = motion.grips;
+                    uint32_t actionGripMask{};
+                    Pose actionHead{};
+                    bool actionHeadValid{}, nativeActionSample{};
+                    uint64_t actionPoseSerial{}, actionPoseDeadline{};
+                    const Pose physicalGaze = motion.gazePose;
+                    const bool physicalGazeValid = motion.gazeValid;
+                    animation_cancel::Decision gripCancel;
                     if (swingStarted) {
+                        unsigned webButtons{}, shotButtons{}, trackedHands{};
+                        for (unsigned i = 0; i < 2; ++i) {
+                            const auto& h = motion.swing.hands[i];
+                            webButtons |= (h.grip > .5f ? 1u : 0u) << i;
+                            shotButtons |= (h.trigger > .5f ? 1u : 0u) << i;
+                            trackedHands |= (h.tracked ? 1u : 0u) << i;
+                        }
+                        gripCancel = gripCancelGate.update(
+                            animation_cancel::enabled(bodyStarted, values.animatedHybrid,
+                                                      values.animatedMoves, calibrationInput),
+                            hybridOwner.domain == hybrid_owner::Domain::anim,
+                            motion.active && !flatScreen && controlsVisible && spiderMan,
+                            webButtons, shotButtons, trackedHands);
+                        if (gripCancel.cancel) {
+                            if (!++gripCancelToken) ++gripCancelToken;
+                            hybridZipPress = hybridJumpAsk = false;
+                            stickPush.cancel();
+                            zipPress.cancel();
+                            diag_log::writef("hybrid: grip cancel consumed (no action), token %u fresh %u web %u shot %u tracked %u",
+                                             gripCancelToken, swingFresh ? 1u : 0u, webButtons,
+                                             shotButtons, trackedHands);
+                        }
+                        // Suppress before submitSwing: ownership is evaluated later in
+                        // this loop, too late to prevent an outgoing grip web otherwise.
+                        animation_cancel::suppress(motion.swing.hands, gripCancel);
                         if (setSwingPoseCoupling) {
                             game_swing::PoseCoupling pose;
                             pose.inertia = swing_coupling::scales(native_body::tuckWeight()).inertia;
@@ -2931,6 +2972,8 @@ DWORD WINAPI run(void*) {
                         game_swing::Command input;
                         input.wallRotate = motion.wallRotate;
                         input.serial = ++serial;
+                        input.animationCancel = gripCancelToken;
+                        if (gripCancel.cancel) cancellationSerialFloor = input.serial;
                         input.focused = motion.active && !flatScreen && controlsVisible && spiderMan;
                         input.sampleTimeNs = frame.predictedDisplayTime > 0 ? frame.predictedDisplayTime : 1;
                         input.sampleSeconds =
@@ -2985,24 +3028,102 @@ DWORD WINAPI run(void*) {
                             input.hands[i] = {hand.aim, hand.gripRelativeToHead, hand.tracked, hand.trigger,
                                               hand.grip};
                             input.wallPositions[i] = motion.grips[i].position;
-                            input.wallGrips[i] = hand.tracked ? frame.hands[i].squeeze : 0.f;
+                            input.wallGrips[i] = hand.tracked &&
+                                !((gripCancel.webBlocked | gripCancel.shotBlocked) & (1u << i))
+                                    ? frame.hands[i].squeeze : 0.f;
                         }
+                        const bool nativeGroundNext = swingFresh &&
+                            (swingState.grounded || swingState.wall == hybrid_owner::surfaceGame) &&
+                            swingState.wall != hybrid_owner::surfaceWall && !gripCancel.holdVr;
+                        const bool animationActions = animation_cancel::nativeActions(
+                            values.animatedHybrid && values.animatedMoves,
+                            animatedMovesHandoff.yielding, gripCancel.holdVr, nativeGroundNext);
+                        input.actionMode = animationActions ? 1u : 0u;
+                        // Release restores ground animation later in THIS loop. Do not
+                        // allow a one-sample original-VR lunge/rig shot before that
+                        // ownership transaction has a matching displayed hand solve.
+                        if (animationActions && (!animatedMovesHandoff.yielding || !values.animatedArms)) {
+                            for (unsigned i = 0; i < 2; ++i) if (input.hands[i].grip <= .5f) {
+                                input.hands[i].tracked = 0;
+                                motion.swing.hands[i].tracked = false;
+                            }
+                        }
+                        if (gripCancel.webBlocked || gripCancel.shotBlocked) input.wallRotate = 0;
+                        if (gripCancel.cancel) {
+                            input.asks = input.jump = 0;
+                            input.leap = 0;
+                        }
+                        native_body::ActionFrame handFrame;
+                        bool handFrameRead{};
+                        const auto sampleHandFrame = [&]() -> const native_body::ActionFrame& {
+                            if (!handFrameRead) {
+                                handFrame = native_body::actionFrame();
+                                handFrameRead = true;
+                            }
+                            return handFrame;
+                        };
                         // Native Animation: gloves sit in the head-bone frame while the
                         // animation owns. Aim web balls and markers from those same
-                        // gloves. A web-hold on a hand is how you leave the animation —
-                        // that hand keeps the tracking-rig aim so the SpidyVR web leaves
-                        // the controller.
-                        if (values.animatedHybrid && values.animatedArms &&
-                            animatedMovesHandoff.yielding) {
-                            const auto overlay = native_body::overlayTracking();
-                            if (overlay.targetFrame != animated_view::Frame::none) {
-                                for (unsigned i = 0; i < 2; ++i) {
-                                    if (!overlay.valid[i] || !input.hands[i].tracked)
-                                        continue;
-                                    if (mapAimToDisplayedGrip(input.hands[i].aim,
-                                                              {overlay.grip[i], overlay.gripOri[i]}, i,
-                                                              input.hands[i].grip))
-                                        motion.swing.hands[i].aim = input.hands[i].aim;
+                        // gloves. Grip cancel is already consumed above; it never maps
+                        // or dispatches a web. An existing attached air web remains an
+                        // arm action when returning to native ground movement.
+                        if (animationActions && values.animatedArms && animatedMovesHandoff.yielding) {
+                            nativeActionSample = true;
+                            const auto& overlay = sampleHandFrame().tracking;
+                            const bool current = overlay.targetFrame != animated_view::Frame::none &&
+                                animation_cancel::validPose(overlay.serial, actionFrameFloor,
+                                                           overlay.deadlineMs, GetTickCount64());
+                            // Look/gaze are world-space targeting inputs, not raw IK.
+                            // Use the same pose job/root and owner lease as the hands.
+                            actionPoseSerial = overlay.serial;
+                            actionPoseDeadline = overlay.deadlineMs;
+                            actionHeadValid = current && overlay.headValid &&
+                                worldDisplayedPose(actionHead, overlay.mappedHead, overlay.root);
+                            input.look = {};
+                            if (actionHeadValid) {
+                                if (input.focused)
+                                    input.look = actionHead.orientation.rotate({0,0,-1});
+                                motion.gazePose = feedback_frame::transport(
+                                    motion.headPose, actionHead, motion.gazePose);
+                                if (length(input.gaze) > .5f) {
+                                    input.gazeOrigin = motion.gazePose.position;
+                                    input.gaze = motion.gazePose.orientation.rotate({0,0,-1});
+                                }
+                            } else {
+                                input.eyeAim = 0;
+                                input.gaze = {};
+                                input.gazeOrigin = {};
+                                motion.gazeValid = false;
+                            }
+                            for (unsigned i = 0; i < 2; ++i) {
+                                if (!input.hands[i].tracked) continue;
+                                if (!current || !overlay.valid[i] || !overlay.actualValid[i]) {
+                                    // Never dispatch a free-hand animation action using a
+                                    // prior owner's pose or the unrelated tracking rig.
+                                    if (input.hands[i].grip <= .5f && !gripCancel.cancel) {
+                                        input.hands[i].tracked = 0;
+                                        motion.swing.hands[i].tracked = false;
+                                    }
+                                    continue;
+                                }
+                                // Held-web force/anchor aim stays unchanged, but its
+                                // rendered endpoint must still meet the actual hand.
+                                if (worldDisplayedPose(actionGrips[i], overlay.actualGrip[i], overlay.root))
+                                    actionGripMask |= 1u << i;
+                                if (mapAimToDisplayedGrip(input.hands[i].aim,
+                                                          overlay.actualGrip[i],
+                                                          overlay.root, i, input.hands[i].grip)) {
+                                    motion.swing.hands[i].aim = input.hands[i].aim;
+                                    input.physicalToContact[i] = overlay.actualGrip[i].orientation *
+                                        overlay.sourceGripOri[i].conjugate();
+                                    if (overlay.residual[i] >= 0 && overlay.residual[i] <= web_aim::forearmMiss &&
+                                        overlay.armWeight[i] > .85f)
+                                        input.actionMode |= animationActions ? (2u << i) : 0u;
+                                } else if (input.hands[i].grip <= .5f) {
+                                    // Rejected world anchor/orientation is not permission
+                                    // to fire the unrelated original tracking-rig pose.
+                                    input.hands[i].tracked = 0;
+                                    motion.swing.hands[i].tracked = false;
                                 }
                             }
                         }
@@ -3016,8 +3137,9 @@ DWORD WINAPI run(void*) {
                              values.wristShooters) &&
                             swingWebTurns) {
                             using web_aim::Fallback;
-                            const auto arms = native_body::forearms();
-                            const auto overlay = native_body::overlayTracking();
+                            const auto& snapshot = sampleHandFrame();
+                            const auto& arms = snapshot.forearms;
+                            const auto& overlay = snapshot.tracking;
                             forearmStaleFrames = arms.job != forearmJob ? 0u : forearmStaleFrames + 1;
                             forearmJob = arms.job;
                             const float dt = input.sampleSeconds;
@@ -3038,7 +3160,10 @@ DWORD WINAPI run(void*) {
                                     why = Fallback::untracked;
                                 else if (!native_body::drawn() || !f.valid)
                                     why = Fallback::notSolved;
-                                else if (forearmStaleFrames > web_aim::forearmStaleFrames)
+                                else if (forearmStaleFrames > web_aim::forearmStaleFrames ||
+                                         (values.animatedHybrid &&
+                                          !animation_cancel::validPose(overlay.serial, actionFrameFloor,
+                                                                     overlay.deadlineMs, GetTickCount64())))
                                     why = Fallback::stale;
                                 else if (!(f.handError >= 0 && f.handError <= web_aim::forearmMiss))
                                     why = Fallback::wristMiss;
@@ -3570,7 +3695,7 @@ DWORD WINAPI run(void*) {
                         for (auto& mark : senseMarks)
                             mark.live = false;
                         if (sensing && input.focused) {
-                            const Pose& eyes = motion.headPose;
+                            const Pose& eyes = actionHeadValid ? actionHead : motion.headPose;
                             for (uint32_t i = 0; i < std::min<uint32_t>(senseNow.count, 6); ++i) {
                                 const auto& t = senseNow.threats[i];
                                 if (!t.attacker || !finite(t.head) || !t.answer || t.answer > 3)
@@ -3591,7 +3716,8 @@ DWORD WINAPI run(void*) {
                                     ++senseShown;
                                     const Vec3 to = t.head - eyes.position;
                                     const Vec3 right = eyes.orientation.rotate({1, 0, 0});
-                                    const bool placed = length(to) > 1e-3f && validTrackedPose(eyes);
+                                    const bool placed = length(to) > 1e-3f && validTrackedPose(eyes) &&
+                                                        (!nativeActionSample || actionHeadValid);
                                     const float side = placed ? dot(normalized(to), right) : 0.f;
                                     const bool dodge = t.answer == static_cast<uint8_t>(SenseAnswer::Dodge);
                                     const int64_t until = frame.predictedDisplayTime + 90'000'000;
@@ -3727,6 +3853,28 @@ DWORD WINAPI run(void*) {
                                     static_cast<unsigned long long>(listed.emptyPulls),
                                     static_cast<unsigned long long>(listed.hands[0].shots),
                                     static_cast<unsigned long long>(listed.hands[1].shots));
+                                const auto& d = listed.diagnostic;
+                                diag_log::writef(
+                                    "wb dispatch: q%llu full%llu exp%llu call%llu rej%llu obj%llu unk%llu g%llu f%llu",
+                                    (unsigned long long)d.queued, (unsigned long long)d.queueFull,
+                                    (unsigned long long)d.expired, (unsigned long long)d.callSuccess,
+                                    (unsigned long long)d.rejected, (unsigned long long)d.objectKnown,
+                                    (unsigned long long)d.objectUnknown, (unsigned long long)d.gadgetCalls,
+                                    (unsigned long long)d.fallbackCalls);
+                                // Snapshot, not a record of every shot: bounded by the existing one-second cadence.
+                                const auto event = d.expired + d.callSuccess + d.rejected;
+                                static uint64_t lastDispatchEvent{};
+                                if (event && event != lastDispatchEvent) {
+                                    lastDispatchEvent = event;
+                                    diag_log::writef(
+                                        "wb event %llu: hand%u route%u outcome%u muzzle %.3g %.3g %.3g dir %.3g %.3g %.3g",
+                                        (unsigned long long)event, d.hand, d.route, d.outcome,
+                                        d.origin.x, d.origin.y, d.origin.z, d.direction.x, d.direction.y, d.direction.z);
+                                    diag_log::writef(
+                                        "wb aim %llu: point %.3g %.3g %.3g target %llx last-hit %llx (not hit/visibility proof)",
+                                        (unsigned long long)event, d.aimPoint.x, d.aimPoint.y, d.aimPoint.z,
+                                        (unsigned long long)d.target, (unsigned long long)listed.lastHit);
+                                }
                             }
                         }
                         fightNear = input.focused && ((fighting && strikes.cueTarget != 0) || punch.bots != 0);
@@ -3751,7 +3899,7 @@ DWORD WINAPI run(void*) {
                                 hand.tracked = motion.swing.hands[from].tracked;
                                 hand.attachedAt = rope.key;
                                 hand.anchor = trail ? trailEnds[from] : swingState.webs[from].anchor;
-                                hand.wrist = webShooter(motion.grips[from], from).position;
+                                hand.wrist = webShooter(actionGrips[from], from).position;
                                 if (hand.attached == 1 && flightVisual[from].flying())
                                     hand.anchor = flightVisual[from].tip();
                                 if (hand.attached == 1 && flightVisual[from].flying() &&
@@ -3793,7 +3941,7 @@ DWORD WINAPI run(void*) {
                                         rope.tracked = 1;
                                         rope.attachedAt = static_cast<int64_t>(lineState.zipKey);
                                         rope.anchor = lineState.zipTo;
-                                        rope.wrist = webShooter(motion.grips[hand], hand).position;
+                                        rope.wrist = webShooter(actionGrips[hand], hand).position;
                                         bent[i].count = 0;
                                         break;
                                     }
@@ -3804,7 +3952,7 @@ DWORD WINAPI run(void*) {
                                 const auto lower = static_cast<unsigned>(1 - upper);
                                 const int slot = webRopes.slot(lower);
                                 if (slot >= 0 && motion.swing.hands[lower].tracked) {
-                                    const Vec3 wrist = webShooter(motion.grips[lower], lower).position;
+                                    const Vec3 wrist = webShooter(actionGrips[lower], lower).position;
                                     webs.held.rope = static_cast<uint32_t>(slot) + 1;
                                     webs.held.wrist = wrist;
                                     webs.held.slack =
@@ -5113,9 +5261,11 @@ DWORD WINAPI run(void*) {
                         felt.live = immersive;
                         felt.groups = hapticGroups();
                         // The room's turn into the world: the world's head over the room's.
-                        if (validTrackedPose(frame.head) && validTrackedPose(motion.headPose))
+                        const Pose& feedbackHead = actionHeadValid ? actionHead : motion.headPose;
+                        const bool feedbackHeadValid = !nativeActionSample || actionHeadValid;
+                        if (feedbackHeadValid && validTrackedPose(frame.head) && validTrackedPose(feedbackHead))
                             torso = facing.update(frame.head.orientation,
-                                                  motion.headPose.orientation * frame.head.orientation.conjugate(),
+                                                  feedbackHead.orientation * frame.head.orientation.conjugate(),
                                                   frame.seconds);
                         const bool fresh = swingStarted && swingState.status && swingState.qpc &&
                                            static_cast<int64_t>(swingState.qpc) > now.QuadPart - frequency.QuadPart / 10 &&
@@ -5142,8 +5292,8 @@ DWORD WINAPI run(void*) {
                         if (lost > 0 && immersive) {
                             ++hits;
                             const float strength = std::clamp(lost * 4, 0.f, 1.f);
-                            const Vec3 to = blowFrom - (motion.headPose.position - Vec3{0, .4f, 0});
-                            if (blowSeen && frame.predictedDisplayTime - blowSeen < 1'000'000'000 && length(to) > .1f) {
+                            const Vec3 to = blowFrom - (feedbackHead.position - Vec3{0, .4f, 0});
+                            if (feedbackHeadValid && blowSeen && frame.predictedDisplayTime - blowSeen < 1'000'000'000 && length(to) > .1f) {
                                 ++aimedHits;
                                 feelFrom(body_haptics::Kind::hit, -1, strength, to);
                             } else {
@@ -5720,7 +5870,11 @@ DWORD WINAPI run(void*) {
                         hybrid_owner::Frame hybridFrame;
                         hybridFrame.state = animState;
                         hybridFrame.webRising = webNow && !hybridWebWas;
-                        hybridFrame.webIntent = webAimIntent;
+                        hybridFrame.webIntent = !gripCancel.holdVr && webAimIntent;
+                        hybridFrame.cancelGrip = gripCancel.cancel;
+                        hybridFrame.cancelGripHeld = gripCancel.holdVr;
+                        hybridFrame.groundAction = swingFresh && swingState.takeoff &&
+                            swingState.serial >= cancellationSerialFloor;
                         hybridFrame.speedH = hybridSpeedH;
                         hybridFrame.speedHoldNs =
                             static_cast<int64_t>(values.animatedHybridSpeedMs) * 1'000'000ll;
@@ -5736,6 +5890,13 @@ DWORD WINAPI run(void*) {
                         hybridFrame.jumpAsk = hybridJumpAsk;
                         if (hybridOn) {
                             hybridOwner.update(hybridFrame, handoffNs);
+                            if (hybridOwner.enterVr || hybridOwner.enterAnim) {
+                                actionFrameFloor = pose.serial;
+                                // Never carry an animation-relative correction into the
+                                // first original-VR action (or the opposite handoff).
+                                for (auto& aim : forearmAims) aim.reset();
+                                forearmTargets = {}; forearmJitter = {}; webTurnsNow = {};
+                            }
                             if (hybridFrame.zipPress)
                                 diag_log::writef("hybrid: web zip pressed, owner %s (%s), held for the zip",
                                                  hybrid_owner::domainName(hybridOwner.domain),
@@ -5991,6 +6152,7 @@ DWORD WINAPI run(void*) {
                             }
                         } else {
                             hybridOwner = {};
+                            actionFrameFloor = 0;
                             hybridBlend = {};
                             hybridLeapAir = hybridAdoptWaiting = false;
                         }
@@ -6352,8 +6514,9 @@ DWORD WINAPI run(void*) {
                         if (armsWanted &&
                             frame.predictedDisplayTime - trackingLockDiagAt > 100'000'000) {
                             trackingLockDiagAt = frame.predictedDisplayTime;
-                            const auto ot = native_body::overlayTracking();
-                            const auto arms = native_body::forearms();
+                            const auto diagnosticFrame = native_body::actionFrame();
+                            const auto& ot = diagnosticFrame.tracking;
+                            const auto& arms = diagnosticFrame.forearms;
                             const auto hs = native_body::headSample();
                             float offL = -1.f, offR = -1.f;
                             for (unsigned i = 0; i < 2; ++i) {
@@ -6404,6 +6567,10 @@ DWORD WINAPI run(void*) {
                                 animated_arms::yieldFloor, offL, offR, actorYaw, chestYaw, playerYaw,
                                 chestYaw - playerYaw, hmdY, hmdP, hmdR, animY, animP, animR, ot.remapped,
                                 ot.softlock, animated_moves::headFollowName(animHeadMode));
+                            diag_log::writef("player torso: active %u serial %llu job %llu head residual %.3f m root drift %.2f deg actual hands %u/%u",
+                                ot.playerTorso, static_cast<unsigned long long>(ot.serial),
+                                static_cast<unsigned long long>(ot.job), ot.headError,
+                                ot.rootDrift * 57.29578f, ot.actualValid[0], ot.actualValid[1]);
                             if (ot.targetFrame != animated_view::Frame::none) {
                                 for (unsigned i = 0; i < 2; ++i) {
                                     diag_log::writef(
@@ -6715,7 +6882,7 @@ DWORD WINAPI run(void*) {
                     // Publish with the body command under commandLock; the pose job
                     // resolves Full on its fresh, unmodified head (not this thread's sample).
                     animated_view::Targets handView;
-                    if (bodyStarted && values.animatedHybrid && yieldAnim && headFollowEyes &&
+                    if (bodyStarted && values.animatedHybrid && yieldAnim &&
                         values.animatedArms && (pose.flags & native_body::armsOverlay)) {
                         const bool anchoredHead = eyes.anchored == 2 || eyes.anchored == 4;
                         Pose reference = animHeadRef;
@@ -6735,8 +6902,7 @@ DWORD WINAPI run(void*) {
                             handView.worldAnchor.position =
                                 Vec3{(eyes.eyes[0].world[12] + eyes.eyes[1].world[12]) * .5f,
                                      (eyes.eyes[0].world[13] + eyes.eyes[1].world[13]) * .5f,
-                                     (eyes.eyes[0].world[14] + eyes.eyes[1].world[14]) * .5f} -
-                                motion.anchor;
+                                     (eyes.eyes[0].world[14] + eyes.eyes[1].world[14]) * .5f};
                             reference = frame.head;
                             turn = 0;
                             frameOk = true;
@@ -6775,10 +6941,28 @@ DWORD WINAPI run(void*) {
                     NativeEyeFrame saved;
                     saved.serial = eyes.serial;
                     saved.motion = motion;
+                    saved.animation = headFollowEyes || nativeTrackedPresentation(bodyStarted && values.body,
+                        values.animatedHybrid, yieldAnim, values.animatedArms);
+                    saved.feedbackRigHead = motion.headPose;
+                    const bool captureActionFrame = saved.animation && actionHeadValid &&
+                        animation_cancel::validPose(actionPoseSerial, actionFrameFloor,
+                                                   actionPoseDeadline, GetTickCount64());
+                    if (captureActionFrame) saved.motion.headPose = actionHead;
+                    else {
+                        // Ownership may have changed since the early input sample.
+                        saved.motion.gazePose = physicalGaze;
+                        saved.motion.gazeValid = physicalGazeValid;
+                    }
+                    for (unsigned i=0;i<2;++i) if(captureActionFrame && (actionGripMask & (1u<<i))) {
+                        saved.motion.grips[i] = actionGrips[i];
+                        saved.motion.hands[i] = actionGrips[i];
+                    }
+                    feedback_frame::hands(saved.motion, saved.animation,
+                                          captureActionFrame ? actionGripMask : 0u);
                     saved.trackingEyes = frame.eyes;
                     // Same as finishers: placeEyes re-resolves the head each frame
                     // (stereo_probe) instead of keeping a latched gameplay head.
-                    saved.scene = headFollowEyes;
+                    saved.scene = headFollowEyes || saved.animation;
                     if (motion.active)
                         saved.rigTurn =
                             flip_reprojection::trackingTurn(motion.headPose.orientation, frame.head.orientation);
@@ -6994,6 +7178,8 @@ DWORD WINAPI run(void*) {
                         runtime.headLocked(saved->headLocked);
                         // A first-person scene gets none of Spidy's own marks, webs or hands over it.
                         const bool bare = saved->flatScreen || saved->scene;
+                        bool feedback = gameplayFeedback(saved->flatScreen, saved->scene,
+                                                               saved->animation);
                         // STEADY HUD: the panel as a layer of its own, placed for this headset frame; the
                         // eyes leave it out while it shows (native_hud::layered).
                         uint32_t hudWidth{}, hudHeight{};
@@ -7030,11 +7216,24 @@ DWORD WINAPI run(void*) {
                         // What the player holds stays with the head: turned the other
                         // way in the world, about the eyes' middle, before it is drawn.
                         // The eyes' own views stay as rendered, as the image is.
-                        const GameMotionFrame rendered =
-                            reprojection.applied ? flip_reprojection::held(saved->motion, reprojection.world)
-                                                 : saved->motion;
-                        const Vec3 heldAbout = flip_reprojection::eyesMiddle(saved->motion);
+                        GameMotionFrame basis = saved->motion;
+                        std::array<Mat4,2> nativeFeedbackEyes{};
+                        const bool nativeFeedback = saved->animation &&
+                            native_eyes::renderEyes(imageGeneration, imageSerial, nativeFeedbackEyes);
+                        if (saved->animation && !nativeFeedback) feedback = false;
+                        Vec3 travel{};
+                        native_eyes::renderOffset(imageGeneration, travel);
+                        if (nativeFeedback)
+                            feedback_frame::camera(basis, native_eyes::overlayEyes(nativeFeedbackEyes, travel));
+                        const Vec3 heldAbout = flip_reprojection::eyesMiddle(basis);
+                        GameMotionFrame rendered = reprojection.applied
+                            ? flip_reprojection::held(basis, reprojection.world) : basis;
+                        const auto widgetPose = [&](Pose p) {
+                            return nativeFeedback ? feedback_frame::transport(
+                                saved->feedbackRigHead, basis.headPose, p) : p;
+                        };
                         const auto heldPose = [&](Pose p) {
+                            p = widgetPose(p);
                             return reprojection.applied
                                        ? flip_reprojection::about(p, reprojection.world, heldAbout)
                                        : p;
@@ -7073,8 +7272,6 @@ DWORD WINAPI run(void*) {
                         // The native views moved this command's eyes with the
                         // player to the rendered frame. Hands move with them, so
                         // world-space web anchors line up with the rendered city.
-                        Vec3 travel{};
-                        native_eyes::renderOffset(imageGeneration, travel);
                         const Vec3 viewer =
                             Vec3{(rendered.eyes[0][12] + rendered.eyes[1][12]) / 2,
                                  (rendered.eyes[0][13] + rendered.eyes[1][13]) / 2,
@@ -7208,7 +7405,7 @@ DWORD WINAPI run(void*) {
                             // Flat screen stays bare. Native Animation head-follow still
                             // hides overlay webs and gloves (saved.scene), but the aim
                             // markers stay up so a shot or a grip is visible.
-                            if (saved->flatScreen) {
+                            if (!feedback || saved->flatScreen) {
                                 steady.reset();
                                 continue;
                             }
@@ -7283,7 +7480,7 @@ DWORD WINAPI run(void*) {
                         }
                         // A web line's zip marker: a turning ring where the right stick up
                         // would zip to.
-                        if (!saved->flatScreen && saved->lineTargetId && finite(saved->lineTarget)) {
+                        if (feedback && !saved->flatScreen && saved->lineTargetId && finite(saved->lineTarget)) {
                             AimMarker marker;
                             marker.kind = AimMark::target;
                             marker.point = saved->lineTarget;
@@ -7302,7 +7499,7 @@ DWORD WINAPI run(void*) {
                                             saved->uiStyle);
                         // Slow motion's focus meter over the back of the left wrist, moved
                         // with the player to this image as the glove is.
-                        if (!bare && saved->slow.meter > 0 && rendered.swing.hands[0].tracked) {
+                        if (feedback && saved->slow.meter > 0 && rendered.swing.hands[0].tracked) {
                             auto wrist = rendered.hands[0];
                             wrist.position += travel;
                             const double clock = std::fmod(static_cast<double>(shown) * 1e-9, 3600.);
@@ -7311,13 +7508,13 @@ DWORD WINAPI run(void*) {
                         }
                         // The pad layer's sign over the back of the right wrist while
                         // it is on: until October 25 only a buzz said so.
-                        if (!bare && saved->padLayer && rendered.swing.hands[1].tracked) {
+                        if (feedback && saved->padLayer && rendered.swing.hands[1].tracked) {
                             auto wrist = rendered.hands[1];
                             wrist.position += travel;
                             appendPadLayerSign(translucent, wrist, viewer, pixelAngle, saved->uiStyle);
                         }
                         // Hide combat artwork only; targeting, damage, counters and haptics still update.
-                        const bool combatVisuals = values.combatVisuals && saved->combatVisuals && !bare;
+                        const bool combatVisuals = values.combatVisuals && saved->combatVisuals && feedback;
                         // The bursts where the latest blows landed: fixed in the world.
                         if (combatVisuals)
                             for (const auto& burst : bursts) {
@@ -7346,7 +7543,7 @@ DWORD WINAPI run(void*) {
                         // Spider-Sense's marks: over each attacker's head, and for one out of
                         // view in the sightline as well, moved with the player as the eyes are.
                         // Attack warnings remain visible independently of optional combat artwork.
-                        if (!bare && validTrackedPose(rendered.headPose)) {
+                        if (feedback && validTrackedPose(rendered.headPose)) {
                             Pose eyes = rendered.headPose;
                             eyes.position += travel;
                             bool marked{}, sighted{};
@@ -7378,7 +7575,7 @@ DWORD WINAPI run(void*) {
                         // The T-pose calibration's panel and controller rings, moved with
                         // the player to this image as the hands are. The tech style's
                         // panel is translucent, as the game's menus are.
-                        if (!bare && saved->calibration.phase != body_calibration::Phase::idle) {
+                        if (feedback && saved->calibration.phase != body_calibration::Phase::idle) {
                             auto view = saved->calibration;
                             view.panel = heldPose(view.panel);
                             view.panel.position += travel;
@@ -7392,8 +7589,16 @@ DWORD WINAPI run(void*) {
                         // The gadget wheel in front of its hand, moved with the
                         // player to this image as the hands are: printed, so
                         // laid down in order over all the rest.
-                        if (!bare && saved->gadgetWheel.open) {
+                        if (feedback && saved->gadgetWheel.open) {
                             auto view = saved->gadgetWheel;
+                            if (nativeFeedback) {
+                                auto& w = view.frame;
+                                const Quat turn = basis.headPose.orientation * saved->feedbackRigHead.orientation.conjugate();
+                                w.centre = widgetPose({w.centre, {}}).position;
+                                w.right = turn.rotate(w.right);
+                                w.up = turn.rotate(w.up);
+                                w.out = turn.rotate(w.out);
+                            }
                             if (reprojection.applied) {
                                 auto& w = view.frame;
                                 w.centre = flip_reprojection::about(w.centre, reprojection.world, heldAbout);
@@ -7427,7 +7632,7 @@ DWORD WINAPI run(void*) {
                         // apart stay so.
                         std::vector<Vertex> phoneScreen;
                         D3D12Renderer::Picture phonePicture;
-                        if (!bare && saved->phone.open) {
+                        if (feedback && saved->phone.open) {
                             auto view = phoneShown;
                             const Pose toWorld = heldPose(saved->phone.toWorld);
                             const auto& f = phone.place();
@@ -7469,8 +7674,9 @@ DWORD WINAPI run(void*) {
                         if (!bare)
                             overlay.renderViews(overlayViews, vertices, true, false, translucent, &grade,
                                                 &phonePicture);
-                        else if (!saved->flatScreen && !translucent.empty())
-                            overlay.renderViews(overlayViews, vertices, true, false, translucent);
+                        else if (feedback && (!vertices.empty() || !translucent.empty() || !phoneScreen.empty()))
+                            overlay.renderViews(overlayViews, vertices, true, false, translucent, nullptr,
+                                                &phonePicture);
                         overlayMs = std::chrono::duration<double, std::milli>(
                                         std::chrono::steady_clock::now() - overlayStart)
                                         .count();
