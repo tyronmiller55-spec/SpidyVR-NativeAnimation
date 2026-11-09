@@ -1,6 +1,69 @@
 # Native Animation cumulative 0.8.5 source provenance
 
-## Current user-approved cumulative integration — Nov 8, 2026
+## Current user-approved cumulative integration — Nov 9, 2026
+
+Authoritative working source:
+`fbd114ec56f9d9fe4f42e89de8697e7f6c1fb211`
+https://github.com/tyronmiller55-spec/SpidyVR/commit/fbd114ec56f9d9fe4f42e89de8697e7f6c1fb211
+
+Branch: `fix/review-launch-run-softball` (includes `fd56775` cancel/position/sliders
+and `40c0cb9` session summary on top of earlier `09526f1`).
+
+Publication starts from live NativeAnimation main
+`689b1625d91f11a62a95c0b9e9da51a4c54c2bdb`, preserving the owner's already-merged
+PR2 and its ancestry. The user explicitly approved integration at 09:41 PST
+Nov 9, 2026 (`t29u`). That approval is not headset acceptance or a request to
+post to Discord. In-progress ownership-update work on a separate working-repo
+branch is intentionally excluded.
+
+Exact tree parity policy (verify with Git blob IDs):
+- All runtime, test, build-tool, resource, licence and other tracked files match
+  the authoritative working source byte-for-byte.
+- `README.md` is publication-specific documentation.
+- This provenance document is additional publication-only documentation.
+- `.github/workflows/release.yml` remains deliberately omitted, as in the earlier
+  public snapshot. No workflow, rule change or automatic publication is added.
+
+New cumulative behavior relative to the prior 09526f1 publication (also listed in
+the README):
+- No-shot grip cancel stay until another native animation starts.
+- Position lock at animation↔SpidyVR handoffs (actor feet authority + residual logs).
+- Point-launch facing toward momentum (headset still reports incorrect; not claimed fixed).
+- Run speed slider (SpidyVR ground run only) with hand-back blend to native sprint.
+- Slow-mo length slider through 1:30 plus INFINITE.
+- Wrist marker smoothing shared with shot aim.
+- Soft lock for grip webs and matching trigger web-ball enemy picks.
+- Shareable session `-summary.json` beside the full report.
+
+Verified Windows build from the exact working source:
+https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42578019609
+
+- 6/6 CTest suites and 192 Python tests across the protocol modules passed.
+- Packaged embedded-Python import smoke passed. Windows builds compile XR/engine
+  callers, but tests do not run the live game or headset.
+- Workflow inputs `publish=false`, empty `tag`; commit/tag, release and Discord
+  steps were skipped. Existing artifact ID13656610376, 18,133,220 bytes.
+- Exact downloaded original ZIP SHA256:
+  `5d7ae797ccbfa373471a7dab1b6adb2358be005ea69e97431c13f081c4d2e342`.
+- CRC/safe-path checks, 91 entries, 41 AMD64 PE32+ binaries, module versions 0.8.5.0,
+  required rays export, matching Command v7 host/rays and compiled source
+  `fbd114e` verified. Standard VC++ x64/OpenXR prerequisites remain unchanged.
+
+Existing owner-delivered ZIP name:
+`Spidy-0.8.5-review-fixes-fbd114e-win64.zip`.
+No new gameplay build is needed for README/provenance/workflow-policy differences.
+No binaries, personal settings/logs, local build output or secrets are committed.
+No new release/tag or Discord message is part of this integration.
+
+**Still experimental:** exact-new-build headset validation remains pending.
+Point-launch facing is reported still incorrect. Ownership-update redesign
+(animation owns ground/parkour/jumps/landings; SpidyVR owns air and wallrun) is
+in progress separately and is not included. Preserve settings and extract the
+whole ZIP into a new writable folder; never mix modules. Undecided procedural-leg
+bindings/directions and genuine native strafe clips/control hooks remain separate
+gates. No new mechanic is claimed for those items.
+
+## Earlier cumulative integration 09526f1 — retained historical record — Nov 8, 2026
 
 Authoritative working source:
 `09526f19f00b54819641f0bde080894105b10e85`
