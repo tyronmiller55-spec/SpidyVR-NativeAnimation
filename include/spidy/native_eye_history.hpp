@@ -13,6 +13,7 @@ namespace spidy {
 struct NativeEyeFrame {
     uint64_t serial{};
     GameMotionFrame motion;
+    Pose feedbackRigHead{}; // raw physical rig basis for camera-relative widgets only
     std::array<TrackedEye, 2> trackingEyes;
     // The tracking space's turn in the world the pair was rendered with
     // (flip_reprojection.hpp).
@@ -69,6 +70,9 @@ struct NativeEyeFrame {
     // A first-person scene (eye command anchored 2): the eyes show the scene from inside the head of the
     // character it plays; Spidy's own marks, webs and hands are not drawn over it.
     bool scene{};
+    // Distinguish gameplay head-follow from a cinematic using the same eye anchor.
+    // Internal history only: no host/module serialized ABI change.
+    bool animation{};
     // ... and the scene's own camera aims (no head tracking): the image is locked to the head
     // (XrRuntime::headLocked).
     bool headLocked{};
