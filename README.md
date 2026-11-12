@@ -1,10 +1,20 @@
-# SpidyVR Native Animation — cumulative 0.8.5 development playtest
+# SpidyVR Native Animation
 
 An experimental community extension of **Ilya Mezerowsky's SpidyVR 0.8.5** for
 Marvel's Spider-Man Remastered. Insomniac's native animations supply locomotion
 while SpidyVR provides VR interaction and player-controlled upper-body actions.
 Inspired by **vrfloofy's first-person mod**. GPL-3.0; not endorsed by Ilya,
 Insomniac, Sony or Marvel. Original authorship, support links and notices remain.
+
+## ⬇️ Download (players start here)
+
+**Get the current build from [Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)**, the release marked **✅ CURRENT** (0.8.6, tested). Releases marked **OLD** are superseded; don't use them.
+
+1. Under **Assets**, download the `Spidy-…-win64.zip` file (not "Source code").
+2. Extract the **entire** ZIP into a **new writable folder outside the game's install** (for example your Desktop). Never copy files into the Marvel's Spider-Man Remastered folder or mix them with an older Spidy folder.
+3. Run **Spidy Launcher.exe** from that folder, open the **Native Animation** tab, and start VR, with the headset on and Meta Quest Link (or Virtual Desktop) running.
+
+Everything below is developer and history notes.
 
 ## Current integrated source
 
@@ -88,35 +98,13 @@ new binding.
 
 ## Install / playtest
 
-Use the **latest cumulative fbd114e launcher**, not older slice ZIPs.
-The existing verified Windows ZIP is available in the
-[build run's artifacts](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/42578019609/artifacts/13656610376)
-(GitHub sign-in may be required; artifact retention is limited). It was also
-provided directly to the owner as
-`Spidy-0.8.5-review-fixes-fbd114e-win64.zip`. **No new GitHub release/tag is
-created by this source integration.** The binary diagnostic stamp is
-`fbd114ec56`, not this publication commit's hash.
+See **Download** above: always use the ✅ CURRENT release from
+[Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest).
+Older slice ZIPs and build-run artifacts mentioned in the history below are superseded.
+After a session, send the `reports\game-vr-<time>-summary.json` plus `-diag.log` and `-console.log`.
 
-ZIP SHA-256: `5d7ae797ccbfa373471a7dab1b6adb2358be005ea69e97431c13f081c4d2e342`.
-
-1. Back up shared `%APPDATA%\Spidy` settings/profiles and keep older builds.
-2. Extract the **entire** ZIP into a **new writable folder**, outside the game's
-   installation. Never mix DLLs/tools or run from inside the ZIP.
-3. Run that folder's **Spidy Launcher.exe**, not an older shortcut. Existing
-   Windows, supported Steam game build, VC++ x64 and OpenXR prerequisites apply.
-4. Read [the latest acceptance sheet](docs/NATIVE_ARM_FEEDBACK_PLAYTEST.md),
-   [torso playtest](docs/PLAYER_UPPER_TORSO_PLAYTEST.md) and
-   [diagnostic counter caveats](docs/WEB_BALL_DIAGNOSTICS.md). Test grip-cancel
-   stay / no-shot, position-lock residuals, run-speed / slow-mo / soft-lock
-   sliders, marker smoothing, soft-locked grip webs and trigger balls, and
-   point-launch facing (known still incorrect). After a session, prefer sending
-   the `-summary.json` plus `-diag.log`. Returned/fired counters do not prove
-   visible effects or damage.
-
-This publication repository intentionally omits the release workflow; source
-build commands below remain available on Windows. Original upstream download/
-update links below point to **Spidy**, not this experimental fork's current ZIP.
-Do not use an upstream launcher update as if it were a Native Animation update.
+Original upstream download and update links below point to **Spidy**, not this fork's current ZIP.
+Don't use an upstream launcher update as if it were a Native Animation update.
 
 ## Remaining gates
 
