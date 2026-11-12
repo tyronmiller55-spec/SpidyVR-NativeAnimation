@@ -310,6 +310,15 @@ class ChargeJump {
         }
         return {};
     }
+    // POINT JUMP (point_jump.hpp): a chord took this press. Whatever A was
+    // doing here (waiting for its tap, charging a leap) ends unsent: the
+    // chord never becomes a leap or a late A. Held on, A is spent until it is
+    // let go of.
+    void consume() {
+        phase_ = down_ ? Phase::spent : Phase::idle;
+        time_ = 0;
+        leap_ = 0;
+    }
     // A is held and a leap charges.
     bool charging() const {
         return phase_ == Phase::charging;
@@ -491,22 +500,31 @@ class TemplePress {
 // suit power. A player's idea, October 15 ("both your hands to your chest and
 // hit trigger like the scan"): VR play had no way to it at all, as clicking
 // both sticks is the pad layer and only the game screen sent the game its L3
-// + R3. The chest: a point `below` the headset and `ahead` of it, level with
-// where it looks. A trigger is the gesture's (hands(): no web, web ball or
-// reel meanwhile) only if it goes down with both hands there, each within
-// `reach` of the point and no more than `apart` from the other, and with no
-// web out of its hand. It waits `together` for the other trigger; not joined,
-// it is the web's again, still held: a press that much late. Both down within
-// `together` of each other are the power, and both triggers are its until let
-// go. Until November 5 one trigger pulled within 22 cm of the point was the
-// gesture's until let go: a player's hands at rest were 13 to 19 cm from it,
-// and his October 28 session made 38 suit powers and not one web from its
-// triggers. Outside VR play nothing holds, and a trigger held through that
-// must be let go first.
+// + R3. The chest: a short line `below` the headset, from `closest` to
+// `farthest` ahead of it, level with where it looks: hands pressed to the
+// chest and hands held out before it, wrists together, are both on it. A
+// trigger is the gesture's (hands(): no web, web ball or reel meanwhile) only
+// if it goes down with both hands there, each within `reach` of the line and
+// no more than `apart` from the other, and with no web out of its hand. It
+// waits `together` for the other trigger; not joined, it is the web's again,
+// still held: a press that much late. Both down within `together` of each
+// other are the power, and both triggers are its until let go. Until
+// November 5 one trigger pulled within 22 cm of a point 38 cm under the eyes
+// and 15 cm ahead was the gesture's until let go: a player's hands at rest
+// were 13 to 19 cm from it, and his October 28 session made 38 suit powers
+// and not one web from its triggers. From November 5 to 11 both hands had to
+// be within 12 cm of that point, and five players reported no suit power at
+// all. In two sessions of one of them, the hands came together at the chest
+// 30 times, mostly 24 to 36 cm ahead of the eyes, and the point took 6 of
+// the 30 (one power in all, "hunched over, hands inside my virtual chest").
+// The line takes all 30, and the October 28 player's hands at rest are on it
+// less often than in the point's 12 cm (2.4% of that play, was 3.4%).
+// Outside VR play nothing holds, and a trigger held through that must be let
+// go first.
 class SuitPowerPress {
   public:
-    static constexpr float below = .38f, ahead = .15f, reach = .12f, apart = .2f, together = .15f,
-                           pressed = .6f, released = .3f, holdSeconds = .15f;
+    static constexpr float below = .35f, closest = .15f, farthest = .32f, reach = .14f, apart = .25f,
+                           together = .15f, pressed = .6f, released = .3f, holdSeconds = .15f;
     // seconds: since the previous update. play: the controllers play VR.
     // head and grips: the headset's and each hand's grip pose, in one space;
     // tracked and triggers: each hand's; webs: each hand's web is out (none:
@@ -515,20 +533,23 @@ class SuitPowerPress {
                 const float triggers[2], const bool webs[2] = nullptr) {
         const float dt = std::isfinite(seconds) ? std::clamp(seconds, 0.f, .1f) : 0.f;
         left_ = std::max(0.f, left_ - dt);
-        Vec3 chest{};
+        Vec3 look{0, 0, -1};
         bool placed = play && finite(head.position);
         if (placed) {
-            Vec3 look = head.orientation.rotate({0, 0, -1});
+            look = head.orientation.rotate({0, 0, -1});
             look.y = 0;
             look = length(look) > .1f ? normalized(look) : Vec3{0, 0, -1};
-            chest = head.position + Vec3{0, -below, 0} + look * ahead;
-            placed = finite(chest);
+            placed = finite(look);
         }
-        // Both hands at the chest, together.
+        // Both hands at the chest, together: each hand against the nearest
+        // point of the chest's line.
         bool at[2]{};
-        for (unsigned i = 0; i < 2; ++i)
-            at[i] = placed && tracked[i] && finite(grips[i].position) &&
-                    length(grips[i].position - chest) <= reach;
+        for (unsigned i = 0; i < 2; ++i) {
+            if (!placed || !tracked[i] || !finite(grips[i].position))
+                continue;
+            const float out = std::clamp(dot(grips[i].position - head.position, look), closest, farthest);
+            at[i] = length(grips[i].position - (head.position + Vec3{0, -below, 0} + look * out)) <= reach;
+        }
         const bool posed = at[0] && at[1] && length(grips[0].position - grips[1].position) <= apart;
         for (unsigned i = 0; i < 2; ++i) {
             const float trigger = std::isfinite(triggers[i]) ? triggers[i] : 0.f;
@@ -662,6 +683,158 @@ class StickPush {
     Way way_{};
     bool spent_{};
     float held_{}, lapse_{};
+};
+// MIDAIR ZIP AND HEAL BY DOUBLE TAP (the user, November 10 21:06: "Make zip
+// and heal work in midair, but you have to double tap them"). For when a leg
+// control owns the right stick in the air (swinging or falling, CONTROLLED
+// FLIPS on, its setting on): single pushes and holds are the legs'; two quick
+// strong pushes the same way are the zip (up) or the heal (down), and the
+// second push held is the hold StickPush gives - the zip's aim and slow time
+// until it is let go, the heal's hold - so the zip and heal relays downstream
+// work unchanged. Outside that mode StickPush stays exactly as it is.
+//   - A tap: past `strong` within `aside` of the vertical, back under
+//     `released` within tapSeconds. Held longer it is a leg hold, never a tap.
+//   - The second tap must start within doubleTapSeconds of the first one's
+//     release, the same way. The other way, a diagonal or a late one starts
+//     over (that push is the legs').
+//   - legY(): the stick's vertical for the legs - zero from the moment a tap
+//     could still become a double tap's action through to the action's end,
+//     and actionBegan() once when it starts, so the caller eases the first
+//     tap's leg pose back out instead of fighting the zip or heal.
+// Pure; tunable through the constructor (window seconds).
+class StickDoubleTap {
+  public:
+    using Way = StickPush::Way;
+    static constexpr float strong = .85f, aside = .45f, released = .5f, tapSeconds = .25f,
+                           defaultWindowSeconds = .3f;
+    explicit StickDoubleTap(float windowSeconds = defaultWindowSeconds)
+        : window_(std::isfinite(windowSeconds) ? std::clamp(windowSeconds, .15f, .6f) : defaultWindowSeconds) {}
+    float windowSeconds() const {
+        return window_;
+    }
+    void reset() {
+        const float w = window_;
+        *this = StickDoubleTap(w);
+    }
+    // seconds since the previous update; active: the leg control owns the
+    // stick now (when false everything resets and nothing is reported); x, y
+    // the right stick, -1..1, y up. Returns the action held now (none, up the
+    // zip, down the heal).
+    Way update(float seconds, bool active, float x, float y) {
+        const Way way = step(seconds, active, x, y);
+        // The stick's sideways for the legs: withheld with legY (a tap that
+        // may still be a double tap's, or the action, or its settling).
+        const float sx = std::isfinite(x) ? x : 0.f, sy = std::isfinite(y) ? y : 0.f;
+        legX_ = (legY_ == 0 && sy != 0) ? 0.f : sx;
+        return way;
+    }
+    // The stick's sideways the legs may use this frame.
+    float legX() const {
+        return legX_;
+    }
+    Way step(float seconds, bool active, float x, float y) {
+        began_ = false;
+        const float dt = std::isfinite(seconds) ? std::clamp(seconds, 0.f, .1f) : 0.f;
+        const bool bad = !std::isfinite(x) || !std::isfinite(y);
+        if (bad)
+            x = y = 0;
+        legY_ = y;
+        if (!active) {
+            reset();
+            legY_ = y;
+            return Way::none;
+        }
+        const bool rest = std::hypot(x, y) < released;
+        const bool strongPush = std::abs(y) >= strong && std::abs(x) <= aside;
+        const Way way = y < 0 ? Way::down : Way::up;
+        switch (phase_) {
+        case Phase::idle:
+            if (strongPush) {
+                phase_ = Phase::first;
+                way_ = way;
+                time_ = 0;
+                legY_ = 0; // might become a double tap: the legs wait
+            }
+            break;
+        case Phase::first:
+            time_ += dt;
+            if (rest) {
+                phase_ = Phase::gap;
+                time_ = 0;
+                legY_ = 0;
+            } else if (time_ > tapSeconds || (std::abs(x) > aside) || way != way_) {
+                phase_ = Phase::legs; // a hold or a turn: the legs', until neutral
+            } else {
+                legY_ = 0;
+            }
+            break;
+        case Phase::gap:
+            time_ += dt;
+            if (time_ > window_) {
+                phase_ = rest ? Phase::idle : Phase::legs;
+            } else if (strongPush && way == way_) {
+                phase_ = Phase::action;
+                began_ = true;
+                ++actions_;
+                legY_ = 0;
+                return way_;
+            } else if (!rest && (std::abs(x) > aside || way != way_ || !strongPush)) {
+                // A softer push inside the window waits for strength; another
+                // way or a diagonal starts over as the legs'.
+                if (std::abs(x) > aside || way != way_)
+                    phase_ = Phase::legs;
+                else
+                    legY_ = 0;
+            } else {
+                legY_ = 0;
+            }
+            break;
+        case Phase::action:
+            if (rest) {
+                phase_ = Phase::idle; // let go: the zip goes, the heal ends
+                return Way::none;
+            }
+            legY_ = 0;
+            if (way != way_ || std::abs(y) < released) {
+                phase_ = Phase::settle; // rolled off the line: over, back to neutral first
+                return Way::none;
+            }
+            return way_;
+        case Phase::settle:
+            // After an action the stick must come back to neutral before the
+            // legs take it again.
+            legY_ = 0;
+            if (rest)
+                phase_ = Phase::idle;
+            break;
+        case Phase::legs:
+            if (rest)
+                phase_ = Phase::idle;
+            break;
+        }
+        return Way::none;
+    }
+    // The stick's vertical the legs may use this frame (see above).
+    float legY() const {
+        return legY_;
+    }
+    // A double tap's action started this frame.
+    bool actionBegan() const {
+        return began_;
+    }
+    uint32_t actions() const {
+        return actions_;
+    }
+
+  private:
+    enum class Phase { idle, first, gap, action, settle, legs };
+    float legX_{};
+    float window_ = defaultWindowSeconds;
+    Phase phase_{};
+    Way way_{};
+    float time_{}, legY_{};
+    bool began_{};
+    uint32_t actions_{};
 };
 // The right stick held up (StickPush) as the game's LT + RT, and what letting
 // go of it does. The two going down at once are the game's zip to a point,

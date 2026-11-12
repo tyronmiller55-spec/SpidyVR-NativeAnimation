@@ -6,6 +6,7 @@
 #include "spidy/tracking.hpp"
 #include "spidy/game_fp.hpp"
 #include "spidy/hybrid_handoff.hpp"
+#include "spidy/arm_frame.hpp"
 #include "spidy/native_appearance.hpp"
 #include <MinHook.h>
 #include <algorithm>
@@ -92,10 +93,11 @@ body::Targets lastBodyTargets;
 // onto Targets::airVelocity when airborne. Cleared when the call is empty.
 Vec3 airWorldVel{};
 bool airWorldVelSet{};
-// LAUNCH FACING (setFaceAhead): world way the airborne body faces; zero none.
-Vec3 faceWorldAhead{};
 // Visual tuck hold (setTuck): mapped onto Targets::tuck when airborne.
 bool airTuckHeld{};
+// LEG CONTROL (setLegControl): mapped onto Targets::legControl when airborne.
+bool legControlOn{};
+std::array<body::Targets::LegAngles, 2> legControlAngles{};
 // ANIMATED HYBRID jump / air adopt (beginJumpAdopt): wanted since this tick (0 none), the live
 // pose snapshot taken at the first bodyOn job, and that first frame's result.
 uint64_t adoptWantedTick{};
@@ -104,6 +106,7 @@ native_body::JumpAdopt adoptSample{};
 // The body's turn away from the wall at the last solve (crawlOutwardWeight),
 // for the XR thread, which must not wait out a solve for it.
 std::atomic<float> outwardWeight{};
+std::atomic<float> handWaitEma{}; // HAND PREDICTION: the pose job's wait for a command, s
 // The hero's instance and rig at the previous hero job (solveLock): another
 // instance is another actor, and the body starts over on it.
 uintptr_t lastInstance{}, lastRig{};
@@ -576,14 +579,16 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
                 t.crawlStrokes = {wanted.crawlStrokes[0], wanted.crawlStrokes[1]};
                 t.crawlDistance = wanted.version >= 9 ? wanted.crawlDistance : 0.f;
             }
-            if (t.airborne && !t.kick && !t.wallRun && !t.crawl && airWorldVelSet && finite(airWorldVel)) {
+            // Procedural legs only in the air (body::airLegsAllowed): never
+            // planted, kneeling, on a wall run, a crawl or a vent.
+            const bool airLegs = body::airLegsAllowed(t);
+            if (airLegs && airWorldVelSet && finite(airWorldVel)) {
                 t.airMomentum = true;
                 t.airVelocity = toModel.rotate(airWorldVel);
             }
-            t.tuck = t.airborne && !t.kick && !t.wallRun && !t.crawl && airTuckHeld;
-            if (t.airborne && !t.kick && !t.wallRun && !t.crawl && finite(faceWorldAhead) &&
-                length(faceWorldAhead) > .5f)
-                t.faceAhead = toModel.rotate(faceWorldAhead);
+            t.tuck = airLegs && airTuckHeld;
+            t.legControl = airLegs && legControlOn;
+            t.legAngles = legControlAngles;
             t.eyes = toModel.rotate(wanted.eyes);
             t.facing = toModel * wanted.facing;
             if (const Quat tilt = wanted.tilt; tilt.x != 0 || tilt.y != 0 || tilt.z != 0)
@@ -634,8 +639,21 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
                     t.facing = head.orientation;
                     t.viewMapped = true;
                     t.head = true;
+                    // HAND PREDICTION: the job measures its wait for the next
+                    // command's lead (handLeadWait); this one applies exactly the
+                    // lead the XR thread used for the actions' hand, so the glove,
+                    // the marker and the line start share one time base.
+                    if (view.sampledTicks > 0 && frequency.QuadPart > 0) {
+                        const float waited =
+                            static_cast<float>(now.QuadPart - view.sampledTicks) / frequency.QuadPart;
+                        if (waited >= 0 && waited < .2f) {
+                            const float was = handWaitEma.load(std::memory_order_relaxed);
+                            handWaitEma.store(was * .9f + waited * .1f, std::memory_order_relaxed);
+                        }
+                    }
                     for (unsigned i = 0; i < 2; ++i) {
-                        const auto grip = animated_view::resolve(anchor, view.grips[i]);
+                        const auto grip = animated_view::resolve(
+                            anchor, arm_frame::ahead(view.grips[i], view.gripVelocity[i], view.leadSeconds));
                         // A lost hand keeps only its last valid target during its short fade.
                         t.hands[i].tracked =
                             view.valid[i] && (wanted.hands[i].tracked || overlayArmWeight[i] > 0);
@@ -1052,15 +1070,17 @@ void native_body::setAirMomentum(const Vec3& worldVelocity) {
     ReleaseSRWLockExclusive(&solveLock);
 }
 
-void native_body::setFaceAhead(const Vec3& worldAhead) {
-    AcquireSRWLockExclusive(&solveLock);
-    faceWorldAhead = finite(worldAhead) && length(worldAhead) > .5f ? worldAhead : Vec3{};
-    ReleaseSRWLockExclusive(&solveLock);
-}
-
 void native_body::setTuck(bool held) {
     AcquireSRWLockExclusive(&solveLock);
     airTuckHeld = held;
+    ReleaseSRWLockExclusive(&solveLock);
+}
+
+void native_body::setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs) {
+    AcquireSRWLockExclusive(&solveLock);
+    legControlOn = on;
+    if (on)
+        legControlAngles = legs;
     ReleaseSRWLockExclusive(&solveLock);
 }
 
@@ -1185,6 +1205,29 @@ native_body::ActionFrame native_body::actionFrame() {
 int native_body::authoredHead(uintptr_t instance, Mat4& world) {
     Mat4 root{};
     if (!read(instance, root.data(), sizeof(root))) return -1;
+    AcquireSRWLockShared(&anchorLock);
+    const int result = originalHead.read(instance, GetTickCount64(), root, world);
+    ReleaseSRWLockShared(&anchorLock);
+    return result;
+}
+float native_body::handLeadWait() {
+    return handWaitEma.load(std::memory_order_relaxed);
+}
+int native_body::viewAnchorWorld(Mat4& world) {
+    const auto hero = record.load();
+    const auto instance = hero ? pointer(hero) : 0;
+    if (!instance) return 0;
+    // The game writes the actor's matrix on its own thread: read it until two
+    // reads agree (a torn read is never used), at most three tries. The arms
+    // then fall back to the pose job's mapping for that frame.
+    Mat4 root{}, again{};
+    bool stable = false;
+    for (int tries = 0; tries < 3 && !stable; ++tries) {
+        if (!read(instance, root.data(), sizeof(root)) || !read(instance, again.data(), sizeof(again)))
+            return -1;
+        stable = std::memcmp(root.data(), again.data(), sizeof(root)) == 0;
+    }
+    if (!stable) return -1;
     AcquireSRWLockShared(&anchorLock);
     const int result = originalHead.read(instance, GetTickCount64(), root, world);
     ReleaseSRWLockShared(&anchorLock);

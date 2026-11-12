@@ -354,9 +354,10 @@ Your body and fists
   Take the other hand's  that hand closes into a fist on the web
   web
   Squeeze a grip ....... otherwise closes that hand into a fist (the grip
-                         when the trigger is your web button); with an enemy
-                         marked or within reach a hand moving fast is a fist
-                         too, even while it shoots
+                         when the trigger is your web button). A hand moving
+                         fast is a fist too (AIR FISTS off: only with an
+                         enemy marked or within reach), and with an enemy
+                         near even while it shoots
   T-pose, both triggers  calibrates your body (when the panel asks): his
                          height and arms become yours. B skips it
 
@@ -545,15 +546,17 @@ Moving
                          it holds for as long as you hold the trigger. No
                          web ball from that pull
   Both hands at your ... the game's suit power (its L3 + R3, which nothing
-  chest, both triggers   sent in VR before): both hands together before your
-                         chest, a fist's width apart, pull both triggers at
-                         once. No web balls from those pulls. The game uses
-                         its power when its meter is full, as in the flat game.
-                         Both hands buzz as it goes out. Builds before
-                         October 23 buzzed but sent the game nothing. Builds
-                         before November 5 kept any trigger pulled near the
-                         chest for it, so webs, web balls and the reel failed
-                         with the hands at rest there
+  chest, both triggers   sent in VR before): both hands together at your
+                         chest or held a little before it, wrists together,
+                         pull both triggers at once. No web balls from those
+                         pulls. The game uses its power when its meter is
+                         full, as in the flat game. Both hands buzz as it goes
+                         out. Builds before October 23 buzzed but sent the
+                         game nothing. Builds before November 5 kept any
+                         trigger pulled near the chest for it, so webs, web
+                         balls and the reel failed with the hands at rest
+                         there; builds of November 5 to 11 wanted both hands
+                         within 12 cm of one point, and most tries missed it
   Menu button .......... pause
   Hold both sticks in .. pause too, after a moment (both hands buzz). Under
                          SteamVR the Quest's menu button is SteamVR's own:
@@ -799,6 +802,38 @@ in the launcher or Settings > VR FLIPS)
                          REALISTIC FLIPS keeps priority and its own controls
   FLIP SPEED ........... adjusts this mode too
 
+Leg control (advanced: off until LEG CONTROL (ADVANCED) is switched on in
+Settings > VR LEGS (ADVANCED), or the launcher's Legs (advanced) section;
+works with CONTROLLED FLIPS or REALISTIC FLIPS, and turning it on with
+neither turns CONTROLLED FLIPS on)
+  Where ................ only in the air: swinging or falling free. Never on
+                         the ground, a wall, a wall run, a crawl or parkour;
+                         the legs blend back to the animation in about 0.2 s
+                         on a landing or a wall
+  Hold Y+X ............. engages the legs: while engaged the right stick
+                         poses them only (no turn, zip or heal). Y and X
+                         do nothing else while held together (no web zip,
+                         no gadget wheel)
+  Right stick .......... poses the legs, blending smoothly: centre straight,
+                         forward a jackknife, left or right both legs swung
+                         that way, back a rearward splay
+  Let go of Y+X ........ the legs stay engaged while you keep moving the
+                         stick; back to neutral for a moment and the stick
+                         turns, zips and heals again
+  Loose legs ........... they swing with your swing and spins, and their
+                         swing turns your body back a little (a jackknife
+                         tips you nose down; tucked legs spin a flip faster,
+                         stretched legs slow it, with REALISTIC FLIPS too)
+  LEG STIFFNESS ........ how firmly they hold the pose (100% unless you pick
+                         25 to 200%; lower swings more)
+  LEG DAMPING .......... how fast the swing settles (100%, 25 to 200%)
+  LEG COUPLING ......... how much the legs turn your body (50%, OFF to 100%)
+  spidy_vr.ini ......... leg_control, leg_stiffness_pct, leg_damping_pct,
+                         leg_coupling_pct. Kept with your own settings, not
+                         in shared profiles
+  Not engaged, off, or not in the air: the right stick is as it always was
+  (turn, zip, heal)
+
 Realistic flips (experimental, off until you switch REALISTIC FLIPS on in
 Settings > VR FLIPS or "Realistic flips" in the launcher's options, where
 its ten settings show under it; VR FLIPS has six of them, and MINIMUM
@@ -1009,6 +1044,18 @@ VR settings
                    RECORDING SMOOTHING (OFF unless you pick 10 to 100):
                    that view turns with your head more and more softly;
                    the headset's view never does.
+                   STABILIZATION (OFF unless you pick LIGHT or HEAVY) and
+                   CAMERA VERTICAL / HORIZONTAL / ANGLE (OFF unless you
+                   pick 25 to 500 ms): while an animation moves your view
+                   (Native Animation), soften how the animated camera
+                   rises and falls, slides sideways and turns. Your own
+                   head is never smoothed and your feet stay where they
+                   are; only the animation's sway is. LIGHT and HEAVY
+                   each have their own three times (LIGHT 75/50/75 ms,
+                   HEAVY 200/150/200 ms by default, 0 to 500 ms), used
+                   instead of the CAMERA rows while that level is on, and
+                   damp quick jolts more. A big jump (a cut, a
+                   teleport, over 45 degrees) is never smoothed.
   BODY ........... CALIBRATE BODY: set it to ON RESUME and resume, and the
                    T-pose panel asks for your measurements again. HEIGHT
                    (AUTO unless you pick one, 150 to 190 cm): your height.
@@ -1048,6 +1095,10 @@ VR settings
                    finishers. Launch and smash velocity, knockback, combo
                    rules and punch recognition do not change. Off restores
                    normal damage. This is not a global game damage setting.
+  AIR FISTS ...... in VR MOVEMENT after HALF PUNCH DAMAGE, on by default: a
+                   hand moved fast closes into a fist even with nobody to
+                   punch. Off: only with an enemy marked or within reach,
+                   so hands moved about at rest never close.
   WEB TIE ........ in VR WEBS, off by default.
                    Web an enemy up, put one web on a wall (a ceiling, a
                    beam, a crane, a lamp post) and the other on him, bring
