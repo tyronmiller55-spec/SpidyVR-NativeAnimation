@@ -582,6 +582,21 @@ struct PoseCoupling {
     float inertia = 1;
 };
 static_assert(sizeof(PoseCoupling) == 16);
+// Side channel from XR (POINT JUMP, point_jump.hpp): launch at `velocity` on
+// the next step, from the ground or Spidy's wall (Swing::pointJump). `serial`
+// rises with each new launch; the same serial again is ignored. Not a Command
+// or Settings field and not versioned with them (an older swing module has no
+// SpidySwingPointJump export; XR then never fires). `normal`: the surface's,
+// for the diagnostics only.
+struct PointJumpAsk {
+    uint32_t magic = 0x5357504a, version = 1, bytes = sizeof(PointJumpAsk), serial{};
+    Vec3 velocity{}, normal{};
+};
+static_assert(sizeof(PointJumpAsk) == 40);
+inline bool validPointJump(const PointJumpAsk& a) {
+    return a.magic == 0x5357504a && a.version == 1 && a.bytes == sizeof(PointJumpAsk) && finite(a.velocity) &&
+           length(a.velocity) > .1f && length(a.velocity) <= 80.f && finite(a.normal);
+}
 // A web's edges as Bends hands them on: its anchor is the edge nearest the
 // hand, and each edge records the one before it, back to where it sticks.
 inline Bends::Hand edgesOf(const Web& w) {
@@ -659,9 +674,18 @@ static_assert(sizeof(WebState) == 28 && sizeof(Data) == 272 && offsetof(Data, wa
 // 0x10: the steps the game's air state runs). A perch, a wall crawl and a
 // wall run are neither, and a sample whose step is over 100 ms older than
 // `nowQpc` says nothing (a perch or ledge the game animates without steps).
+// A body the swing runs on the ground (SPIDY RUN, SMOOTH WEB LANDING's carry:
+// owned and grounded) is not in the air. Until November 11 every owned step
+// was: REALISTIC FLIPS turned a player who walked into SPIDY RUN and moved
+// the arms ("when walking if you move your arms you start flipping on
+// ground", with a video), the wind's body haptics blew there, and the A of a
+// jump there never reached the game's jump that game_pad::JumpRelay waits to
+// give it (with SPIDY RUN JUMP off). One 0.8.5 session ran 495 such steps,
+// all at a standstill up and down and 10 to 14 m/s across.
 inline bool airborne(const Data& d, int64_t nowQpc, int64_t qpcFrequency) {
     const bool recent = d.qpc && static_cast<int64_t>(d.qpc) > nowQpc - qpcFrequency / 10;
-    return recent && (d.status == 1 || d.status == 2) && (d.owned || (!d.grounded && (d.collisionFlags & 0x10u)));
+    return recent && (d.status == 1 || d.status == 2) && !d.grounded &&
+           (d.owned || (d.collisionFlags & 0x10u));
 }
 // What a grip press would do now with each hand (SpidyAimSample), for the
 // headset's aim markers: worked out in the world-query callback with the rays

@@ -1,4 +1,6 @@
 #include "spidy/vr_settings.hpp"
+#include "spidy/camera_motion.hpp"
+#include "spidy/shooter_lock.hpp"
 #include "spidy/recording_fov.hpp"
 #include "spidy/seated.hpp"
 #include <algorithm>
@@ -123,6 +125,42 @@ static_assert(std::size(animatedHeadChoices) == std::size(animatedHeads));
 constexpr int animatedHeadsetSmooths[] = {0, 1, 2, 3, 4};
 constexpr const char* animatedHeadsetSmoothChoices[] = {"OFF", "LOW", "MEDIUM", "HIGH", "MAX"};
 static_assert(std::size(animatedHeadsetSmoothChoices) == std::size(animatedHeadsetSmooths));
+// CAMERA SMOOTHING's response times (ms) and STABILIZATION's banks.
+constexpr int cameraSmoothSteps[] = {0, 25, 50, 75, 100, 150, 200, 300, 500};
+constexpr const char* cameraSmoothChoices[] = {"OFF",    "25 MS",  "50 MS",  "75 MS", "100 MS",
+                                               "150 MS", "200 MS", "300 MS", "500 MS"};
+static_assert(std::size(cameraSmoothChoices) == std::size(cameraSmoothSteps));
+constexpr int cameraStabilizations[] = {0, 1, 2};
+constexpr const char* cameraStabilizationChoices[] = {"OFF", "LIGHT", "HEAVY"};
+static_assert(std::size(cameraStabilizationChoices) == std::size(cameraStabilizations));
+// SHOOTERS (shooter_lock::Mode) and LOCK STRENGTH, percent.
+constexpr int shooterModes[] = {0, 1, 2};
+constexpr const char* shooterModeChoices[] = {"CONTROLLER", "LOCKED TO ARM", "PALM"};
+static_assert(std::size(shooterModeChoices) == std::size(shooterModes));
+constexpr int shooterLockSteps[] = {25, 50, 75, 90, 100};
+constexpr const char* shooterLockChoices[] = {"25%", "50%", "75%", "90%", "100%"};
+static_assert(std::size(shooterLockChoices) == std::size(shooterLockSteps));
+// CAMERA MOTION's presets (camera_motion::presets, then CUSTOM), its amounts
+// (percent of the animation's motion) and HEAD ANGLE (degrees).
+constexpr int cameraMotions[] = {0, 1, 2, 3, 4};
+constexpr const char* cameraMotionChoices[] = {"FULL", "LIGHT", "HEAVY", "COMFORT", "CUSTOM"};
+static_assert(std::size(cameraMotionChoices) == std::size(cameraMotions) &&
+              std::size(cameraMotions) == camera_motion::presetCount + 1);
+constexpr int cameraAmountSteps[] = {0, 15, 25, 35, 50, 65, 75, 90, 100};
+constexpr const char* cameraAmountChoices[] = {"0% (STILL)", "15%", "25%", "35%", "50%",
+                                               "65%",        "75%", "90%", "100% (FULL)"};
+static_assert(std::size(cameraAmountChoices) == std::size(cameraAmountSteps));
+constexpr int cameraHeadAngles[] = {-30, -20, -10, -5, 0, 5, 10, 20, 30};
+constexpr const char* cameraHeadAngleChoices[] = {"DOWN 30", "DOWN 20", "DOWN 10", "DOWN 5", "LEVEL",
+                                                  "UP 5",    "UP 10",   "UP 20",   "UP 30"};
+static_assert(std::size(cameraHeadAngleChoices) == std::size(cameraHeadAngles));
+// LEG CONTROL's springs and coupling, percent.
+constexpr int legSpringSteps[] = {25, 50, 75, 100, 150, 200};
+constexpr const char* legSpringChoices[] = {"25%", "50%", "75%", "100%", "150%", "200%"};
+static_assert(std::size(legSpringChoices) == std::size(legSpringSteps));
+constexpr int legCouplingSteps[] = {0, 25, 50, 75, 100};
+constexpr const char* legCouplingChoices[] = {"OFF", "25%", "50%", "75%", "100%"};
+static_assert(std::size(legCouplingChoices) == std::size(legCouplingSteps));
 constexpr int runSpeeds[] = {50, 75, 100, 125, 150, 175, 200};
 constexpr const char* runSpeedChoices[] = {"50%", "75%", "100%", "125%", "150%", "175%", "200%"};
 static_assert(std::size(runSpeedChoices) == std::size(runSpeeds));
@@ -159,6 +197,28 @@ static_assert(std::size(webLandingImpactChoices) == std::size(webLandingImpactSt
 constexpr int forearmBlends[] = {0, 25, 50, 75, 100};
 constexpr const char* forearmBlendChoices[] = {"0%", "25%", "50%", "75%", "100%"};
 static_assert(std::size(forearmBlendChoices) == std::size(forearmBlends));
+// POINT JUMP (point_jump.hpp): its trigger, speeds (m/s), charge time (ms)
+// and surface push (percent).
+constexpr int pointJumpTriggers[] = {0, 1};
+constexpr const char* pointJumpTriggerChoices[] = {"A+B TOGETHER", "HOLD B, THEN A"};
+static_assert(std::size(pointJumpTriggerChoices) == std::size(pointJumpTriggers));
+constexpr int pointJumpMinSpeeds[] = {6, 7, 8, 9, 10, 12, 14};
+constexpr const char* pointJumpMinSpeedChoices[] = {"6 M/S", "7 M/S", "8 M/S", "9 M/S", "10 M/S", "12 M/S", "14 M/S"};
+static_assert(std::size(pointJumpMinSpeedChoices) == std::size(pointJumpMinSpeeds));
+constexpr int pointJumpMaxSpeeds[] = {14, 16, 18, 20, 22, 26, 30};
+constexpr const char* pointJumpMaxSpeedChoices[] = {"14 M/S", "16 M/S", "18 M/S", "20 M/S",
+                                                    "22 M/S", "26 M/S", "30 M/S"};
+static_assert(std::size(pointJumpMaxSpeedChoices) == std::size(pointJumpMaxSpeeds));
+constexpr int pointJumpFulls[] = {500, 750, 1000, 1250, 1500};
+constexpr const char* pointJumpFullChoices[] = {"0.5 S", "0.75 S", "1 S", "1.25 S", "1.5 S"};
+static_assert(std::size(pointJumpFullChoices) == std::size(pointJumpFulls));
+constexpr int pointJumpPushes[] = {0, 10, 25, 40, 60};
+constexpr const char* pointJumpPushChoices[] = {"0%", "10%", "25%", "40%", "60%"};
+static_assert(std::size(pointJumpPushChoices) == std::size(pointJumpPushes));
+// PUNCH VIEW EASE (view_ease.hpp): punch_view_ease_ms; 0 is the old snap.
+constexpr int punchViewEases[] = {0, 150, 200, 250, 300, 400};
+constexpr const char* punchViewEaseChoices[] = {"OFF (SNAP)", "150 MS", "200 MS", "250 MS", "300 MS", "400 MS"};
+static_assert(std::size(punchViewEaseChoices) == std::size(punchViewEases));
 } // namespace
 
 std::span<const int> steps(Item item) {
@@ -203,6 +263,48 @@ std::span<const int> steps(Item item) {
         return animatedHeads;
     case Item::animatedHeadsetSmooth:
         return animatedHeadsetSmooths;
+    case Item::cameraStabilization:
+        return cameraStabilizations;
+    case Item::cameraVertical:
+    case Item::cameraHorizontal:
+    case Item::cameraAngle:
+    case Item::lightVertical:
+    case Item::lightHorizontal:
+    case Item::lightAngle:
+    case Item::heavyVertical:
+    case Item::heavyHorizontal:
+    case Item::heavyAngle:
+        return cameraSmoothSteps;
+    case Item::legStiffness:
+    case Item::legDamping:
+        return legSpringSteps;
+    case Item::legCoupling:
+        return legCouplingSteps;
+    case Item::shooterMode:
+        return shooterModes;
+    case Item::shooterLock:
+        return shooterLockSteps;
+    case Item::cameraMotion:
+        return cameraMotions;
+    case Item::cameraPitch:
+    case Item::cameraRoll:
+    case Item::cameraBobVertical:
+    case Item::cameraBobSide:
+        return cameraAmountSteps;
+    case Item::cameraHeadAngle:
+        return cameraHeadAngles;
+    case Item::pointJumpTrigger:
+        return pointJumpTriggers;
+    case Item::punchViewEase:
+        return punchViewEases;
+    case Item::pointJumpMinSpeed:
+        return pointJumpMinSpeeds;
+    case Item::pointJumpMaxSpeed:
+        return pointJumpMaxSpeeds;
+    case Item::pointJumpFull:
+        return pointJumpFulls;
+    case Item::pointJumpPush:
+        return pointJumpPushes;
     case Item::runSpeed:
         return runSpeeds;
     case Item::slowMotionLength:
@@ -300,6 +402,60 @@ float numberOf(Item item, const Values& v) {
         return static_cast<float>(v.animatedHead);
     case Item::animatedHeadsetSmooth:
         return static_cast<float>(v.animatedHeadsetSmooth);
+    case Item::cameraStabilization:
+        return static_cast<float>(v.cameraStabilization);
+    case Item::cameraVertical:
+        return static_cast<float>(v.cameraVerticalMs);
+    case Item::cameraHorizontal:
+        return static_cast<float>(v.cameraHorizontalMs);
+    case Item::cameraAngle:
+        return static_cast<float>(v.cameraAngleMs);
+    case Item::lightVertical:
+        return static_cast<float>(v.lightVerticalMs);
+    case Item::lightHorizontal:
+        return static_cast<float>(v.lightHorizontalMs);
+    case Item::lightAngle:
+        return static_cast<float>(v.lightAngleMs);
+    case Item::heavyVertical:
+        return static_cast<float>(v.heavyVerticalMs);
+    case Item::heavyHorizontal:
+        return static_cast<float>(v.heavyHorizontalMs);
+    case Item::heavyAngle:
+        return static_cast<float>(v.heavyAngleMs);
+    case Item::legStiffness:
+        return static_cast<float>(v.legStiffnessPct);
+    case Item::legDamping:
+        return static_cast<float>(v.legDampingPct);
+    case Item::legCoupling:
+        return static_cast<float>(v.legCouplingPct);
+    case Item::shooterMode:
+        return static_cast<float>(shooter_lock::mode(v));
+    case Item::shooterLock:
+        return static_cast<float>(shooter_lock::strength(v));
+    case Item::cameraMotion:
+        return static_cast<float>(camera_motion::presetOf(v));
+    case Item::cameraPitch:
+        return static_cast<float>(v.cameraPitchPct);
+    case Item::cameraRoll:
+        return static_cast<float>(v.cameraRollPct);
+    case Item::cameraBobVertical:
+        return static_cast<float>(v.cameraBobVerticalPct);
+    case Item::cameraBobSide:
+        return static_cast<float>(v.cameraBobSidePct);
+    case Item::cameraHeadAngle:
+        return static_cast<float>(v.cameraHeadAngleDeg);
+    case Item::pointJumpTrigger:
+        return static_cast<float>(v.pointJumpTrigger);
+    case Item::punchViewEase:
+        return static_cast<float>(v.punchViewEaseMs);
+    case Item::pointJumpMinSpeed:
+        return static_cast<float>(v.pointJumpMinSpeed);
+    case Item::pointJumpMaxSpeed:
+        return static_cast<float>(v.pointJumpMaxSpeed);
+    case Item::pointJumpFull:
+        return static_cast<float>(v.pointJumpFullMs);
+    case Item::pointJumpPush:
+        return static_cast<float>(v.pointJumpNormalBias);
     case Item::runSpeed:
         return static_cast<float>(v.runSpeedPercent);
     case Item::slowMotionLength:
@@ -379,6 +535,8 @@ template <class V> auto switchOf(Item item, V& v) -> decltype(&v.aimMarkers) {
         return &v.flips;
     case Item::controlledFlips:
         return &v.controlledFlips;
+    case Item::legControl:
+        return &v.legControl;
     case Item::webButton:
         return &v.triggerWebs;
     case Item::webStyle:
@@ -395,6 +553,10 @@ template <class V> auto switchOf(Item item, V& v) -> decltype(&v.aimMarkers) {
         return &v.webTie;
     case Item::webLines:
         return &v.webLines;
+    case Item::airFists:
+        return &v.airFists;
+    case Item::pointJump:
+        return &v.pointJump;
     case Item::view:
         return &v.flatScreen;
     case Item::realisticFlips:
@@ -499,6 +661,35 @@ Values sanitized(Values v) {
     v.dodgeTumble = std::clamp(v.dodgeTumble, 0, 2);
     v.animatedHead = std::clamp(v.animatedHead, 0, 2);
     v.animatedHeadsetSmooth = std::clamp(v.animatedHeadsetSmooth, 0, 4);
+    v.cameraStabilization = std::clamp(v.cameraStabilization, 0, 2);
+    for (int Values::*ms : {&Values::cameraVerticalMs, &Values::cameraHorizontalMs, &Values::cameraAngleMs,
+                            &Values::lightVerticalMs, &Values::lightHorizontalMs, &Values::lightAngleMs,
+                            &Values::heavyVerticalMs, &Values::heavyHorizontalMs, &Values::heavyAngleMs})
+        v.*ms = std::clamp(v.*ms, 0, 500);
+    v.legStiffnessPct = std::clamp(v.legStiffnessPct, 25, 200);
+    v.legDampingPct = std::clamp(v.legDampingPct, 25, 200);
+    v.legCouplingPct = std::clamp(v.legCouplingPct, 0, 100);
+    for (int Values::*pct : {&Values::cameraPitchPct, &Values::cameraRollPct, &Values::cameraBobVerticalPct,
+                             &Values::cameraBobSidePct})
+        v.*pct = std::clamp(v.*pct, 0, 100);
+    v.cameraHeadAngleDeg = std::clamp(v.cameraHeadAngleDeg, -camera_motion::maxHeadAngle, camera_motion::maxHeadAngle);
+    v.legDoubleTapMs = std::clamp(v.legDoubleTapMs, 150, 600);
+    v.pointJumpTrigger = std::clamp(v.pointJumpTrigger, 0, 1);
+    v.punchViewEaseMs = std::clamp(v.punchViewEaseMs, 0, 1000);
+    v.pointJumpChordMs = std::clamp(v.pointJumpChordMs, 20, 150);
+    v.pointJumpTapMs = std::clamp(v.pointJumpTapMs, 50, 400);
+    v.pointJumpFullMs = std::clamp(v.pointJumpFullMs, 300, 2000);
+    v.pointJumpMinSpeed = std::clamp(v.pointJumpMinSpeed, 3, 20);
+    v.pointJumpMaxSpeed = std::clamp(v.pointJumpMaxSpeed, std::max(5, v.pointJumpMinSpeed), 40);
+    v.pointJumpCurve = std::clamp(v.pointJumpCurve, 0, 1);
+    v.pointJumpNormalBias = std::clamp(v.pointJumpNormalBias, 0, 100);
+    v.pointJumpMinOutDegrees = std::clamp(v.pointJumpMinOutDegrees, 0, 45);
+    v.pointJumpKeep = std::clamp(v.pointJumpKeep, 0, 100);
+    v.pointJumpCoyoteMs = std::clamp(v.pointJumpCoyoteMs, 0, 500);
+    v.pointJumpBufferMs = std::clamp(v.pointJumpBufferMs, 0, 500);
+    v.pointJumpCooldownMs = std::clamp(v.pointJumpCooldownMs, 0, 2000);
+    v.pointJumpZipGuardMs = std::clamp(v.pointJumpZipGuardMs, 0, 2000);
+    v.pointJumpDodgeHoldMs = std::clamp(v.pointJumpDodgeHoldMs, 100, 600);
     v.runSpeedPercent = std::clamp(v.runSpeedPercent, 50, 200);
     v.slowMotionSeconds = std::clamp(v.slowMotionSeconds, 3, slowMotionEndless);
     v.softLockMetres = std::clamp(v.softLockMetres, 0, 40);
@@ -526,9 +717,9 @@ Values sanitized(Values v) {
     v.automaticHandThreshold = std::clamp(v.automaticHandThreshold, 50, 300);
     return v;
 }
-const std::array<Row, 112>& rows() {
+const std::array<Row, 142>& rows() {
     // The help fits the game's description column beside the rows.
-    static const std::array<Row, 112> all{{
+    static const std::array<Row, 142> all{{
         {Item::none, "WEBS", nullptr, {}},
         {Item::webStyle, "WEB STYLE",
          "Arcade: webs pass lamp posts, signs and cars, and swings stay above the street.", webStyleChoices},
@@ -699,9 +890,10 @@ const std::array<Row, 112>& rows() {
         {Item::webAngle, "WEB ANGLE", "Tilts the webs up or down from the controller's line. 0 as before.",
          webAngleChoices},
         {Item::wristShooters,
-         "WRIST SHOOTERS",
-         "Full forearm aim. WEB AIM: MODEL FOREARM already does this, with blend control.",
-         {}},
+         "WRIST SHOOTERS (OLD)",
+         "Replaced by SHOOTERS: LOCKED TO ARM. Kept so older settings files still load.",
+         {},
+         Place::launcher},
         {Item::dodgeTumble, "DODGE TUMBLE",
          "The view leans or rolls with the game's dodge, so you see it was one.", dodgeTumbleChoices},
         {Item::runCurve,
@@ -728,10 +920,12 @@ const std::array<Row, 112>& rows() {
          "RUN FROM STANDING",
          "With SPIDY RUN: hold the stick fully to start it from a stand. Off as before.",
          {}},
-        {Item::webAimSource, "WEB AIM",
-         "MODEL FOREARM: webs follow the body's forearm. CONTROLLER as before.", webAimSourceChoices},
-        {Item::forearmBlend, "FOREARM BLEND",
-         "With WEB AIM: MODEL FOREARM, blend from the controller (0%) to forearm (100%).", forearmBlendChoices},
+        {Item::webAimSource, "WEB AIM (OLD)",
+         "Replaced by SHOOTERS. Kept so older settings files still load.", webAimSourceChoices,
+         Place::launcher},
+        {Item::forearmBlend, "FOREARM BLEND (OLD)",
+         "Replaced by LOCK STRENGTH. Kept so older settings files still load.", forearmBlendChoices,
+         Place::launcher},
         {Item::webLandingSmooth,
          "SMOOTH WEB LANDING",
          "Holding a web, a landing under WEB LANDING IMPACT is soft and keeps its speed.",
@@ -751,12 +945,14 @@ const std::array<Row, 112>& rows() {
          "SPIDY RUN JUMP",
          "A in SPIDY RUN or the landing carry jumps at once, keeping the speed. Off: v5's.",
          {}},
-        {Item::forearmAimLimit, "FOREARM AIM LIMIT",
-         "How far MODEL FOREARM and WRIST SHOOTERS turn off the controller's line.", forearmAimLimitChoices},
+        {Item::forearmAimLimit, "FOREARM AIM LIMIT (RETIRED)",
+         "No longer used: LOCKED TO ARM follows the whole arm. Kept for older files.", forearmAimLimitChoices,
+         Place::launcher},
         {Item::palmShooters,
-         "PALM SHOOTERS",
-         "Adds a palm-side quarter turn to your chosen web aim direction.",
-         {}},
+         "PALM SHOOTERS (OLD)",
+         "Replaced by SHOOTERS: PALM. Kept so older settings files still load.",
+         {},
+         Place::launcher},
         {Item::headProbe,
          "HEAD PROBE",
          "Diagnostics only: logs Spidey's head against the headset. Changes nothing.",
@@ -816,6 +1012,80 @@ const std::array<Row, 112>& rows() {
          slowMotionLengthChoices},
         {Item::softLock, "SOFT LOCK", "Grip webs snap to an enemy or prop this near your aim. Closer wins.",
          softLockChoices},
+        {Item::cameraStabilization, "STABILIZATION",
+         "Steadies the animated camera. LIGHT/HEAVY use their rows; OFF the CAMERA rows.",
+         cameraStabilizationChoices},
+        {Item::cameraVertical, "CAMERA VERTICAL",
+         "Animated head up/down bob smoothing (STABILIZATION OFF). Headset stays 1:1.",
+         cameraSmoothChoices},
+        {Item::cameraHorizontal, "CAMERA HORIZONTAL",
+         "Animated head sway smoothing (STABILIZATION OFF). Your feet stay exact.",
+         cameraSmoothChoices},
+        {Item::cameraAngle, "CAMERA ANGLE",
+         "Animated head turn smoothing (STABILIZATION OFF). Headset look stays 1:1.",
+         cameraSmoothChoices},
+        {Item::lightVertical, "LIGHT VERTICAL", "Up/down smoothing used by STABILIZATION LIGHT.",
+         cameraSmoothChoices},
+        {Item::lightHorizontal, "LIGHT HORIZONTAL", "Side/forward smoothing used by STABILIZATION LIGHT.",
+         cameraSmoothChoices},
+        {Item::lightAngle, "LIGHT ANGLE", "Turn smoothing used by STABILIZATION LIGHT.", cameraSmoothChoices},
+        {Item::heavyVertical, "HEAVY VERTICAL", "Up/down smoothing used by STABILIZATION HEAVY.",
+         cameraSmoothChoices},
+        {Item::heavyHorizontal, "HEAVY HORIZONTAL", "Side/forward smoothing used by STABILIZATION HEAVY.",
+         cameraSmoothChoices},
+        {Item::heavyAngle, "HEAVY ANGLE", "Turn smoothing used by STABILIZATION HEAVY.", cameraSmoothChoices},
+        {Item::legControl,
+         "LEG CONTROL (ADVANCED)",
+         "Hold Y+X midair: right stick poses the legs. With CONTROLLED or REALISTIC FLIPS.",
+         {}},
+        {Item::legStiffness, "LEG STIFFNESS", "How firmly the legs hold the stick's pose. Lower swings more.",
+         legSpringChoices},
+        {Item::legDamping, "LEG DAMPING", "How fast the legs' swing settles. Lower keeps them swinging.",
+         legSpringChoices},
+        {Item::legCoupling, "LEG COUPLING", "How much the legs' swing turns your body in the air.",
+         legCouplingChoices},
+        {Item::airFists,
+         "AIR FISTS",
+         "A fast hand closes into a fist with nobody to punch. Off: only near enemies.",
+         {}},
+        {Item::shooterMode, "SHOOTERS",
+         "Where webs leave. LOCKED TO ARM: along the arm you see. CONTROLLER: as before.",
+         shooterModeChoices},
+        {Item::shooterLock, "LOCK STRENGTH",
+         "LOCKED TO ARM: how much of the arm's line webs take. 100% is fully on your arm.",
+         shooterLockChoices},
+        {Item::cameraMotion, "CAMERA MOTION",
+         "How much animation moves your view. Fills the rows below; edit for CUSTOM.",
+         cameraMotionChoices},
+        {Item::cameraPitch, "PITCH",
+         "Animation nodding your view up/down. 0% level, 100% full. Head stays 1:1.",
+         cameraAmountChoices},
+        {Item::cameraRoll, "ROLL",
+         "Animation leaning the horizon. 0% level, 100% full. Flips always turn fully.",
+         cameraAmountChoices},
+        {Item::cameraBobVertical, "BOB UP/DOWN",
+         "Animation head bob up and down. 0% steady, 100% full. Your feet stay exact.",
+         cameraAmountChoices},
+        {Item::cameraBobSide, "BOB SIDE",
+         "Animation head sway side to side and fore-aft. 0% steady, 100% full.",
+         cameraAmountChoices},
+        {Item::cameraHeadAngle, "HEAD ANGLE",
+         "Tilts the animated view below (DOWN) or above (UP) the horizon. LEVEL as before.",
+         cameraHeadAngleChoices},
+        {Item::pointJump,
+         "POINT JUMP (EXPERIMENTAL)",
+         "On a surface, A+B charges a jump the way you look. Tap: quick. Hold: bigger.",
+         {}},
+        {Item::pointJumpTrigger, "POINT JUMP TRIGGER",
+         "A+B together, or hold B then A (B alone still dodges on release).", pointJumpTriggerChoices},
+        {Item::pointJumpMinSpeed, "TAP SPEED", "A quick tap's launch speed.", pointJumpMinSpeedChoices},
+        {Item::pointJumpMaxSpeed, "MAX SPEED", "A full charge's launch speed.", pointJumpMaxSpeedChoices},
+        {Item::pointJumpFull, "CHARGE TIME", "How long to hold for the full charge.", pointJumpFullChoices},
+        {Item::pointJumpPush, "SURFACE PUSH",
+         "How much the jump leans out of the surface you stand on. 25% default.", pointJumpPushChoices},
+        // November 12: PUNCH VIEW EASE (view_ease.hpp).
+        {Item::punchViewEase, "PUNCH VIEW EASE",
+         "A punch's switch to VR: view held, then eased onto your feet. OFF: the old snap.", punchViewEaseChoices},
         {Item::realisticFlips,
          "REALISTIC FLIPS",
          "Momentum rotation from arms and webs. FLIPS also enables left-stick steering.",
@@ -867,8 +1137,7 @@ const std::array<Screen, categoryCount>& screens() {
     static constexpr Item webs[] = {
         Item::webStyle, Item::webButton, Item::aimMarkers, Item::airWebs,
         Item::smartAnchor, Item::webRange, Item::webSpeed, Item::eyeAim,
-        Item::webAimSource, Item::forearmBlend, Item::forearmAimLimit, Item::wristShooters,
-        Item::palmShooters, Item::webAngle, Item::webTie, Item::webLines,
+        Item::webTie, Item::webLines,
     };
     static constexpr Item swinging[] = {
         Item::swingSpeed, Item::weight, Item::elasticWeb, Item::softRelease,
@@ -880,7 +1149,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::spidyRun, Item::spidyRunFromStanding, Item::spidyRunJump, Item::momentumLeap,
         Item::earlyJump, Item::softLanding, Item::webLandingSmooth, Item::webLandingImpact,
         Item::handClimb, Item::joystickRunCamera, Item::wallRunCameraTilt, Item::combatResponsive,
-        Item::combatVisuals, Item::halfPunchDamage, Item::runLogs,
+        Item::combatVisuals, Item::halfPunchDamage, Item::airFists, Item::runLogs,
     };
     static constexpr Item flips[] = {
         Item::realisticFlips, Item::flips, Item::controlledFlips, Item::flipSpeed,
@@ -904,6 +1173,32 @@ const std::array<Screen, categoryCount>& screens() {
         Item::animatedSteering, Item::animatedAirSpin, Item::headProbe, Item::runSpeed,
         Item::slowMotionLength, Item::softLock,
     };
+    // CAMERA & STABILIZATION (November 11): how much the animation moves the
+    // view (amounts, HEAD ANGLE), then how smoothly (the response times).
+    static constexpr Item camera[] = {
+        Item::cameraMotion, Item::cameraPitch, Item::cameraRoll, Item::cameraBobVertical,
+        Item::cameraBobSide, Item::cameraHeadAngle,
+        Item::cameraStabilization, Item::punchViewEase, Item::cameraVertical, Item::cameraHorizontal, Item::cameraAngle,
+        Item::lightVertical, Item::lightHorizontal, Item::lightAngle,
+        Item::heavyVertical, Item::heavyHorizontal, Item::heavyAngle,
+    };
+    // WEB SHOOTERS (November 11): one choice and its strength, WEB ANGLE on
+    // top; the old rows they replace stay in the launcher's file only.
+    static constexpr Item shooters[] = {
+        Item::shooterMode, Item::shooterLock, Item::webAngle,
+        Item::webAimSource, Item::forearmBlend, Item::forearmAimLimit, Item::wristShooters,
+        Item::palmShooters,
+    };
+    // LEGS (ADVANCED) (November 11): shown even while unavailable, the help
+    // saying why (shownWhenInactive).
+    static constexpr Item legs[] = {
+        Item::legControl, Item::legStiffness, Item::legDamping, Item::legCoupling,
+    };
+    // POINT JUMP (November 11): its switch, trigger and feel.
+    static constexpr Item pointJump[] = {
+        Item::pointJump, Item::pointJumpTrigger, Item::pointJumpMinSpeed,
+        Item::pointJumpMaxSpeed, Item::pointJumpFull, Item::pointJumpPush,
+    };
     static const std::array<Screen, categoryCount> all{{
         {"Setup", "VR SETUP", setup},
         {"Webs", "VR WEBS", webs},
@@ -913,6 +1208,10 @@ const std::array<Screen, categoryCount>& screens() {
         {"Haptics", "VR HAPTICS", feedback},
         {"Display", "VR DISPLAY", display},
         {"Native Animation", "VR NATIVE ANIMATION", nativeAnimation},
+        {"Camera & Stabilization", "VR CAMERA & STABILIZATION", camera},
+        {"Web Shooters", "VR WEB SHOOTERS", shooters},
+        {"Legs (Advanced)", "VR LEGS (ADVANCED)", legs},
+        {"Point Jump", "VR POINT JUMP", pointJump},
     }};
     return all;
 }
@@ -922,6 +1221,8 @@ const char* inactiveReason(Item item, const Values& v) {
         return v.smoothTurn > 0 ? "Turn Smooth turn off to use Snap turn." : nullptr;
     case Item::smartAnchor:
         return v.airWebs ? "Turn Webs hold in open air off to use Smart anchor." : nullptr;
+    case Item::shooterLock:
+        return shooter_lock::mode(v) != shooter_lock::Mode::arm ? "Set SHOOTERS to LOCKED TO ARM first." : nullptr;
     case Item::wristShooters:
         return v.webAimSource == 1 ? "Web aim already follows the model forearm." : nullptr;
     case Item::forearmBlend:
@@ -941,6 +1242,16 @@ const char* inactiveReason(Item item, const Values& v) {
         return !v.webLandingSmooth ? "Enable Smooth web landing first." : nullptr;
     case Item::controlledFlips:
         return v.realisticFlips ? "Realistic flips takes priority over Controlled flips." : nullptr;
+    case Item::legControl:
+        return !v.controlledFlips && !v.realisticFlips
+                   ? "Needs CONTROLLED or REALISTIC FLIPS. ON here turns CONTROLLED FLIPS on."
+                   : nullptr;
+    case Item::legStiffness:
+    case Item::legDamping:
+    case Item::legCoupling:
+        return !v.legControl ? "Turn LEG CONTROL on first."
+               : !v.controlledFlips && !v.realisticFlips ? "LEG CONTROL needs CONTROLLED or REALISTIC FLIPS on."
+                                                         : nullptr;
     case Item::flips:
         return v.controlledFlips && !v.realisticFlips ? "Controlled flips takes priority over basic Flips." : nullptr;
     case Item::flipSpeed:
@@ -966,10 +1277,28 @@ const char* inactiveReason(Item item, const Values& v) {
         return v.bodyHaptics == 0 ? "Raise Body haptics above zero first." : nullptr;
     case Item::steadyHud:
         return v.hud == 0 ? "Enable the HUD first." : nullptr;
+    case Item::pointJumpTrigger:
+    case Item::pointJumpMinSpeed:
+    case Item::pointJumpMaxSpeed:
+    case Item::pointJumpFull:
+    case Item::pointJumpPush:
+        return !v.pointJump ? "Turn POINT JUMP on first." : nullptr;
     case Item::recordingSmoothing:
         return v.recordingFov == 0 ? "Enable Recording FOV first." : nullptr;
     default:
         return nullptr;
+    }
+}
+bool shownWhenInactive(Item item) {
+    switch (item) {
+    case Item::legControl:
+    case Item::legStiffness:
+    case Item::legDamping:
+    case Item::legCoupling:
+    case Item::shooterLock:
+        return true;
+    default:
+        return false;
     }
 }
 Values resetCategory(Category category, Values v) {
@@ -1013,6 +1342,29 @@ bool choose(Item item, int index, Values& v) {
             v.animatedAir = v.animatedOnly = v.animatedSteering = false;
             v.animatedAirSpin = 0;
         }
+        return !(v == before);
+    }
+    if (item == Item::legControl && index == 1) {
+        // LEG CONTROL ON does what it says: it works with CONTROLLED or
+        // REALISTIC FLIPS (November 11 23:35); with neither, CONTROLLED FLIPS
+        // comes on. REALISTIC FLIPS is left as the player set it.
+        const Values before = v;
+        v.legControl = true;
+        if (!v.controlledFlips && !v.realisticFlips)
+            v.controlledFlips = true;
+        return !(v == before);
+    }
+    if (item == Item::shooterMode || item == Item::shooterLock || item == Item::cameraMotion) {
+        const auto s = steps(item);
+        if (index < 0 || index >= static_cast<int>(s.size()))
+            return false;
+        const Values before = v;
+        if (item == Item::shooterMode)
+            shooter_lock::setMode(v, static_cast<shooter_lock::Mode>(s[index]));
+        else if (item == Item::shooterLock)
+            shooter_lock::setStrength(v, s[index]);
+        else
+            camera_motion::applyPreset(v, s[index]);
         return !(v == before);
     }
     if (bool* on = switchOf(item, v)) {
@@ -1089,6 +1441,80 @@ bool choose(Item item, int index, Values& v) {
         break;
     case Item::animatedHeadsetSmooth:
         v.animatedHeadsetSmooth = s[index];
+        break;
+    case Item::cameraStabilization:
+        v.cameraStabilization = s[index];
+        break;
+    case Item::cameraVertical:
+        v.cameraVerticalMs = s[index];
+        break;
+    case Item::cameraHorizontal:
+        v.cameraHorizontalMs = s[index];
+        break;
+    case Item::cameraAngle:
+        v.cameraAngleMs = s[index];
+        break;
+    case Item::lightVertical:
+        v.lightVerticalMs = s[index];
+        break;
+    case Item::lightHorizontal:
+        v.lightHorizontalMs = s[index];
+        break;
+    case Item::lightAngle:
+        v.lightAngleMs = s[index];
+        break;
+    case Item::heavyVertical:
+        v.heavyVerticalMs = s[index];
+        break;
+    case Item::heavyHorizontal:
+        v.heavyHorizontalMs = s[index];
+        break;
+    case Item::heavyAngle:
+        v.heavyAngleMs = s[index];
+        break;
+    case Item::legStiffness:
+        v.legStiffnessPct = s[index];
+        break;
+    case Item::legDamping:
+        v.legDampingPct = s[index];
+        break;
+    case Item::legCoupling:
+        v.legCouplingPct = s[index];
+        break;
+    case Item::cameraPitch:
+        v.cameraPitchPct = s[index];
+        break;
+    case Item::cameraRoll:
+        v.cameraRollPct = s[index];
+        break;
+    case Item::cameraBobVertical:
+        v.cameraBobVerticalPct = s[index];
+        break;
+    case Item::cameraBobSide:
+        v.cameraBobSidePct = s[index];
+        break;
+    case Item::cameraHeadAngle:
+        v.cameraHeadAngleDeg = s[index];
+        break;
+    case Item::pointJumpTrigger:
+        v.pointJumpTrigger = s[index];
+        break;
+    case Item::punchViewEase:
+        v.punchViewEaseMs = s[index];
+        break;
+    case Item::pointJumpMinSpeed:
+        v.pointJumpMinSpeed = s[index];
+        v.pointJumpMaxSpeed = std::max(v.pointJumpMaxSpeed, v.pointJumpMinSpeed);
+        break;
+    case Item::pointJumpMaxSpeed:
+        v.pointJumpMaxSpeed = s[index];
+        v.pointJumpMinSpeed = std::min(v.pointJumpMinSpeed, v.pointJumpMaxSpeed);
+        break;
+    case Item::pointJumpFull:
+        v.pointJumpFullMs = s[index];
+        break;
+    case Item::pointJumpPush:
+        v.pointJumpNormalBias = s[index];
         break;
     case Item::runSpeed:
         v.runSpeedPercent = s[index];
@@ -1264,6 +1690,47 @@ constexpr TabOnly tabOnly[] = {
     {"animated_hybrid", &Values::animatedHybrid, nullptr},
     {"animated_hybrid_speed_ms", nullptr, &Values::animatedHybridSpeedMs},
     {"web_lines", &Values::webLines, nullptr},
+    {"animated_full_arms", &Values::animatedFullArms, nullptr},
+    {"camera_stabilization", nullptr, &Values::cameraStabilization},
+    {"camera_vertical_ms", nullptr, &Values::cameraVerticalMs},
+    {"camera_horizontal_ms", nullptr, &Values::cameraHorizontalMs},
+    {"camera_angle_ms", nullptr, &Values::cameraAngleMs},
+    {"camera_light_vertical_ms", nullptr, &Values::lightVerticalMs},
+    {"camera_light_horizontal_ms", nullptr, &Values::lightHorizontalMs},
+    {"camera_light_angle_ms", nullptr, &Values::lightAngleMs},
+    {"camera_heavy_vertical_ms", nullptr, &Values::heavyVerticalMs},
+    {"camera_heavy_horizontal_ms", nullptr, &Values::heavyHorizontalMs},
+    {"camera_heavy_angle_ms", nullptr, &Values::heavyAngleMs},
+    {"spherical_aim", &Values::sphericalAim, nullptr},
+    {"leg_control", &Values::legControl, nullptr},
+    {"leg_stiffness_pct", nullptr, &Values::legStiffnessPct},
+    {"leg_damping_pct", nullptr, &Values::legDampingPct},
+    {"leg_coupling_pct", nullptr, &Values::legCouplingPct},
+    {"leg_double_tap_ms", nullptr, &Values::legDoubleTapMs},
+    {"punch_view_ease_ms", nullptr, &Values::punchViewEaseMs},
+    {"air_fists", &Values::airFists, nullptr},
+    {"camera_pitch_pct", nullptr, &Values::cameraPitchPct},
+    {"camera_roll_pct", nullptr, &Values::cameraRollPct},
+    {"camera_bob_vertical_pct", nullptr, &Values::cameraBobVerticalPct},
+    {"camera_bob_side_pct", nullptr, &Values::cameraBobSidePct},
+    {"camera_head_angle_deg", nullptr, &Values::cameraHeadAngleDeg},
+    {"point_jump", &Values::pointJump, nullptr},
+    {"point_jump_trigger", nullptr, &Values::pointJumpTrigger},
+    {"point_jump_chord_ms", nullptr, &Values::pointJumpChordMs},
+    {"point_jump_tap_ms", nullptr, &Values::pointJumpTapMs},
+    {"point_jump_full_ms", nullptr, &Values::pointJumpFullMs},
+    {"point_jump_min_speed", nullptr, &Values::pointJumpMinSpeed},
+    {"point_jump_max_speed", nullptr, &Values::pointJumpMaxSpeed},
+    {"point_jump_curve", nullptr, &Values::pointJumpCurve},
+    {"point_jump_normal_bias", nullptr, &Values::pointJumpNormalBias},
+    {"point_jump_min_out_degrees", nullptr, &Values::pointJumpMinOutDegrees},
+    {"point_jump_keep", nullptr, &Values::pointJumpKeep},
+    {"point_jump_coyote_ms", nullptr, &Values::pointJumpCoyoteMs},
+    {"point_jump_buffer_ms", nullptr, &Values::pointJumpBufferMs},
+    {"point_jump_cooldown_ms", nullptr, &Values::pointJumpCooldownMs},
+    {"point_jump_zip_guard_ms", nullptr, &Values::pointJumpZipGuardMs},
+    {"point_jump_dodge_hold_ms", nullptr, &Values::pointJumpDodgeHoldMs},
+    {"point_jump_in_combat", &Values::pointJumpInCombat, nullptr},
 };
 } // namespace
 std::string tabOnlyText(const Values& v) {

@@ -187,12 +187,18 @@ struct Targets {
     bool airMomentum{};
     Vec3 airVelocity{}; // model-space metres per second, when airMomentum
     bool tuck{};        // visual knees-to-chest; ignored unless airborne
+    // LEG CONTROL (leg_control.hpp): each leg's hip angles and knee bend in
+    // the body's frame (pitch forward +, side toward the body's left +),
+    // from the right stick and the legs' own swing. Only while
+    // airLegsAllowed; it replaces the momentum trail (its swing is its own).
+    struct LegAngles {
+        float pitch{}, side{}, knee{};
+    };
+    bool legControl{};
+    std::array<LegAngles, 2> legAngles{};
     // Directional running cycle; head and arms remain tracked.
     bool wallRun{};
     Vec3 runNormal{}, runAhead{};
-    // LAUNCH FACING (model space; zero: none): while set, the body faces it
-    // instead of turning after the headset (a point launch faces momentum).
-    Vec3 faceAhead{};
     float runPhase{}, runSpeed{}, runTorsoAngle = .85f;
     float runBank = .85f, runLean = .5f, runStride = 1.f;
     // The player's up in model space: the way he stands. The world's up on
@@ -411,7 +417,22 @@ struct State {
     Vec3 airFwd{};
     // Visual tuck: 0..1, eases toward Targets::tuck at Config::blendSpeed.
     float tuckWeight{};
+    // Air-momentum legs' share, 0..1: in over airLegBlendSeconds while
+    // airLegsAllowed, out as smoothly on a landing or a wall's contact.
+    float airLegWeight{};
+    // LEG CONTROL's share, 0..1, in and out over airLegBlendSeconds.
+    float legControlWeight{};
+    std::array<Targets::LegAngles, 2> legAngles{}; // the last pose given, for the blend out
 };
+// PROCEDURAL LEGS ONLY IN THE AIR (the user, November 10 21:03: "procedural
+// legs are only in midair or during swinging"): the momentum trail and the
+// tuck may move the legs only while airborne and on nothing - no kick, wall
+// run, crawl, vent hands, plant or kneel.
+constexpr float airLegBlendSeconds = .2f;
+template <class T>
+inline bool airLegsAllowed(const T& t) {
+    return t.airborne && !t.kick && !t.wallRun && !t.crawl && !t.surfaceHands && !t.plant && !t.kneel;
+}
 // Turns the body's yaw by `radians` about the up, at once: the player snap
 // turned (body and all), or the model turned under the body (the hero's
 // actor turned in the world, which turns a still headset back as much).

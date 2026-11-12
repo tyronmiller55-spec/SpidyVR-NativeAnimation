@@ -152,6 +152,9 @@ struct Values {
     int heightCm = 0;
     bool seated = false;
     bool combatVisuals = true; // combat overlays and automatic combat slow-motion VFX
+    // A fast hand closes into a fist with nobody to punch too (the tab's AIR
+    // FISTS; hand_pose.hpp). Off: only with an enemy marked or within reach.
+    bool airFists = true;
     // Aiming with the eyes (the tab's EYE AIM; eyeAimShots, eyeAimZips): web
     // balls go where the eyes look, from the hand that pulled; a zip goes to
     // the point the eyes look at, the game's camera being turned onto it.
@@ -338,6 +341,43 @@ struct Values {
     // ease the view toward the headset's look. Translation stays current, so
     // leaning and travel do not trail. Not a Settings / Command field.
     int animatedHeadsetSmooth = 0;
+    // CAMERA SMOOTHING (the user, November 10 20:54: "Give me settings for
+    // vertical, horizontal, and camera angle smoothing, and give a toggle that
+    // applies a heavy stabilization and smoothing to the motion, yet still uses
+    // the settings. Two levels, Heavy and Light"). While the animated head
+    // carries the view (ANIMATED HEAD), the head the eyes sit on is smoothed:
+    // VERTICAL and HORIZONTAL its travel relative to the feet (the bob; the
+    // feet themselves, and so where he is, stay exact), ANGLE its turning. The
+    // headset's own look and lean stay 1:1 (headset_smoothing.hpp). Response
+    // times in milliseconds, 0 off. STABILIZATION picks the bank: OFF the
+    // three CAMERA rows, LIGHT the three LIGHT rows, HEAVY the three HEAVY
+    // rows (heavier speed damping too). Off and 0 by default: as before.
+    int cameraStabilization = 0;
+    int cameraVerticalMs = 0, cameraHorizontalMs = 0, cameraAngleMs = 0;
+    int lightVerticalMs = 75, lightHorizontalMs = 50, lightAngleMs = 75;
+    int heavyVerticalMs = 200, heavyHorizontalMs = 150, heavyAngleMs = 200;
+    // 360 DEGREE SPHERICAL AIM (spidy_vr.ini spherical_aim; spherical_aim.hpp):
+    // with WRIST SHOOTERS or MODEL FOREARM, a contorted arm (over or behind
+    // the head, down by the legs) aims along the forearm learned on the
+    // controller, not the body solve's guess. On by default; 0 is as before.
+    // Not on the menu.
+    bool sphericalAim = true;
+    // LEG CONTROL (ADVANCED; leg_control.hpp): with CONTROLLED FLIPS on and
+    // the body airborne or swinging free, the right stick poses the legs
+    // (centre straight, forward jackknife, left/right splays, back a rearward
+    // splay) and they swing loose with the body's motion and turn it back
+    // (angular momentum). A double tap up zips, down heals. Off by default.
+    // LEG STIFFNESS, LEG DAMPING: percent of the springs' defaults (1.6 Hz,
+    // 0.35); LEG COUPLING: percent of the legs' full turn on the body.
+    // leg_double_tap_ms (spidy_vr.ini only): the double tap's window; unused
+    // since November 12 (engaged legs never zip or heal), kept so old files
+    // read the same. November 12 (t67u, leg_hold.hpp): the legs engage while
+    // Y+X are held and stay while the right stick is moved; neutral ends
+    // them. No setting (the thumb rest tap and leg_toggle_input are gone; an
+    // old leg_toggle_input line is ignored).
+    bool legControl = false;
+    int legStiffnessPct = 100, legDampingPct = 100, legCouplingPct = 50;
+    int legDoubleTapMs = 300;
     // RUN SPEED, percent (the tab's RUN SPEED; Swing::setRunSpeedPercent):
     // scales the speed SpidyVR's OWN ground run (SPIDY RUN and RUN FROM
     // STANDING) puts the body at, 50 to 200. The game's native run/sprint is
@@ -363,6 +403,12 @@ struct Values {
     bool animatedSteering = false;
     // ANIMATED ARMS: controller arm overlay while yielding (animated_arms.hpp).
     bool animatedArms = true;
+    // ANIMATED FULL ARMS (spidy_vr.ini animated_full_arms; the user, Nov 9
+    // 22:27): while the animation owns, the arms keep every SpidyVR control -
+    // punches open web strikes that pull him out of the animation (lunge /
+    // teleport) - instead of the contact-only policy. On by default; 0 brings
+    // back contact-only arms. Not on the menu.
+    bool animatedFullArms = true;
     // ANIMATED TORSO: with ANIMATED ARMS, bound waist→chest toward controller
     // reaches (animated_torso.hpp). On by default; bounded limits.
     bool animatedTorso = true;
@@ -394,6 +440,45 @@ struct Values {
     // How much speed a fast one-hand web yank adds, percent (the tab's SINGLE
     // HAND YANK STRENGTH; Swing::singleHandYankStrength): 100 as before.
     int singleHandYankPercent = 100;
+    // CAMERA MOTION (the user, November 11 22:59: "Native Animation is moving
+    // too much for players, and leveling steals all of the feeling. We need to
+    // let the player dial that stuff in"; camera_motion.hpp). While the
+    // animated head carries the view (ANIMATED HEAD FULL or LEVEL), how much
+    // of the animation's own camera motion reaches the eyes, percent: PITCH
+    // and ROLL its tilt (100 all of it, as before; 0 level, like HEAD LEVEL
+    // but keeping the animation's heading), BOB UP/DOWN and BOB SIDE its
+    // head bob relative to the feet (the feet themselves stay exact). HEAD
+    // ANGLE (the user, November 11 23:02: "a setting for head angle, from
+    // below to above the horizon"): degrees the animated view is tilted
+    // above (positive) or below the horizon. The headset's own look and lean
+    // stay 1:1 on top. The CAMERA MOTION row is a preset over the four
+    // percentages (no key of its own). 100/100/100/100 and 0 by default: as
+    // before.
+    int cameraPitchPct = 100, cameraRollPct = 100, cameraBobVerticalPct = 100, cameraBobSidePct = 100;
+    int cameraHeadAngleDeg = 0;
+    // PUNCH VIEW EASE (view_ease.hpp; the user, November 12 01:13: "hold and
+    // ease"): at a punch's ANIM -> VR switch the view stays where the last
+    // animated frame showed it and eases onto the position lock over this
+    // many ms (ease-out, never slower than a motion-masked bleed). 0: the old
+    // snap. 250 by default. punch_view_ease_ms.
+    int punchViewEaseMs = 250;
+    // POINT JUMP (point_jump.hpp; the user, November 11; EngineBot's plan):
+    // touching a surface, A+B (or hold B, then A) charges a jump the way you
+    // look. A tap is a quick jump at the tap speed; held up to CHARGE TIME a
+    // leap rising to MAX SPEED. The tab's VR POINT JUMP rows: POINT JUMP (off
+    // by default, experimental), TRIGGER, TAP SPEED and MAX SPEED (m/s),
+    // CHARGE TIME (ms) and SURFACE PUSH (percent of the surface's normal mixed
+    // into the look). The rest are spidy_vr.ini only (point_jump_* keys): the
+    // chord window, the tap's length, the curve (0 ease-out, 1 linear), the
+    // least angle out of the surface, the speed kept across the launch, the
+    // coyote time, the buffer, the cooldown, the guard after a game zip, B's
+    // hold before it is the dodge (TRIGGER 1), and whether it works in a fight.
+    // The player's own (comfort and controls), not in shared profiles.
+    bool pointJump = false, pointJumpInCombat = true;
+    int pointJumpTrigger = 0, pointJumpChordMs = 50, pointJumpTapMs = 150, pointJumpFullMs = 1000;
+    int pointJumpMinSpeed = 9, pointJumpMaxSpeed = 22, pointJumpCurve = 0, pointJumpNormalBias = 25;
+    int pointJumpMinOutDegrees = 10, pointJumpKeep = 25, pointJumpCoyoteMs = 120, pointJumpBufferMs = 150;
+    int pointJumpCooldownMs = 250, pointJumpZipGuardMs = 400, pointJumpDodgeHoldMs = 250;
     bool operator==(const Values&) const = default;
 };
 inline constexpr int eyeAimShots = 1, eyeAimZips = 2;
@@ -546,8 +631,43 @@ enum class Item : uint8_t {
     runSpeed,
     slowMotionLength,
     softLock,
+    cameraStabilization,
+    cameraVertical,
+    cameraHorizontal,
+    cameraAngle,
+    lightVertical,
+    lightHorizontal,
+    lightAngle,
+    heavyVertical,
+    heavyHorizontal,
+    heavyAngle,
+    legControl,
+    legStiffness,
+    legDamping,
+    legCoupling,
+    airFists,
+    // November 11: the web shooters' one choice and its strength (views over
+    // wrist_shooters, web_aim_source, palm_shooters and forearm_blend:
+    // shooter_lock.hpp), and CAMERA MOTION (camera_motion.hpp).
+    shooterMode,
+    shooterLock,
+    cameraMotion,
+    cameraPitch,
+    cameraRoll,
+    cameraBobVertical,
+    cameraBobSide,
+    cameraHeadAngle,
+    // November 11: POINT JUMP (point_jump.hpp), its own tab VR POINT JUMP.
+    pointJump,
+    pointJumpTrigger,
+    pointJumpMinSpeed,
+    pointJumpMaxSpeed,
+    pointJumpFull,
+    pointJumpPush,
+    // November 12: PUNCH VIEW EASE (view_ease.hpp), VR CAMERA & STABILIZATION.
+    punchViewEase,
 };
-inline constexpr Item lastItem = Item::softLock;
+inline constexpr Item lastItem = Item::punchViewEase;
 // SLOW-MO LENGTH's last step: no time limit (until L3 toggles it off).
 inline constexpr int slowMotionEndless = 91;
 // Real seconds a full meter lasts for a SLOW-MO LENGTH value; 0 = endless.
@@ -577,9 +697,14 @@ struct Row {
     Place place{};
 };
 // Stable row/setting numbers; categories below determine presentation order.
-const std::array<Row, 112>& rows();
+const std::array<Row, 142>& rows();
 const Row* rowFor(Item);
-enum class Category : uint8_t { setup, webs, swinging, movement, flips, feedback, display, nativeAnimation, count };
+// camera, shooters and legs (November 11, the user: "I can't find legs or
+// camera settings in any of the menus. Make sure it's clearly labeled"): tabs
+// of their own, after the older ones so their numbers stay.
+// pointJump (November 11): POINT JUMP's own tab, last so the others keep theirs.
+enum class Category : uint8_t { setup, webs, swinging, movement, flips, feedback, display, nativeAnimation,
+                                camera, shooters, legs, pointJump, count };
 inline constexpr size_t categoryCount = static_cast<size_t>(Category::count);
 struct Screen {
     const char* title;
@@ -590,6 +715,11 @@ const std::array<Screen, categoryCount>& screens();
 // Null while the control has an effect, otherwise a short explanation. Stored
 // preferences are retained when a parent is off or a different mode overrides them.
 const char* inactiveReason(Item, const Values&);
+// A row that stays selectable while inactiveReason explains why it does
+// nothing yet (LEG CONTROL and its tuning: the user could not find them while
+// REALISTIC FLIPS was on). Choosing LEG CONTROL ON then also turns CONTROLLED
+// FLIPS on and REALISTIC FLIPS off, so the row always does what it says.
+bool shownWhenInactive(Item);
 // RESET ALL affects only the active category's in-game controls, including inactive ones.
 Values resetCategory(Category, Values);
 // The most choices a row shows (game_menu's buffers): a row with more would

@@ -1,5 +1,6 @@
 #pragma once
 #include "body_calibration.hpp"
+#include "body_ik.hpp"
 #include "animated_view.hpp"
 #include "head_probe.hpp"
 #include "math.hpp"
@@ -308,11 +309,14 @@ void setAirMomentum(const Vec3& worldVelocity);
 // Side channel: no Command layout or version change. Triggers and grips
 // are not this control.
 void setTuck(bool held);
-// LAUNCH FACING: while airborne in SpidyVR, the body faces this world way
-// (horizontal unit) instead of following the headset; zero clears it.
-void setFaceAhead(const Vec3& worldAhead);
 // Eased visual tuck 0..1 from the last pose job (0 if none).
 float tuckWeight();
+// LEG CONTROL (leg_control.hpp): each leg's hip angles and knee bend for the
+// next bodyOn pose job (body::Targets::legAngles), used only while the body
+// may move its legs in the air (body::airLegsAllowed). on false: none, and the
+// legs blend back over body::airLegBlendSeconds. Side channel: no Command
+// layout or version change.
+void setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs);
 // Slice C tracking-lock diag (side channel; no Command / Forearms layout change).
 // Latest armsOnly chest vs player yaw and overlay weights after a pose job.
 struct OverlayTracking {
@@ -345,6 +349,11 @@ struct OverlayTracking {
 // 0 not managed by player torso, -1 managed but missing/expired (never read
 // our modified head as the next camera anchor). Cinematics never call this.
 int authoredHead(uintptr_t instance, Mat4& world);
+// ARMS IN ANIMATION (arm_frame.hpp): authoredHead for the current hero, the
+// displayed head anchor the hands map onto every XR frame (same returns).
+int viewAnchorWorld(Mat4& world);
+// HAND PREDICTION: the pose job's measured wait for a command (seconds, smoothed).
+float handLeadWait();
 OverlayTracking overlayTracking();
 // A render frame begins (the stereo module's render setup, main thread).
 void renderFrame();

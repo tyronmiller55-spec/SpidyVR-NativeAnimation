@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Spidy VERSION 0.8.5 LANGUAGES C CXX)
+project(Spidy VERSION 0.8.6 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -55,6 +55,28 @@ add_test(NAME action_frame COMMAND spidy_action_frame_tests)
 add_executable(spidy_solved_hand_frame_tests tests/solved_hand_frame_tests.cpp)
 target_link_libraries(spidy_solved_hand_frame_tests PRIVATE spidy_core)
 add_test(NAME solved_hand_frame COMMAND spidy_solved_hand_frame_tests)
+# CAMERA MOTION, SHOOTERS: LOCKED TO ARM and where their rows are (portable).
+add_executable(spidy_stabilization_shooter_tests tests/stabilization_shooter_tests.cpp)
+target_link_libraries(spidy_stabilization_shooter_tests PRIVATE spidy_core)
+target_compile_definitions(spidy_stabilization_shooter_tests PRIVATE SPIDY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME stabilization_shooter COMMAND spidy_stabilization_shooter_tests)
+# FLIP BREAK and the November 11 ownership rules (portable).
+add_executable(spidy_flip_break_tests tests/flip_break_tests.cpp)
+target_link_libraries(spidy_flip_break_tests PRIVATE spidy_core)
+add_test(NAME flip_break COMMAND spidy_flip_break_tests)
+# POINT JUMP (point_jump.hpp): chord, charge, direction, gate, ownership, settings (portable).
+add_executable(spidy_point_jump_tests tests/point_jump_tests.cpp)
+target_link_libraries(spidy_point_jump_tests PRIVATE spidy_core)
+target_compile_definitions(spidy_point_jump_tests PRIVATE SPIDY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME point_jump COMMAND spidy_point_jump_tests)
+# LEG HOLD (leg_hold.hpp): Y+X chord, suppression, stick persistence, neutral cancel, easing (portable).
+add_executable(spidy_leg_hold_tests tests/leg_hold_tests.cpp)
+target_link_libraries(spidy_leg_hold_tests PRIVATE spidy_core)
+add_test(NAME leg_hold COMMAND spidy_leg_hold_tests)
+# PUNCH VIEW EASE (view_ease.hpp): hold and ease at a punch's switch, cancels, rig offset, setting (portable).
+add_executable(spidy_view_ease_tests tests/view_ease_tests.cpp)
+target_link_libraries(spidy_view_ease_tests PRIVATE spidy_core)
+add_test(NAME view_ease COMMAND spidy_view_ease_tests)
 
 find_package(Threads REQUIRED)
 add_executable(spidy_action_protocol_tests tests/action_protocol_tests.cpp)
