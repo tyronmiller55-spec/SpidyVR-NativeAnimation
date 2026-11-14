@@ -8,65 +8,73 @@ Insomniac, Sony or Marvel. Original authorship, support links and notices remain
 
 ## ⬇️ Download (players start here)
 
-**Get the current build from [Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)**, the release marked **✅ CURRENT** (0.8.6, tested Nov 12): `Spidy-0.8.6-legs-yx-0a593c0-win64.zip`. Releases and builds marked **OLD** or superseded (including the earlier 0.8.6 `d0584e7` ZIP) are replaced by it.
+**Get the current build from [Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)**, the release marked **✅ CURRENT** (0.8.6, tested Nov 13): `Spidy-0.8.6-win64-c6a8279-ports-46195f7.zip`. Releases and builds marked **OLD** or superseded (including the earlier 0.8.6 `0a593c0` and `d0584e7` ZIPs) are replaced by it.
 
 1. Under **Assets**, download the `Spidy-…-win64.zip` file (not "Source code").
-2. Extract the **entire** ZIP into a **new writable folder outside the game's install** (for example your Desktop). Never copy files into the Marvel's Spider-Man Remastered folder or mix them with an older Spidy folder.
+2. Extract the **entire** ZIP into a **new writable folder outside the game's install** (for example your Desktop). It unpacks to `Spidy-0.8.6-player-torso-46195f7`. Never copy files into the Marvel's Spider-Man Remastered folder or mix them with an older Spidy folder.
 3. Run **Spidy Launcher.exe** from that folder, open the **Native Animation** tab, and start VR, with the headset on and Meta Quest Link (or Virtual Desktop) running.
 
-Your own settings carry over in `spidy_vr.ini`; the new rows start at defaults that keep the previous feel.
+Your own settings carry over in `spidy_vr.ini`; the new rows start at defaults that keep the previous feel. No settings are required.
 
-## What's new in this build (0a593c0, Nov 12)
+## What's new in this build (46195f7, Nov 13)
 
-- **Camera & stabilization:** CAMERA MOTION presets (FULL, LIGHT, HEAVY, COMFORT, or CUSTOM) fill separate PITCH, ROLL, BOB UP/DOWN and BOB SIDE amounts (0–100% of the animation's motion passed through) instead of all-or-nothing leveling. **HEAD ANGLE** tilts the animated view below or above the horizon (DOWN 30 to UP 30 degrees, LEVEL by default). Only the animation's motion is changed; your head tracking stays 1:1.
-- **Web shooters locked to your arm:** one **SHOOTERS** choice (CONTROLLER, LOCKED TO ARM or PALM) with a **LOCK STRENGTH** row replaces the old wrist settings that fought each other. Old ini lines are read and mapped.
-- **Findable menus:** dedicated **VR CAMERA & STABILIZATION**, **VR WEB SHOOTERS**, **VR LEGS (ADVANCED)** and **VR POINT JUMP** tabs in game, and matching launcher sections.
-- **Leg control with Realistic Flips:** LEG CONTROL (ADVANCED) now works with CONTROLLED FLIPS or REALISTIC FLIPS. Tucked legs spin you faster, stretched legs slow you, and leg swings counter-turn the body (momentum kept).
-- **Leg hold on Y+X:** hold Y+X in the air to take the legs onto the right stick. Web zip and the gadget wheel are held off while both are down. The legs stay while you keep moving the stick and let go at neutral. Replaces the thumb rest tap and the LEG TOGGLE setting (both removed).
-- **POINT JUMP (experimental, off by default):** on any surface, A+B charges a jump the way you're looking; tap for a hop, hold up to a second for a big leap.
-- **PUNCH VIEW EASE:** a punch's switch to SpidyVR holds the view and eases onto your feet (250 ms) instead of snapping.
-- **Flips break animation on the frame you input them:** right-stick pitch or the left stick's flip steering (or a grip cancel) breaks a jump to SpidyVR right away. Right-stick turning never breaks it. Landing on your feet snaps back to animation.
-- **Jumps stay animated to the landing** unless you break them that way.
+Since the previous CURRENT build (`0a593c0`):
+
+- **HYBRID movement (default):** the view stays on Spider-Man's head. In the front half of the stick you run freely, with a 30° head-steer cone; an anchored heading stays when you let go of the stick, and a hold that times out keeps the view. Point the left stick to the rear for a **REAR SNAP TURN** (200 ms head turn by default). Wrist marker smoothing v2 and a SPIDY RUN parkour-ahead handoff are included. MOVEMENT MODE also has STABLE and OLD.
+- **Movement cleanup:** RUN CURVE is on, NATIVE RUN AT follows the curve, and EARLY JUMP QUICK TAP is in.
+- **Quick sidestep (on by default):** on the ground, flick the left stick and press **A** within 120 ms for a short upright burst the way you flicked, with no flip.
+- **MOVE HAPTICS** and a **stable heading** (VIEW YAW SOURCE: STABLE): the heading is no longer taken from the head bone, which had been turning you in circles on a held side push.
+- **Passive legs:** PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD and FLAIL, with a hold so air crouch no longer flickers on and off.
+- **JUMP TO SPIDYVR** hands a jump to SpidyVR on a timer, with AIR VIEW EASE on timer, flip and grip breaks. A left-stick flip break now needs a fresh push, so a run tilt at takeoff no longer cuts the jump immediately.
+- **Handstand H1 (on by default, Realistic Flips only):** catch a handstand from inverted palms on the floor. It is still experimental and rarely caught in the Nov 13 session (see Known limits).
+- **Camera modes:** **ANIM HEAD RIDE** (on landings, perches and standing, the view rides the head bone and eases in and out), **SHOULDER LIMIT** (the view never turns past his shoulders; it replaces the earlier 90-degree rule), and **SNAP REALIGN 360** (a right-stick tap left or right snaps the heading from where you look, all the way around, and realigns him to it).
+- **Aim steady and marker filter v3:** in an animation, camera bob no longer swings the web line and markers; a still hand's tremor is held down.
+
+Everything from the Nov 12 `0a593c0` build remains: CAMERA MOTION presets and HEAD ANGLE, SHOOTERS (CONTROLLER / LOCKED TO ARM / PALM), LEG CONTROL with Realistic Flips, the Y+X leg hold, POINT JUMP, PUNCH VIEW EASE, and jumps that stay animated to the landing unless you break them.
 
 ## Controls (new and changed)
 
 | Input | Where | What |
 |---|---|---|
+| Left stick, front half | ground, HYBRID | run freely; a 30° cone follows where you look |
+| Left stick to the rear | ground, HYBRID | rear snap turn (REAR SNAP TURN, 200 ms by default) |
+| Right-stick tap left/right | SNAP REALIGN on | snap the heading from where you look and realign (full 360) |
+| Left-stick flick, then **A** within 120 ms | ground, animation, sidestep on | quick upright sidestep the way you flicked |
 | **Y+X** (hold) | midair, LEG CONTROL (ADVANCED) on | right stick poses the legs; stick back to neutral releases them |
 | **A+B** (together; hold to charge) | ground, perch or wall, POINT JUMP on | jump the way you look; tap = hop, ~1 s = full leap |
 | **Left stick click** | anywhere | slow-mo (SLOW-MO LENGTH sets how long; INFINITE = until clicked again) |
 | **B** (hold) | midair under SpidyVR | tuck: knees in, spins a little faster |
-| Right stick up/down, left-stick flip steering, grip cancel | in a jump | breaks the animation to SpidyVR on that frame |
-| Right stick left/right | anywhere | turns; never breaks the animation |
+| Right stick up/down, left-stick flip steering, grip cancel | in a jump | breaks the animation to SpidyVR on that frame (left stick needs a fresh push) |
+| Right stick left/right (held) | anywhere | turns; never breaks the animation |
 
 ## Where the settings are
 
-- In game: **VR CAMERA & STABILIZATION** (CAMERA MOTION, PITCH, ROLL, BOB UP/DOWN, BOB SIDE, HEAD ANGLE, STABILIZATION, PUNCH VIEW EASE), **VR WEB SHOOTERS** (SHOOTERS, LOCK STRENGTH), **VR LEGS (ADVANCED)** (LEG CONTROL (ADVANCED), LEG STIFFNESS, LEG DAMPING, LEG COUPLING), **VR POINT JUMP** (POINT JUMP (EXPERIMENTAL), POINT JUMP TRIGGER, TAP SPEED, MAX SPEED, CHARGE TIME, SURFACE PUSH).
-- Launcher: the same pages under Options (Camera & Stabilization, Web Shooters, Legs (Advanced), Point Jump), plus a Camera & stabilization card on the Native Animation tab.
-- Details: [Camera, shooters & legs](docs/CAMERA_AND_SHOOTERS.md) · [Leg hold](docs/LEG_HOLD.md) · [Point jump](docs/POINT_JUMP.md) · [Ownership rules](docs/OWNERSHIP.md) · [Changelog](docs/CHANGELOG.md).
+- In game: **VR CAMERA & STABILIZATION** (CAMERA MOTION, PITCH, ROLL, BOB UP/DOWN, BOB SIDE, HEAD ANGLE, STABILIZATION, REAR SNAP TURN, ANIM HEAD RIDE, SHOULDER LIMIT, SNAP REALIGN, PUNCH VIEW EASE), **VR WEB SHOOTERS** (SHOOTERS, LOCK STRENGTH), **VR LEGS (ADVANCED)** (LEG CONTROL (ADVANCED), LEG STIFFNESS, LEG DAMPING, LEG COUPLING, plus passive-leg rows), **VR POINT JUMP**, and **MOVEMENT MODE** (HYBRID, STABLE, OLD) on the Native Animation tab.
+- Launcher: the same pages under Options, plus Movement mode and a Camera & stabilization card on the Native Animation tab.
+- Details: [Hybrid movement](docs/HYBRID_MOVEMENT.md) · [Camera, shooters & legs](docs/CAMERA_AND_SHOOTERS.md) · [Sidestep](docs/SIDESTEP.md) · [Handstand](docs/HANDSTAND.md) · [Passive legs](docs/PASSIVE_LEGS.md) · [Leg hold](docs/LEG_HOLD.md) · [Point jump](docs/POINT_JUMP.md) · [Ownership rules](docs/OWNERSHIP.md) · [Changelog](docs/CHANGELOG.md).
 
 ## Known limits
 
-- Tested in one 37-minute headset session (Nov 12) on this exact build. PUNCH VIEW EASE and the Y+X leg hold have had that one session; not every option and combination has been headset-checked.
-- Turning can drift out of step with the body (running in circles). A fix is in progress.
-- A jump stays animated all the way to the landing; handing the fall to SpidyVR about 0.5 s after takeoff is planned.
-- Haptics work is coming next. Handstands are planned (they will need CONTROLLED FLIPS).
+- Tested in one session of about 20 minutes from 10:24 PM PST on Nov 13, 2026, on this exact build. It is still a beta; please report what you find.
+- **Webs can drop when the game hitches.** A long stalled frame can make swing speed look far too high, and the swing lets go. A fix is in progress.
+- **Arms can deform badly in animations** and throw off web-shooter aim. A torso update is in progress.
+- **Handstands rarely catch.** The landing animation often takes over before the catch can run; when one does start it can fall immediately. A more reliable catch is in progress.
+- **Stabilization settings do little outside animation.** They mainly apply while the animated head carries the view, not while swinging, in the air, in combat, or on walls. Applying them more widely is in progress.
 
 ## Current integrated source
 
 This cumulative snapshot contains working source
-[`c342baa570c6c451594b8aa2da2e2b6befb545f1`](https://github.com/tyronmiller55-spec/SpidyVR/commit/c342baa570c6c451594b8aa2da2e2b6befb545f1)
-(branch `docs/publish-0a593c0`): the tested build
-[`0a593c0`](https://github.com/tyronmiller55-spec/SpidyVR/commit/0a593c0a7e117b29be6f469bdc056963e5564ade)
-plus a documentation-only commit. Runtime, tests and build tools match `0a593c0` exactly.
-Only this README, [publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md)
+[`46195f712689a8811aa3695b261a1e01c29b6908`](https://github.com/tyronmiller55-spec/SpidyVR/commit/46195f712689a8811aa3695b261a1e01c29b6908)
+(branch `feat/c6a8279-ports`), the build played on Nov 13. Runtime, tests and
+build tools match `46195f7` exactly. Only this README,
+[publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md)
 and the deliberate omission of the release workflow differ. Publication history
 is retained.
 
-The released ZIP was built from `0a593c0` by
-[this Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/43193535133)
-(11/11 CTest suites and all Python protocol tests passed); SHA256
-`ddaa502d9b346a031d175d200dc12675076b9f80be34233364e887f25b1dfaa1`.
+The released ZIP was built from `46195f7` by
+[this Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/43540575990)
+(22/22 CTest suites and all Python protocol tests passed); SHA256
+`307cff6a7d02f570d515c39c7d48d920373312edb6dfefb691dcb0e0e253e47b`.
 
 ### Native Animation foundation (from earlier builds, still included)
 

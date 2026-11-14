@@ -1799,6 +1799,15 @@ void App::nativeAnimation(ImVec2 origin, ImVec2 size) {
         option("Model yaw",
                "Run with the left stick and turn with the right without losing running strength.", S(42),
                [&] { tabToggle("##nativemodelyaw", Item::animatedModelYaw); });
+        option("View yaw source",
+               "Stable: running steers by a steady heading that only your headset and the right stick turn, "
+               "so Spider-Man can't run in circles. Body (old): steering follows the animated head.",
+               S(150), [&] { tabCombo("##nativeviewyawsource", Item::viewYawSource); });
+        option("Jump to SpidyVR",
+               "Plain jumps, zip launches, vaults and wall launches hand over from the animation to SpidyVR "
+               "this long into the air. Stay to landing: the old way (animation until you land). Flips, grip "
+               "cancel, webs and walls still break at once; landing returns to the animation. Default: 500 ms.",
+               S(150), [&] { tabCombo("##nativejumphandoff", Item::jumpHandoff); });
         option("Hybrid speed",
                "How long 15 m/s in the air takes to switch to SpidyVR. Off disables speed takeover; "
                "webs, mid-air turns and wall runs still take over. Default: 200 ms.",
@@ -1893,6 +1902,9 @@ void App::nativeAnimation(ImVec2 origin, ImVec2 size) {
                [&] { tabToggle("##nativesteering", Item::animatedSteering); });
         option("Air spin", "Legacy animated flips and momentum lean. Hybrid ignores this setting.", S(150),
                [&] { tabCombo("##nativeairspin", Item::animatedAirSpin); });
+        option("Sound trace",
+               "Diagnostics only: logs the game's sound ids around jumps and landings. Changes no sound.",
+               S(42), [&] { tabToggle("##soundtrace", Item::soundTrace); });
     });
     ImGui::EndDisabled();
     ImGui::SetCursorScreenPos(ImVec2(base.x, std::max(columnY[0], columnY[1]) - gap));
@@ -2183,7 +2195,8 @@ void App::options(ImVec2 origin, ImVec2 size) {
                S(150), [&] { tabCombo("##nativerunatpercent", Item::nativeRunAt); });
         settingOption(Item::runCurve, "Run curve (experimental)",
                "On the ground the left stick reaches the game's full run at 80% of its tilt, with more of "
-               "its speed early. Off: the stick as it is, as before.",
+               "its speed early; Native run still sprints at the same stick tilt. On by default. Off: the "
+               "stick as it is.",
                S(42), [&] { tabToggle("##runcurve", Item::runCurve); });
         settingOption(Item::steadyStates, "Steady states (experimental)",
                "Native run's RT comes back only once nothing has stopped it for 0.15 s, so a kerb, a prompt "
@@ -2217,7 +2230,7 @@ void App::options(ImVec2 origin, ImVec2 size) {
         settingOption(Item::earlyJump, "Early jump (experimental)",
                "QUICK TAP: a tap of A jumps if let go within 0.1 s instead of 0.18 s. RUNNING: that, and "
                "while NATIVE RUN sprints A jumps the moment it is pressed (no charged leap while sprinting). "
-               "OFF: as before.",
+               "QUICK TAP by default. OFF: the old 0.18 s tap.",
                S(150), [&] { tabCombo("##earlyjump", Item::earlyJump); });
         settingOption(Item::softLanding, "Soft landing (experimental)",
                "Falling with no web, your fall eases to 9 m/s over the last 3 m (or 0.35 s) before the "
@@ -2334,6 +2347,10 @@ void App::options(ImVec2 origin, ImVec2 size) {
                [&] { tabToggle("##reelhaptics", Item::reelHaptics); });
         settingOption(Item::swingHaptics, "Swing haptics", "Swinging on a taut web ticks softly in that hand, faster as you speed up.",
                S(42), [&] { tabToggle("##swinghaptics", Item::swingHaptics); });
+        settingOption(Item::moveHaptics, "Move haptics",
+               "Jumps, wall jumps, zip launches and landings thump both controllers, scaled by speed; a point "
+               "jump gives a double thump. Its own strength (0-200%): Controller vibration does not scale it.",
+               S(150), [&] { tabCombo("##movehaptics", Item::moveHaptics); });
     });
     group(5, 1, "Body haptics", [&] {
         settingOption(Item::bodyHaptics, "Body haptics", "A bHaptics vest, sleeves and visor feel webs, blows, wind and Spider-Sense; the "
@@ -2512,6 +2529,33 @@ void App::options(ImVec2 origin, ImVec2 size) {
                    "while you move). Hands and webs move with the view. Off: the old instant jump. 250 ms by "
                    "default.",
                    S(150), [&] { tabCombo("##punchviewease", Item::punchViewEase); });
+            settingOption(Item::airViewEase, "Air view ease",
+                   "The same hold and ease for the timed jump handoff, a flip break and the grip cancel: the "
+                   "view stays where the animation showed it and eases onto your feet; hands and webs move with "
+                   "it. Off: the old instant snap. 250 ms by default.",
+                   S(150), [&] { tabCombo("##airviewease", Item::airViewEase); });
+            settingOption(Item::movementMode, "Movement mode",
+                   "HYBRID (default): the view stays on Spider-Man's head, its turn included. The left stick's "
+                   "front half is free movement (he runs where it points while the view keeps the right stick's "
+                   "heading; straight ahead, within 15 degrees, your head steers him inside a 30-degree window); "
+                   "pushing it into the rear half turns him and the view to that exact direction. STABLE: "
+                   "Step B, the view's turn on a steady heading of its own. OLD: head-bone steering.",
+                   S(150), [&] { tabCombo("##movementmode", Item::movementMode); });
+            settingOption(Item::rearSnap, "Rear snap turn",
+                   "HYBRID: how fast the view turns for the left stick's rear snap (over 100 degrees back snaps, "
+                   "back under 80 or to neutral re-arms). 200 ms by default, like a head turn; Instant is a frame "
+                   "switch. The hero turns at the game's pace.",
+                   S(150), [&] { tabCombo("##rearsnap", Item::rearSnap); });
+            settingOption(Item::animYawSway, "Anim yaw sway",
+                   "With Head lock Full and View yaw source Stable: the view's left-right turn comes from your "
+                   "steady heading, not the hero's head; this much of the animation's head sway is added back. "
+                   "100% is the old feel (the view on the head). 20% by default.",
+                   S(150), [&] { tabCombo("##animyawsway", Item::animYawSway); });
+            settingOption(Item::turnInPlace, "Turn-in-place angle",
+                   "Standing still with the steady heading: once you look (or turn with the right stick) this far "
+                   "from where the hero faces, he turns to face it. Off: he never turns by himself. 35 degrees "
+                   "by default.",
+                   S(150), [&] { tabCombo("##turninplace", Item::turnInPlace); });
             settingOption(Item::cameraVertical, "Camera vertical", "Up/down smoothing with Stabilization Off.",
                    S(150), [&] { tabCombo("##cameravertical", Item::cameraVertical); });
             settingOption(Item::cameraHorizontal, "Camera horizontal", "Side/forward smoothing with Stabilization Off.",
@@ -2572,6 +2616,23 @@ void App::options(ImVec2 origin, ImVec2 size) {
             settingOption(Item::legCoupling, "Leg coupling",
                    "How much the legs' swing turns your body in the air.",
                    S(150), [&] { tabCombo("##legcoupling", Item::legCoupling); });
+            settingOption(Item::passiveLegs, "Passive legs",
+                   "In SpidyVR's air without Leg control engaged, the legs swing on their own with your "
+                   "momentum (swings, spins, slowing down). This much of it is shown; Off keeps the old legs. "
+                   "Works without Leg control; 60% by default.",
+                   S(150), [&] { tabCombo("##passivelegs", Item::passiveLegs); });
+            settingOption(Item::passiveCoupling, "Passive coupling",
+                   "How much the passive legs' swing turns you, as a share of Leg coupling (you still have to "
+                   "swing for a big effect). Needs Controlled or Realistic flips to turn you. 15% by default.",
+                   S(150), [&] { tabCombo("##passivecoupling", Item::passiveCoupling); });
+            settingOption(Item::legAirCrouch, "Air crouch",
+                   "Upright in the air with hang time or near the top of a jump, not spinning: the legs fold "
+                   "into the ground jump's midair crouch. On by default.",
+                   S(42), [&] { tabToggle("##legaircrouch", Item::legAirCrouch); });
+            settingOption(Item::legReachSpread, "Reach spread",
+                   "A hand reaching down between your legs: they spread and lift forward with bent knees to "
+                   "clear your arm. On by default.",
+                   S(42), [&] { tabToggle("##legreachspread", Item::legReachSpread); });
         });
         group(pointJumpPage, 0, "Point jump (experimental)", [&] {
             settingOption(Item::pointJump, "Point jump",

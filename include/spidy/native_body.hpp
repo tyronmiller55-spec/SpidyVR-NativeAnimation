@@ -316,7 +316,7 @@ float tuckWeight();
 // may move its legs in the air (body::airLegsAllowed). on false: none, and the
 // legs blend back over body::airLegBlendSeconds. Side channel: no Command
 // layout or version change.
-void setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs);
+void setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs, float amount = 1.f);
 // Slice C tracking-lock diag (side channel; no Command / Forearms layout change).
 // Latest armsOnly chest vs player yaw and overlay weights after a pose job.
 struct OverlayTracking {
@@ -405,6 +405,9 @@ ActionFrame actionFrame();
 // 0 before any). Off, the writer does nothing more than before.
 void setHeadProbe(bool on);
 head_probe::Sample headSample();
+// SHOULDER LIMIT (camera_mode.hpp): the hero's chest yaw (the rig's yaw, as
+// view_yaw_lock::nativeYaw) as his animation posed it in the last 250 ms.
+bool heroChestYaw(float& yaw);
 
 // Wire formats of the probe exports (SpidyBodyStart, SpidyBodySubmit,
 // SpidyBodyCapture), which drive the body without the OpenXR worker.

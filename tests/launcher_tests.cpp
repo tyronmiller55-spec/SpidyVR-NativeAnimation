@@ -705,7 +705,16 @@ int main() {
                                  // POINT JUMP (November 11): the player's own controls and feel.
                                  (row.item >= Item::pointJump && row.item <= Item::pointJumpPush) ||
                                  // PUNCH VIEW EASE (November 12): comfort, the player's own.
-                                 row.item == Item::punchViewEase;
+                                 row.item == Item::punchViewEase ||
+                                 // MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE (November 12): the player's own.
+                                 row.item == Item::moveHaptics || row.item == Item::viewYawSource ||
+                                 row.item == Item::soundTrace ||
+                                 // JUMP TO SPIDYVR, AIR VIEW EASE (November 12): the player's own.
+                                 row.item == Item::jumpHandoff || row.item == Item::airViewEase ||
+                                 row.item == Item::animYawSway || row.item == Item::turnInPlace ||
+                                 (row.item >= Item::passiveLegs && row.item <= Item::legReachSpread) ||
+                                 // MOVEMENT MODE, REAR SNAP TURN (November 12): the player's own.
+                                 row.item == Item::movementMode || row.item == Item::rearSnap;
             check(std::count_if(begin, end, [&](const ProfileSetting& s) { return s.item == row.item; }) ==
                       (leftOut ? 0 : 1),
                   row.title);
@@ -715,6 +724,9 @@ int main() {
         size_t lines = 0;
         for (size_t line = 0; line < tabOnly.size(); line = tabOnly.find('\n', line) + 1) {
             const std::string key = tabOnly.substr(line, tabOnly.find('=', line) - line);
+            // MOVEMENT DEFAULTS (November 12): which defaults a file has had, no setting.
+            if (key == "movement_defaults")
+                continue;
             // animated_full_arms: an ini-only test switch for the arms in animation
             // (no menu row), the player's own like the headset's.
             if (key == "recording_fov" || key == "recording_smoothing" || key == "height_cm" ||
@@ -723,8 +735,22 @@ int main() {
                 key.rfind("camera_", 0) == 0 || key.rfind("leg_", 0) == 0 ||
                 // POINT JUMP (November 11): the player's own, not in shared profiles.
                 key.rfind("point_jump", 0) == 0 ||
+                // QUICK SIDESTEP (November 12): the player's own controls.
+                key.rfind("sidestep", 0) == 0 ||
                 // PUNCH VIEW EASE (November 12): comfort, the player's own.
-                key == "punch_view_ease_ms")
+                key == "punch_view_ease_ms" ||
+                // MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE (November 12): the player's own.
+                key == "move_haptics_pct" || key == "view_yaw_source" || key == "sound_trace" ||
+                // JUMP TO SPIDYVR, AIR VIEW EASE (November 12): the player's own.
+                key == "jump_handoff_ms" || key == "air_view_ease_ms" || key == "anim_yaw_sway_pct" ||
+                key == "turn_in_place_deg" || key.rfind("passive_", 0) == 0 || key == "movement_mode" ||
+                key == "rear_snap_turn_ms")
+                continue;
+            // HANDSTAND (H1, November 12): experimental, the player's own.
+            if (key.rfind("handstand", 0) == 0)
+                continue;
+            // CAMERA MODES (November 13): the player's own comfort, not in shared profiles.
+            if (key == "anim_head_ride" || key == "shoulder_limit" || key == "snap_realign")
                 continue;
             ++lines;
             check(at(key) < std::size(profileSettings) &&
@@ -842,7 +868,7 @@ int main() {
         t.webAngle = 30;
         t.wristShooters = true;
         t.dodgeTumble = 2;
-        t.runCurve = true;
+        t.runCurve = false; // on by default since the movement cleanup (November 12)
         t.nativeRunPercent = 90;
         t.runLogs = true;
         t.momentumLeap = true;
@@ -925,7 +951,7 @@ int main() {
                   "ui_style=0\ncombat_visuals=1\nnear_clip_mm=20\nseated=0\nflips=0\ncontrolled_flips=0\nflip_speed=180\nhand_climb=0\n"
                   "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\nair_fists=1\nweb_tie=0\nnative_run=1\n"
                   "air_slingshot=0\nweb_angle_degrees=0\nwrist_shooters=0\ndodge_tumble=0\n"
-                  "run_curve=0\nnative_run_at_percent=70\nrun_logs=0\nrunning_leap=0\nearly_jump=0\nsoft_landing=0\nspidy_run=1\nspidy_run_from_standing=0\nweb_aim_source=0\nforearm_blend=100\nweb_landing_smooth=0\nweb_landing_impact_speed=24\nsteady_states=0\ncombat_responsive=0\nspidy_run_jump=1\nforearm_aim_limit=180\npalm_shooters=0\nhead_probe=0\nanimated_moves=1\nanimated_head=2\nanimated_headset_smooth=0\nrun_speed_percent=100\nslow_motion_seconds=12\nsoft_lock_metres=15\nanimated_air=0\nanimated_steering=0\nanimated_arms=1\nanimated_torso=1\nanimated_model_yaw=1\nanimated_only=0\nanimated_air_spin=0\nanimated_hybrid=1\nanimated_hybrid_speed_ms=200\n"
+                  "run_curve=1\nnative_run_at_percent=70\nrun_logs=0\nrunning_leap=0\nearly_jump=1\nsoft_landing=0\nspidy_run=1\nspidy_run_from_standing=0\nweb_aim_source=0\nforearm_blend=100\nweb_landing_smooth=0\nweb_landing_impact_speed=24\nsteady_states=0\ncombat_responsive=0\nspidy_run_jump=1\nforearm_aim_limit=180\npalm_shooters=0\nhead_probe=0\nanimated_moves=1\nanimated_head=2\nanimated_headset_smooth=0\nrun_speed_percent=100\nslow_motion_seconds=12\nsoft_lock_metres=15\nanimated_air=0\nanimated_steering=0\nanimated_arms=1\nanimated_torso=1\nanimated_model_yaw=1\nanimated_only=0\nanimated_air_spin=0\nanimated_hybrid=1\nanimated_hybrid_speed_ms=200\n"
                   "web_lines=0\n"
                   "wall_distance_cm=25\n"
                   "realistic_flips=0\nrotation_strength=50\nrotation_speed=240\nflight_speed_min=3\n"
