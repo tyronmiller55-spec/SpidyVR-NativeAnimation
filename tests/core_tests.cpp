@@ -1,3 +1,4 @@
+#include "spidy/aim_steady.hpp"
 #include "spidy/lab_world.hpp"
 #include "spidy/native_view.hpp"
 #include "spidy/game_tracking.hpp"
@@ -1809,17 +1810,18 @@ int main() {
         check(std::abs(tl.x - tr.x) < 1e-5f && std::abs(tl.y + tr.y) < 1e-5f &&
                   std::abs(tl.z + tr.z) < 1e-5f && std::abs(tl.w - tr.w) < 1e-5f,
               "the hands' turns not mirrored");
-        // Smoothing: the first sample at once, then about 80 ms to follow a change.
+        // Smoothing: the first sample at once, then about 200 ms to follow a change (v2).
         ForearmAim a;
         a.update(true, t15, 1.f / 90);
         check(a.primed && close(line(a.smoothed), down15) && a.weight > 0 && a.weight < .1f,
               "the first sample not taken at once, or blended in at once");
         const Vec3 up10{0, std::sin(10 * deg), -std::cos(10 * deg)};
         const Quat tUp = forearmTurn(up10, {}, {});
-        a.update(true, tUp, .08f);
+        a.update(true, tUp, .1f);
+        a.update(true, tUp, .1f);
         const float left80 = turnAngle(a.smoothed.conjugate() * tUp) / turnAngle(t15.conjugate() * tUp);
-        check(left80 > .3f && left80 < .45f, "80 ms did not take about 63% of the change");
-        for (int i = 0; i < 60; ++i)
+        check(left80 > .3f && left80 < .45f, "200 ms did not take about 63% of the change");
+        for (int i = 0; i < 300; ++i)
             a.update(true, tUp, 1.f / 90);
         check(a.weight == 1 && turnAngle(a.smoothed.conjugate() * tUp) < 1e-3f, "the turn not reached");
         // Blend: 0% the controller, 50% half, 100% all.
@@ -1827,12 +1829,12 @@ int main() {
                   std::abs(turnAngle(a.turn(100)) - 10 * deg) < 1e-3f,
               "FOREARM BLEND's share");
         // Invalid: back to the controller within 0.15 s, not at once.
-        a.update(false, {}, .05f);
+        a.update(false, {}, .1f);
         check(a.weight > .6f && a.weight < .7f && turnAngle(a.turn(100)) > 0, "the fallback not gradual");
-        for (int i = 0; i < 9; ++i)
+        for (int i = 0; i < 20; ++i)
             a.update(false, {}, 1.f / 90);
         check(a.weight == 0 && !a.primed && turnAngle(a.turn(100)) == 0,
-              "the fallback did not reach the controller's line in 0.15 s");
+              "the fallback did not reach the controller's line in 0.3 s");
         a.update(true, tUp, NAN);
         check(std::isfinite(a.weight) && a.weight == 0, "a NaN step moved the blend");
         // WEB ANGLE on top of the forearm, about its own side; WRIST SHOOTERS a quarter turn about it.
@@ -8838,6 +8840,65 @@ int main() {
         const Vec3 bad{0,std::numeric_limits<float>::quiet_NaN(),0};
         check(!finite(motion.aim(bad,0)),"a bad direction was steadied");
     });
+    test("aim marker motion v3: a 0.5-degree 8 Hz hand vibration hardly moves the marker", [] {
+        constexpr float dt=1.f/72,degree=3.1415927f/180;
+        auto ray=[](float yaw){return Quat::yaw(yaw).rotate({0,0,-1});};
+        AimMarkerMotion motion;
+        float lowest=1e9f,highest=-1e9f;
+        for(int i=0;i<300;++i){
+            motion.begin(1'000'000'000+static_cast<int64_t>(i*dt*1e9));
+            const Vec3 d=motion.aim(ray(.5f*degree*std::sin(2*3.1415927f*8*i*dt)),0);
+            if(i>=100){const float yaw=std::atan2(-d.x,-d.z);lowest=std::min(lowest,yaw);highest=std::max(highest,yaw);}
+        }
+        check(highest-lowest<.1f*degree,"a hand vibration moved the marker");
+        // A slow, deliberate aim (17 degrees a second) is followed within half a degree.
+        motion.reset();
+        Vec3 last{};float yaw=0;
+        for(int i=0;i<60;++i){
+            motion.begin(3'000'000'000+static_cast<int64_t>(i*dt*1e9));
+            yaw=.3f*i*dt;
+            last=motion.aim(ray(yaw),0);
+        }
+        check(std::acos(std::clamp(dot(last,ray(yaw)),-1.f,1.f))<.6f*degree,"a slow aim lagged");
+    });
+    test("aim steady: the camera's bob and nod no longer swing the webs' line; a lasting tilt comes through", [] {
+        using aim_steady::AnchorSteady;
+        constexpr float dt=1.f/72,degree=3.1415927f/180;
+        const auto angle=[](Vec3 a,Vec3 b){return std::atan2(length(cross(a,b)),dot(a,b));};
+        const Vec3 held=normalized(Vec3{.1f,-.05f,-1}); // the hand still, relative to the anchor's reference
+        AnchorSteady s;
+        float worst=0,raw=0;
+        for(int i=0;i<300;++i){
+            // The head bone's nod (3 degrees at 2 Hz) and roll (2 degrees at 1 Hz) on a heading of 0.4.
+            const float t=i*dt;
+            const Quat anchor=Quat::yaw(.4f)*Quat::around({1,0,0},3*degree*std::sin(2*3.1415927f*2*t))*
+                              Quat::around({0,0,1},2*degree*std::sin(2*3.1415927f*t));
+            const Vec3 world=anchor.rotate(held);
+            const Vec3 steadied=s.update(anchor,dt).rotate(world);
+            if(i>=72){worst=std::max(worst,angle(steadied,Quat::yaw(.4f).rotate(held)));
+                      raw=std::max(raw,angle(world,Quat::yaw(.4f).rotate(held)));}
+        }
+        check(raw>2.5f*degree&&worst<1.6f*degree,"the camera's motion still swung the line");
+        // A lasting tilt (onto a wall, 90 degrees over a second): followed, at most 5 degrees behind, there soon.
+        AnchorSteady w;
+        float lag=0;Quat anchor{};
+        for(int i=0;i<144;++i){
+            const float k=std::min(i/72.f,1.f);
+            anchor=Quat::around({1,0,0},k*90*degree);
+            const Vec3 steadied=w.update(anchor,dt).rotate(anchor.rotate(held));
+            lag=std::max(lag,angle(steadied,anchor.rotate(held)));
+        }
+        check(lag<5.01f*degree,"a lasting tilt lagged more than 5 degrees");
+        check(angle(w.update(anchor,dt).rotate(anchor.rotate(held)),anchor.rotate(held))<.1f*degree,"the tilt never arrived");
+        // A snap turn (30 degrees in one frame): taken at once.
+        const Quat snapped=Quat::yaw(30*degree)*anchor;
+        check(angle(w.update(snapped,dt).rotate(snapped.rotate(held)),snapped.rotate(held))<1e-4f,"a snap turn lagged");
+        // Bad input and the first frame: the identity.
+        AnchorSteady f;
+        const Quat first=f.update(Quat::yaw(1.f),dt);
+        check(first.w==1&&first.x==0&&first.y==0&&first.z==0,"the first frame turned the line");
+        check(f.update(Quat{0,0,0,0},dt).w==1&&!f.primed(),"a bad anchor turned the line");
+    });
     test("aim marker motion fades markers in and out and eases them to new places", [] {
         constexpr float dt=1.f/72;
         const Vec3 origin{0,1.5f,0},ahead{0,0,-1};
@@ -8862,7 +8923,7 @@ int main() {
         shown=step(&anchor);
         const float between=length(shown[0].point-origin);
         check(between>10.5f&&between<39,"the marker jumped to its new distance");
-        for(int i=0;i<11;++i)shown=step(&anchor);
+        for(int i=0;i<40;++i)shown=step(&anchor); // v2: an 80 ms glide (was 30)
         near(length(shown[0].point-origin),40,.4f);
         // Another kind, the hand turned: the new one fades in on the new ray
         // while the old one fades out where it was.
@@ -8887,7 +8948,7 @@ int main() {
         shown=step(&target);
         const float slid=find(shown,AimMark::target)->point.x;
         check(slid>2.05f&&slid<3.5f,"the target's ring jumped to the next target");
-        for(int i=0;i<14;++i)shown=step(&target);
+        for(int i=0;i<40;++i)shown=step(&target);
         near(find(shown,AimMark::target)->point.x,4,.02f);
         // Nothing wanted: every marker fades out.
         shown=step(nullptr);
@@ -10358,6 +10419,68 @@ int main() {
         check(all.find("ended after") != std::string::npos && all.find("asked 20.0 m/s") != std::string::npos &&
                   all.find("went 9.9 m/s") != std::string::npos,
               "no line of how far a mod-driven run went against what it asked");
+    });
+    test("PARKOUR AHEAD: SPIDY RUN hands the body to the game's sprint before an obstacle", [] {
+        using namespace run_update;
+        near(parkourLook(0, .35f), parkourLookMin + .35f, 1e-4f);
+        near(parkourLook(100, .35f), parkourLookMax + .35f, 1e-4f);
+        check(parkourLook(NAN, .35f) == 0, "the look-ahead's reach from no number");
+        struct Wall : World {
+            float at = -3; // a face across -z at z = at, facing +z
+            std::optional<RayHit> raycast(Vec3 o, Vec3 d, float distance) const override {
+                if (d.z >= -.1f || o.z <= at)
+                    return {};
+                const float t = (o.z - at) / -d.z;
+                if (t > distance)
+                    return {};
+                return RayHit{o + d * t, {0, 0, 1}, 3, true};
+            }
+            MoveResult sweep(Vec3, Vec3 to, float) const override {
+                return {to, {}, false};
+            }
+            bool exists(std::uint64_t) const override {
+                return true;
+            }
+        };
+        TestWorld open;
+        open.enabled = false;
+        Input in;
+        in.focused = true;
+        in.move = {0, 0, -1};
+        const Body stand{{0, 1, 0}, {0, 0, 0}, true};
+        const auto runUp = [&](Swing& sw) {
+            sw.allowGroundRun(true);
+            sw.allowGroundRunFromStanding(true);
+            for (int i = 0; i < 90 && !(sw.groundRunning() && length(sw.groundRunVelocity()) > 8.5f); ++i)
+                sw.predictNativeStep(1.f / 90, in, open, stand);
+            return sw.groundRunning();
+        };
+        Swing far(inert());
+        check(runUp(far), "no run from standing to test with");
+        Wall distant;
+        distant.at = -12;
+        far.predictNativeStep(1.f / 90, in, distant, stand);
+        check(far.groundRunning() && far.parkourHandoffs() == 0, "a wall 12 m away ended the run");
+        Swing near3(inert());
+        check(runUp(near3), "no run from standing to test with (2)");
+        Wall close;
+        near3.predictNativeStep(1.f / 90, in, close, stand);
+        check(!near3.groundRunning() && near3.parkourHandoffs() == 1,
+              "a wall 3 m ahead at sprint speed did not hand the run to the game");
+        // Held on, it does not start again (the stick must come back first): the game runs.
+        for (int i = 0; i < 90; ++i)
+            near3.predictNativeStep(1.f / 90, in, open, stand);
+        check(!near3.groundRunning(), "the run from standing began again into the obstacle");
+        // A face beside the way (running along it) is no obstacle.
+        Swing along(inert());
+        Input side = in;
+        side.move = {1, 0, 0};
+        along.allowGroundRun(true);
+        along.allowGroundRunFromStanding(true);
+        for (int i = 0; i < 90; ++i)
+            along.predictNativeStep(1.f / 90, side, open, stand);
+        along.predictNativeStep(1.f / 90, side, close, stand);
+        check(along.groundRunning() && along.parkourHandoffs() == 0, "a wall beside the run ended it");
     });
     test("SPIDY RUN FROM STANDING: the stick held fully starts the run from a stand; off as before", [] {
         using namespace run_update;
@@ -13737,11 +13860,19 @@ int main() {
         StickPush blip;
         hold(blip, 0, -1, 8);
         check(hold(blip, 0, -1, 10, false) == Way::none, "a heal went out out of play");
-        check(hold(blip, 0, -1, 10) == Way::down, "a moment out of play spent the heal");
+        check(hold(blip, 0, -1, 20) == Way::down, "a moment out of play spent the heal");
         hold(blip, 0, 0, 1);
         hold(blip, 0, -1, 8);
         check(hold(blip, 0, -1, 40, false) == Way::none && hold(blip, 0, -1) == Way::none,
               "a push held through a long time out of play healed");
+        // Movement cleanup (November 12): a push a third off the line is a turn, and a
+        // brush through the line shorter than holdSeconds (.2 s) is nothing.
+        StickPush strict;
+        check(hold(strict, .4f, -.9f) == Way::none, "a push 0.4 aside healed");
+        hold(strict, 0, 0, 1);
+        check(hold(strict, 0, -1, 17) == Way::none, "a 0.19 s brush healed");
+        hold(strict, 0, 0, 1);
+        check(hold(strict, .3f, -.95f) == Way::down, "a push 0.3 aside no longer heals");
         // Bad readings and bad timing push nothing.
         StickPush broken;
         const float bad = std::numeric_limits<float>::quiet_NaN();
@@ -23840,7 +23971,7 @@ int main() {
         // SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB UP/DOWN, BOB SIDE and HEAD ANGLE.
         // November 11 (POINT JUMP): its six rows after HEAD ANGLE, before them too.
         // November 12: PUNCH VIEW EASE after POINT JUMP's.
-        constexpr size_t firstRealistic = 131;
+        constexpr size_t firstRealistic = 144;
         check(all.size() == firstRealistic + std::size(realistic), "the realistic flips' rows are not the last");
         for (size_t i = 0; i < std::size(realistic); ++i)
             check(all[firstRealistic + i].item == realistic[i], "the realistic flips' rows out of order");
@@ -23978,19 +24109,21 @@ int main() {
         }
         {
             Values v;
-            check(!v.momentumLeap && v.earlyJump == 0 && defaultChoice(Item::momentumLeap) == 0 &&
-                      defaultChoice(Item::earlyJump) == 0,
-                  "momentum leap or early jump on by default");
+            // Movement cleanup (November 12): EARLY JUMP is QUICK TAP by default.
+            check(!v.momentumLeap && v.earlyJump == 1 && defaultChoice(Item::momentumLeap) == 0 &&
+                      defaultChoice(Item::earlyJump) == 1,
+                  "momentum leap on, or early jump not QUICK TAP, by default");
             check(withTabOnly({}, "running_leap=1\nearly_jump=7\n").momentumLeap &&
                       withTabOnly({}, "running_leap=1\nearly_jump=7\n").earlyJump == 2,
                   "spidy_vr.ini keeps running_leap and early_jump, within range");
         }
         {
             Values v;
-            check(!v.runCurve && !v.runLogs && v.nativeRunPercent == 70 &&
-                      defaultChoice(Item::runCurve) == 0 && defaultChoice(Item::nativeRunAt) == 2 &&
+            // Movement cleanup (November 12): RUN CURVE on by default.
+            check(v.runCurve && !v.runLogs && v.nativeRunPercent == 70 &&
+                      defaultChoice(Item::runCurve) == 1 && defaultChoice(Item::nativeRunAt) == 2 &&
                       defaultChoice(Item::runLogs) == 0,
-                  "the run update's rows not as before by default");
+                  "the run update's rows not the movement cleanup's defaults");
             check(choose(Item::nativeRunAt, 4, v) && v.nativeRunPercent == 90 &&
                       !choose(Item::nativeRunAt, 5, v),
                   "NATIVE RUN AT: 90% last");
@@ -23998,6 +24131,46 @@ int main() {
                       withTabOnly({}, "run_curve=1\nrun_logs=1\n").runCurve &&
                       withTabOnly({}, "run_curve=1\nrun_logs=1\n").runLogs,
                   "spidy_vr.ini keeps run_curve, native_run_at_percent and run_logs, within range");
+            // MOVEMENT DEFAULTS: a file from before the cleanup gets them once;
+            // a file that has seen them keeps the player's own choice.
+            const std::string old = "run_curve=0\nearly_jump=0\n";
+            const Values migrated = withMovementDefaults(withTabOnly({}, old), old);
+            check(migrated.runCurve && migrated.earlyJump == 1 && migrated.movementDefaults == 1,
+                  "an old file did not get the movement defaults");
+            const std::string running = "run_curve=0\nearly_jump=2\n";
+            check(withMovementDefaults(withTabOnly({}, running), running).earlyJump == 2,
+                  "the migration lowered EARLY JUMP RUNNING");
+            const std::string chosen = "run_curve=0\nearly_jump=0\nmovement_defaults=1\n";
+            const Values kept = withMovementDefaults(withTabOnly({}, chosen), chosen);
+            check(!kept.runCurve && kept.earlyJump == 0 && kept.movementDefaults == 1,
+                  "the movement defaults overrode a choice made after them");
+            check(withMovementDefaults(withTabOnly({}, ""), "").runCurve,
+                  "no file: not the movement defaults");
+            check(tabOnlyText(migrated).find("movement_defaults=1\n") != std::string::npos,
+                  "the migration is not remembered");
+        }
+        {
+            // NATIVE RUN AT through RUN CURVE (movement cleanup): the sprint
+            // starts and stops at the same physical tilt with the curve on.
+            using namespace spidy::run_update;
+            const auto plain = nativeRunThresholds(70, false);
+            check(std::abs(plain.onAbove - .7f) < 1e-6f && std::abs(plain.offBelow - .5f) < 1e-6f,
+                  "NATIVE RUN AT without the curve changed");
+            const auto curved = nativeRunThresholds(70, true);
+            check(std::abs(curvedTilt(.7f, true) - curved.onAbove) < 1e-6f &&
+                      std::abs(curvedTilt(.5f, true) - curved.offBelow) < 1e-6f &&
+                      curved.onAbove > .85f && curved.onAbove < .95f && curved.offBelow > curved.onAbove - .3f &&
+                      curved.offBelow < curved.onAbove,
+                  "NATIVE RUN AT not carried through RUN CURVE");
+            for (float tilt = .12f; tilt < 1.f; tilt += .01f) {
+                float right = tilt, forward = 0;
+                curveStick(right, forward, true);
+                const float sent = std::hypot(right, forward);
+                check((sent > curved.onAbove) == (tilt > .7f + 1e-4f) || std::abs(tilt - .7f) < .011f,
+                      "the sprint does not start at 70% of the physical stick");
+            }
+            check(curvedTilt(.05f, true) == .05f && curvedTilt(.5f, false) == .5f && curvedTilt(NAN, true) == 0.f,
+                  "curvedTilt outside the curve");
         }
         {
             Values v;
@@ -24061,14 +24234,17 @@ int main() {
                 // November 11: the five wrist rows SHOOTERS and LOCK STRENGTH replaced, kept for old files.
                 row.item == Item::wristShooters || row.item == Item::webAimSource ||
                 row.item == Item::forearmBlend || row.item == Item::forearmAimLimit ||
-                row.item == Item::palmShooters;
+                row.item == Item::palmShooters ||
+                // November 12 (hybrid movement): MOVEMENT MODE supersedes VIEW YAW SOURCE; TURN-IN-PLACE
+                // ANGLE is STABLE's only (the in-game camera tab holds 20).
+                row.item == Item::viewYawSource || row.item == Item::turnInPlace;
             check(row.place == (row.item == Item::view ? Place::page
                                 : launcherOnly           ? Place::launcher
                                                          : Place::tab),
                   "a row in the wrong place");
         }
         check(std::count_if(all.begin(), all.end(), [](const Row& r) { return r.place == Place::tab; }) ==
-                  132, // November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE
+                  143, // November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE, +3 MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE, +2 JUMP TO SPIDYVR, AIR VIEW EASE, +2 ANIM YAW SWAY, TURN-IN-PLACE ANGLE, +4 PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD
               "the tab's own rows");
         check(all[1].item == Item::webStyle && std::strcmp(all[1].title, "WEB STYLE") == 0 &&
                   all[1].choices.size() == 2 && std::strcmp(all[1].choices[0], "REALISTIC") == 0 &&
@@ -24341,6 +24517,8 @@ int main() {
                   "controlled_flips=0\nnear_clip_mm=20\nhand_climb=0\n"
                   "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\n"
                   "realistic_flips=0\n"
+                  "handstand=1\nhandstand_assist=1\nhandstand_push_gain=220\nhandstand_push_max=7\n"
+                  "handstand_fall_degrees=35\nhandstand_height_cm=95\nhandstand_gain_pct=300\nhandstand_eye_drop_cm=90\n"
                   "rotation_strength=50\nrotation_speed=240\nflight_speed_min=3\n"
                   "swing_momentum=1\nrotation_response_ms=500\nhand_momentum=100\n"
                   "angular_drag_ms=3000\nhand_speed_min_cm=100\nair_rotation_brake=1\n"
@@ -24353,18 +24531,23 @@ int main() {
                   "flip_reprojection=0\nsteady_hud=0\nreel_haptics=0\nswing_haptics=0\n"
                   "pc_media=0\nsingle_hand_yank_percent=100\nweb_tie=0\nnative_run=1\nair_slingshot=0\nweb_angle_"
                   "degrees=0\nwrist_shooters=0\n"
-                  "dodge_tumble=0\nrun_curve=0\nnative_run_at_percent=70\nrun_logs=0\nrunning_leap=0\nearly_jump=0\nsoft_landing=0\nspidy_run=1\nspidy_run_from_standing=0\nweb_aim_source=0\nforearm_blend=100\nweb_landing_smooth=0\nweb_landing_impact_speed=24\nsteady_states=0\ncombat_responsive=0\nspidy_run_jump=1\nforearm_aim_limit=180\npalm_shooters=0\nhead_probe=0\nanimated_moves=1\nanimated_head=2\nanimated_headset_smooth=0\nrun_speed_percent=100\nslow_motion_seconds=12\nsoft_lock_metres=15\nanimated_air=0\nanimated_steering=0\nanimated_arms=1\nanimated_torso=1\nanimated_model_yaw=1\nanimated_only=0\nanimated_air_spin=0\nanimated_hybrid=1\nanimated_hybrid_speed_ms=200\nweb_lines=0\nanimated_full_arms=1\n"
+                  "dodge_tumble=0\nrun_curve=1\nnative_run_at_percent=70\nrun_logs=0\nrunning_leap=0\nearly_jump=1\nsoft_landing=0\nspidy_run=1\nspidy_run_from_standing=0\nweb_aim_source=0\nforearm_blend=100\nweb_landing_smooth=0\nweb_landing_impact_speed=24\nsteady_states=0\ncombat_responsive=0\nspidy_run_jump=1\nforearm_aim_limit=180\npalm_shooters=0\nhead_probe=0\nanimated_moves=1\nanimated_head=2\nanimated_headset_smooth=0\nrun_speed_percent=100\nslow_motion_seconds=12\nsoft_lock_metres=15\nanimated_air=0\nanimated_steering=0\nanimated_arms=1\nanimated_torso=1\nanimated_model_yaw=1\nanimated_only=0\nanimated_air_spin=0\nanimated_hybrid=1\nanimated_hybrid_speed_ms=200\nweb_lines=0\nanimated_full_arms=1\n"
                   "camera_stabilization=0\ncamera_vertical_ms=0\ncamera_horizontal_ms=0\ncamera_angle_ms=0\n"
                   "camera_light_vertical_ms=75\ncamera_light_horizontal_ms=50\ncamera_light_angle_ms=75\n"
                   "camera_heavy_vertical_ms=200\ncamera_heavy_horizontal_ms=150\ncamera_heavy_angle_ms=200\n"
-                  "spherical_aim=1\nleg_control=0\nleg_stiffness_pct=100\nleg_damping_pct=100\nleg_coupling_pct=50\nleg_double_tap_ms=300\npunch_view_ease_ms=250\nair_fists=1\n"
+                  "spherical_aim=1\nleg_control=0\nleg_stiffness_pct=100\nleg_damping_pct=100\nleg_coupling_pct=50\nleg_double_tap_ms=300\npunch_view_ease_ms=250\nmove_haptics_pct=100\nview_yaw_source=1\nsound_trace=1\njump_handoff_ms=500\nair_view_ease_ms=250\nanim_yaw_sway_pct=20\nturn_in_place_deg=35\npassive_legs_pct=60\npassive_coupling_pct=15\nmovement_mode=0\nrear_snap_turn_ms=200\nleg_air_crouch=1\nleg_reach_spread=1\nair_fists=1\n"
                   "camera_pitch_pct=100\ncamera_roll_pct=100\ncamera_bob_vertical_pct=100\ncamera_bob_side_pct=100\n"
                   "camera_head_angle_deg=0\n"
+                  "sidestep=1\nsidestep_distance_cm=200\nsidestep_ms=180\nsidestep_cooldown_ms=300\n"
+                  "sidestep_chain=3\nsidestep_lockout_ms=800\nsidestep_iframes=1\nsidestep_flick_from=30\n"
+                  "sidestep_flick_to=80\nsidestep_flick_ms=80\nsidestep_a_ms=120\nsidestep_forward=0\n"
                   "point_jump=0\npoint_jump_trigger=0\npoint_jump_chord_ms=50\npoint_jump_tap_ms=150\n"
                   "point_jump_full_ms=1000\npoint_jump_min_speed=9\npoint_jump_max_speed=22\npoint_jump_curve=0\n"
                   "point_jump_normal_bias=25\npoint_jump_min_out_degrees=10\npoint_jump_keep=25\n"
                   "point_jump_coyote_ms=120\npoint_jump_buffer_ms=150\npoint_jump_cooldown_ms=250\n"
-                  "point_jump_zip_guard_ms=400\npoint_jump_dodge_hold_ms=250\npoint_jump_in_combat=1\n",
+                  "point_jump_zip_guard_ms=400\npoint_jump_dodge_hold_ms=250\npoint_jump_in_combat=1\n"
+                  "anim_head_ride=1\nshoulder_limit=1\nsnap_realign=1\n"
+                  "movement_defaults=1\n",
               "the defaults' text");
         Values changed = defaults;
         changed.recordingFov = 140;
@@ -27976,7 +28159,7 @@ int main() {
                   all[89].choices.size() == 9 && std::strcmp(all[89].choices[0], "OFF") == 0 &&
                   std::strcmp(all[89].choices[8], "500 MS") == 0 && all[89].place == Place::tab,
               "ANIMATED HYBRID SPEED row");
-        check(lastItem == Item::punchViewEase && Item::pointJumpPush < lastItem && Item::cameraHeadAngle < lastItem && Item::airFists < lastItem && Item::legCoupling < lastItem && Item::animatedHeadsetSmooth < lastItem &&
+        check(lastItem == Item::rearSnap && Item::legReachSpread < lastItem && Item::turnInPlace < lastItem && Item::airViewEase < lastItem && Item::soundTrace < lastItem && Item::punchViewEase < lastItem && Item::pointJumpPush < lastItem && Item::cameraHeadAngle < lastItem && Item::airFists < lastItem && Item::legCoupling < lastItem && Item::animatedHeadsetSmooth < lastItem &&
                   Item::softLock < Item::cameraStabilization,
               "SMOOTHING not included in the last Item bound");
     });
@@ -30541,7 +30724,7 @@ int main() {
         (void)blend.update(solved, modelLine, 1, 1.f / 90);
         Vec3 prev = solved;
         float worstStep = 0;
-        for (int i = 0; i < 90; ++i) {
+        for (int i = 0; i < 180; ++i) { // v2: trust eases over 0.25 s
             const Vec3 line = blend.update(solved, modelLine, 0, 1.f / 90);
             worstStep = std::max(worstStep, angleBetween(prev, line));
             prev = line;
@@ -31147,7 +31330,7 @@ int main() {
     test("Native Animation: combined menu inventory and upstream-compatible v39 settings packet", [] {
         using namespace vr_settings;
         const auto& all = rows();
-        check(all.size() == 142 && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
+        check(all.size() == 155 && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
         std::array<unsigned, 256> seen{};
         size_t start = all.size();
         for (size_t i = 0; i < all.size(); ++i) {

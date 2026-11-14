@@ -17,6 +17,7 @@
 #include "spidy/dodge_tumble.hpp"
 #include "spidy/game_dodge.hpp"
 #include "spidy/point_jump.hpp"
+#include "spidy/sidestep.hpp"
 #include "spidy/game_fp.hpp"
 #include "spidy/web_aim.hpp"
 #include "spidy/game_grab.hpp"
@@ -73,8 +74,18 @@
 #include "spidy/animated_model_yaw.hpp"
 #include "spidy/animated_air_spin.hpp"
 #include "spidy/hybrid_owner.hpp"
+#include "spidy/camera_mode.hpp"
+#include "spidy/handstand.hpp"
+#include "spidy/aim_steady.hpp"
 #include "spidy/hybrid_handoff.hpp"
 #include "spidy/hybrid_steer.hpp"
+#include "spidy/move_haptics.hpp"
+#include "spidy/sound_trace.hpp"
+#include "spidy/stable_yaw.hpp"
+#include "spidy/view_yaw_lock.hpp"
+#include "spidy/leg_layers.hpp"
+#include "spidy/facing_check.hpp"
+#include "spidy/hybrid_movement.hpp"
 #include "spidy/animated_arms.hpp"
 #include "spidy/frame_stats.hpp"
 #include "spidy/seated.hpp"
@@ -537,6 +548,19 @@ float SpidyFlatAspect();
 }
 namespace {
 using BridgeCall = DWORD(WINAPI*)(void*);
+// FACING CHECK lines: 'facing check: <event> <view|hero> expected X got Y (verdict)'.
+void logFacing(const facing_check::Check& c, const facing_check::Out& o) {
+    constexpr float toDeg = 180.f / 3.14159265f;
+    const char* ev = facing_check::eventName(c.event);
+    if (o.view.verdict != facing_check::Verdict::none)
+        diag_log::writef("facing check: %s view expected %.0f got %.0f (%s)%s", ev, o.view.expected * toDeg,
+                         o.view.got * toDeg, facing_check::verdictName(o.view.verdict),
+                         o.view.verdict == facing_check::Verdict::corrected ? ", view turned back" : "");
+    if (o.hero.verdict != facing_check::Verdict::none)
+        diag_log::writef("facing check: %s hero expected %.0f got %.0f (%s)%s", ev, o.hero.expected * toDeg,
+                         o.hero.got * toDeg, facing_check::verdictName(o.hero.verdict),
+                         o.hero.verdict == facing_check::Verdict::corrected ? ", walk stick turns him" : "");
+}
 XrConfig config;
 BridgeCall submitInput{}, sampleBridge{}, stopBridge{}, retargetBridge{};
 BridgeCall startRays{}, submitRays{}, stopRays{};
@@ -554,11 +578,19 @@ const game_dodge::Data* dodgeResults{};
 const game_dodge::Live* dodgeLive{};
 // The tab's BLOW SOUNDS to the ray module (SpidySoundMode; optional).
 DWORD(WINAPI* soundMode)(void*){};
+// SOUND TRACE (sound_trace.hpp): the game's sound calls, read in place, and
+// the setting to the ray module; null from an older ray module.
+const sound_trace::Ring* soundTrace{};
+DWORD(WINAPI* soundTraceMode)(void*){};
 BridgeCall startSwing{}, submitSwing{}, sampleSwing{}, stopSwing{}, retargetSwing{}, sampleGrab{}, sampleAim{};
 // Optional: pose coupling from the visual tuck (an older ray module has none).
 BridgeCall setSwingPoseCoupling{};
 // POINT JUMP's launch for the swing's next step (SpidySwingPointJump; none in an older module).
 BridgeCall swingPointJump{};
+// QUICK SIDESTEP's burst for the swing's next step (SpidySwingSidestep) and the
+// swing's account of its bursts (SpidySidestepLive); none in an older module.
+BridgeCall swingSidestep{};
+const game_swing::SidestepLive* sidestepLive{};
 // Optional: the web tie's telemetry (game_grab::TieData; an older ray module has none).
 BridgeCall sampleTie{};
 // Optional: web lines (game_lines::LineData; an older ray module has none).
@@ -929,11 +961,24 @@ DWORD WINAPI run(void*) {
         leg_hold::Hold legHold;
         leg_hold::Hold::Output legHoldOut;
         bool legBaseLast{};
+        // JUMP TO SPIDYVR: last frame was a midair animation under HYBRID. LEG
+        // HOLD's Y+X may start there too, so a hold made before the timed handoff
+        // carries across it (the legs move from the switch, or a right-stick
+        // pitch breaks at once as the flip break's legs rule says).
+        bool legChordAirAnimLast{};
         float legStickX{}, legStickY{};
         Vec3 legPrevVelocity{}, legAccel{};
         bool legPrevVelocitySet{};
         Quat legPrevBody{};
         bool legPrevBodySet{};
+        // The legs' layers (leg_layers.hpp; November 12 06:18): ACTIVE (the stick),
+        // FLAIL (Y+X + B in the air), AUTO POSES (AIR CROUCH, REACH SPREAD) and
+        // PASSIVE LEGS, one spring. legsAirLast: last frame's legs-may-move air
+        // (the flail's B gate runs before this frame's is known).
+        leg_layers::Mixer legMixer;
+        leg_layers::FlailGate flailGate;
+        bool legsAirLast{}, flailNow{};
+        bool reachHand[2]{};
         game_pad::ZipPress zipPress;
         game_pad::FlipZipPriority flipZipPriority;
         // EYE AIM: the zip waits for the game's camera to come onto what the
@@ -944,6 +989,7 @@ DWORD WINAPI run(void*) {
         uint32_t eyeAimFrames{}, gazeFrames{}, eyeShots{};
         bool toldNoGaze{};
         bool interacting{}, dodging{}, healing{}, zipping{};
+        bool zipBegan{}; // a zip press began this frame (MOVE HAPTICS)
         // The player asked the game for a move of its own while the swing carried him
         // in the air (game_swing::AirYield), for the next swing command.
         bool askingGame{};
@@ -1124,6 +1170,7 @@ DWORD WINAPI run(void*) {
         bool airSpinWas{};
         // ANIMATED HYBRID (off by default): animation-default / intent-VR owner FSM.
         hybrid_owner::HybridOwner hybridOwner{};
+        hybrid_owner::FreshPush flipFreshPush{}; // left-stick flip break: fresh pushes only
         bool hybridWebWas{};
         // ANIMATED HYBRID web zips (hybrid_owner::Frame::zipPress): pressed this
         // frame, for the owner's update further down the same frame.
@@ -1136,6 +1183,9 @@ DWORD WINAPI run(void*) {
         bool hybridJumpAsk{};
         int64_t positionLockCheckNs{-1}; // POSITION LOCK residual check time
         unsigned punchEaseEndsLogged{}; // PUNCH VIEW EASE: ends already logged
+        // Which switch the view ease now running (or last) began at: "punch",
+        // "jump handoff", "flip-break", "grip-cancel" (AIR VIEW EASE).
+        const char* easeWhy = "punch";
         std::array<aim_filter::Direction, 2> aimSteady; // WRIST MARKER SMOOTHING (shot = marker)
         bool hybridLeapAir{};
         bool hybridAdoptWaiting{};
@@ -1146,7 +1196,75 @@ DWORD WINAPI run(void*) {
         float hybridSpeedH{};
         // Parkour steering under HYBRID: the head-locked view's yaw, low-passed.
         hybrid_steer::YawFilter hybridViewYaw{};
+        // HANDSTAND (H1): the state last logged.
+        handstand::State handstandStateLogged{};
+        float handstandLogAge{};
         int64_t hybridSteerDiagAt{};
+        // VIEW YAW SOURCE: STABLE's heading (stable_yaw.hpp), the hero-vs-steer
+        // watch and the runaway-turn detector.
+        stable_yaw::Heading stableHeading{};
+        stable_yaw::GapWatch yawGap{};
+        stable_yaw::Runaway yawRunaway{};
+        // FULL head lock on the stable heading (view_yaw_lock.hpp, Step B): the
+        // lock's heading, TURN-IN-PLACE, the divergence metric and the R-stick
+        // turn watch. viewLockActive: published this frame (eyes, hands, arms);
+        // fullLockGate: the R stick turns it (Full on the ground, not softlock).
+        view_yaw_lock::Lock viewLock{};
+        view_yaw_lock::TurnInPlace turnInPlace{};
+        // FACING CHECK (facing_check.hpp): armed on each ownership event, a forced
+        // hero turn waiting for the next frame's walk stick.
+        facing_check::Check facingCheck{};
+        bool facingHeroPending = false;
+        float facingHeroYaw = 0;
+        facing_check::Event facingTurnEvent = facing_check::Event::landing;
+        uint32_t facingArmSeen = 0, facingFrames = 0;
+        // MOVEMENT MODE HYBRID (hybrid_movement.hpp): the left stick's gate, the heading
+        // the view holds while the hero is brought onto it, the air facing sync.
+        hybrid_movement::Gate hybridGate{};
+        hybrid_movement::Heading hybridHeading{};
+        hybrid_movement::Gate::Out hybridStick{};
+        bool hybridHeroTurn = false, hybridSteerable = false, hybridAirSyncOn = false;
+        // PARKOUR RT diagnostic (t86u): frames with the stick at the run on the ground.
+        uint32_t parkourRtFrames = 0, parkourRtHeld = 0, parkourRtRising = 0;
+        float parkourRtSeconds = 0;
+        std::array<uint32_t, static_cast<int>(game_pad::RunBlock::count)> parkourRtBlocked{};
+        float hybridAirSyncGap = 0.f; // the last gap the air facing gate measured
+        float hybridAirSyncSec = 0, hybridHoldLoggedAge = 0;
+        uint32_t hybridAirSyncStarts = 0;
+        view_yaw_lock::Divergence viewDivergence{};
+        // CAMERA MODES (camera_mode.hpp; the user, November 13 15:42): the animation's
+        // head ride, the shoulder limit (it replaced THE 90-DEGREE RULE), the
+        // snap/realign (its own system) and the perch watch.
+        camera_mode::HeadRide headRide{};
+        camera_mode::ShoulderLimit shoulderLimit{};
+        camera_mode::SnapRealign snapRealign{};
+        camera_mode::PerchWatch perchWatch{};
+        camera_mode::RideWhy rideWhy = camera_mode::RideWhy::none;
+        bool snapRealignPending = false; // the head's reference re-zeroed (a seat recenter) this frame
+        float snapStartView = NAN;       // the view a smooth-mode tap began on
+        float lastViewYaw = NAN;         // last frame's shown yaw + headset (where the player looked)
+        float rideAnimAge = 1e9f;        // seconds since the animation took the body
+        bool rideAnimLanding = false;    // ... with a landing (a perch's included) or a zip's arrival
+        float rideMoveStick = 0, rideSpeed = 0;
+        bool rideFighting = false, rideOnWall = false;
+        uint32_t snapRealigns = 0;
+        int64_t shoulderLogAt = 0;
+        bool sceneBodyHeld = false; // the game's own body while a scene or menu has the view
+        bool rideStepped = false;   // the head ride was stepped by last frame's view (else: not wanted)
+        aim_steady::AnchorSteady aimAnchorSteady{}; // AIM STEADY (Nov 13)
+        float viewLimitCorrection = 0;
+        view_yaw_lock::TurnWatch viewTurnWatch{};
+        bool viewLockActive{}, fullLockGate{}, viewLockSnapped{};
+        float viewLockDelta{};
+        float viewLockHeading{}; // the lock + the headset's turn (where the player looks)
+        bool viewLockHeadingOk{};
+        int64_t viewYawDiagAt{}, viewDivergenceAt{};
+        uint32_t viewLockTurnsLogged{};
+        // MOVE HAPTICS (move_haptics.hpp) and SOUND TRACE's events (sound_trace.hpp).
+        move_haptics::Detector moveDetector{};
+        move_haptics::Scheduler moveScheduler{};
+        sound_trace::Watch soundWatch{};
+        uint32_t moveHapticPulses{};
         // Slices 2–3: 180 ms eye/yaw blend + delayed arms wipe on G↔T edges.
         struct HybridBlend {
             bool active{};
@@ -1235,6 +1353,13 @@ DWORD WINAPI run(void*) {
         bool pointJumpFired{}, pointJumpHold{}, pointJumpCharged{}, pointJumpBothWas{}, pointJumpOffLogged{};
         float pointJumpHoldAge{};
         const char* pointJumpSurface = "ground";
+        // QUICK SIDESTEP (sidestep.hpp): the flick-then-A trigger, the bursts
+        // sent, refused and denied, the swing's account read so far, B as it
+        // came from the controller this frame (before the point jump's chord),
+        // and this frame's fire and the hold for the owner (Frame::sidestep*).
+        sidestep::Trigger sidestepTrigger;
+        uint32_t sidestepSerial{}, sidesteps{}, sidestepRefused{}, sidestepDenied{}, sidestepEndsRead{};
+        bool sidestepFired{}, sidestepHold{}, sidestepRawB{};
         // The game's camera follows the head's pitch too: it offers a thing
         // at the player's feet or overhead only with that camera on it.
         game_pad::CameraPitch cameraPitch;
@@ -1289,7 +1414,12 @@ DWORD WINAPI run(void*) {
         values.screenDepth = static_cast<int>(config.screenDepth);
         values.bodyHaptics = static_cast<int>(config.bodyHaptics);
         // And those only the tab offers, as it left them (tabOnlyPath); all sanitized.
-        values = vr_settings::withTabOnly(values, readTabOnly());
+        {
+            // The movement cleanup's defaults reach a settings file older than
+            // them once (vr_settings::withMovementDefaults).
+            const std::string tabOnlyRead = readTabOnly();
+            values = vr_settings::withMovementDefaults(vr_settings::withTabOnly(values, tabOnlyRead), tabOnlyRead);
+        }
         std::string tabOnlySaved = vr_settings::tabOnlyText(values);
         game_menu::publish(values);
         {
@@ -1675,6 +1805,12 @@ DWORD WINAPI run(void*) {
             // BLOW SOUNDS: the game's own impacts only on GAME.
             if (soundMode)
                 soundMode(reinterpret_cast<void*>(static_cast<uintptr_t>(values.blowSounds)));
+            // SOUND TRACE: diagnostics only, the hook on or off.
+            if (soundTraceMode) {
+                const DWORD traceError = soundTraceMode(values.soundTrace ? reinterpret_cast<void*>(1) : nullptr);
+                diag_log::writef("sound trace: %s%s", values.soundTrace ? "on" : "off",
+                                 traceError ? (" (error " + std::to_string(traceError) + ")").c_str() : "");
+            }
             if (!swingStarted || !swingSettings)
                 return;
             game_swing::Settings s;
@@ -1822,6 +1958,7 @@ DWORD WINAPI run(void*) {
                 vr_settings::fixedMomentumForwardLean * .0174532925f);
             rig.wallDistance(static_cast<float>(vr_settings::fixedWallDistance) / 100.f);
             rig.automaticFlips(realisticFlips(values));
+            rig.handstandSettings(handstand::paramsOf(values)); // HANDSTAND (H1), REALISTIC FLIPS only
             native_hud::setSize(values.hud);
             native_gpu::wantHudLayer(values.steadyHud && values.hud > 0);
             near_clip::set(values.nearClipMm);
@@ -2085,7 +2222,27 @@ DWORD WINAPI run(void*) {
                     // chord is held), the charge's rumble, and the launch sent to the
                     // swing (SpidySwingPointJump). Off (the default), A and B pass as
                     // they are.
+                    // FLAIL (leg_layers.hpp): in the air with Y+X physically held, B is
+                    // the legs' - taken here, before POINT JUMP's A+B, the dodge and the
+                    // tuck read it - until it is let go of.
+                    {
+                        const bool flailAllowed = values.legControl &&
+                                                  (values.controlledFlips || values.realisticFlips) && values.body &&
+                                                  !flatScreen && viewing && gameplay && motion.active && spiderMan &&
+                                                  !calibrationInput && !phone.open() && !padLayer.latched();
+                        const auto flail = flailGate.update(flailAllowed, legsAirLast, (frame.buttons & buttonX) != 0,
+                                                            (frame.buttons & buttonY) != 0,
+                                                            (frame.buttons & buttonB) != 0);
+                        if (flail.swallowB)
+                            frame.buttons &= ~static_cast<uint32_t>(buttonB);
+                        flailNow = flail.flail;
+                        if (flail.started)
+                            diag_log::write("legs: flail B taken (Y+X held in the air): no dodge, tuck or point jump");
+                        if (flail.ended)
+                            diag_log::write("legs: flail B let go of");
+                    }
                     pointJumpFired = false;
+                    sidestepRawB = (frame.buttons & buttonB) != 0; // QUICK SIDESTEP: B before the chord
                     {
                         const auto pj = point_jump::paramsOf(values);
                         const bool pjFresh = swingState.status && swingState.qpc &&
@@ -2177,13 +2334,20 @@ DWORD WINAPI run(void*) {
                             const float held = pointChord.held();
                             if (held > pj.tapSeconds) {
                                 const float c = point_jump::charge(held, pj);
+                                // MOVE HAPTICS' strength, not CONTROLLER VIBRATION's.
+                                const float moveScale = static_cast<float>(values.moveHapticsPct) / 100;
+                                const auto buzz = [&](int hand, float amplitude) {
+                                    const auto p = move_haptics::scaled({hand, amplitude, .025f}, moveScale);
+                                    if (p.amplitude > 0)
+                                        runtime.hapticUnscaled(hand, p.amplitude, p.seconds);
+                                };
                                 if (!pointJumpCharged) {
                                     pointJumpCharged = true;
-                                    runtime.haptic(1, .3f);
+                                    buzz(1, .3f);
                                     feel(body_haptics::Kind::leapCharge);
                                 } else {
-                                    runtime.haptic(0, .08f + .3f * c);
-                                    runtime.haptic(1, .1f + .4f * c);
+                                    buzz(0, .08f + .3f * c);
+                                    buzz(1, .1f + .4f * c);
                                 }
                             }
                         }
@@ -2212,8 +2376,22 @@ DWORD WINAPI run(void*) {
                                 pointJumpFired = pointJumpHold = true;
                                 pointJumpHoldAge = 0;
                                 pointJumpOffLogged = false;
-                                runtime.haptic(0, .8f, .12f);
-                                runtime.haptic(1, 1.f, .12f);
+                                // MOVE HAPTICS: the point jump's double thump, at its
+                                // own strength (the second thump 110 ms on).
+                                {
+                                    const float moveScale = static_cast<float>(values.moveHapticsPct) / 100;
+                                    const auto first = move_haptics::scaled(move_haptics::pointFirst(), moveScale);
+                                    if (first.amplitude > 0) {
+                                        runtime.hapticUnscaled(0, first.amplitude, first.seconds);
+                                        runtime.hapticUnscaled(1, first.amplitude, first.seconds);
+                                        moveScheduler.add(move_haptics::pointGap,
+                                                          move_haptics::scaled(move_haptics::pointSecond(), moveScale));
+                                        ++moveHapticPulses;
+                                    }
+                                    moveDetector.pointJump();
+                                    diag_log::writef("move haptics: point jump %.1f m/s -> %.2f x2 (move haptics %d%%)",
+                                                     speedNow, first.amplitude, values.moveHapticsPct);
+                                }
                                 feel(body_haptics::Kind::leap);
                                 diag_log::writef(
                                     "point jump: charge %.2f -> %.1f m/s dir (%.2f, %.2f, %.2f) n (%.2f, %.2f, %.2f) "
@@ -2223,6 +2401,22 @@ DWORD WINAPI run(void*) {
                                     static_cast<int>(fire.held * 1000 + .5f),
                                     fire.waited > .001f ? ", waited for the surface or the zip guard" : "",
                                     velocity.x, velocity.y, velocity.z, pointJumpSurface);
+                                // FACING CHECK: what the headset showed, and the launch way
+                                // when the player launched roughly where they looked.
+                                {
+                                    float before = NAN;
+                                    if (!hybridShown.valid || !hybrid_handoff::shownYaw(hybridShown, before))
+                                        before = NAN;
+                                    if (!std::isfinite(before) && motion.active)
+                                        before = hybrid_handoff::lookYaw(
+                                            motion.headPose.orientation.rotate({0, 0, -1}));
+                                    const float launchYaw =
+                                        std::hypot(velocity.x, velocity.z) > 1.f
+                                            ? hybrid_handoff::lookYaw({velocity.x, 0, velocity.z})
+                                            : NAN;
+                                    facingCheck.arm(facing_check::Event::pointLaunch, before,
+                                                    facing_check::launchExpected(before, launchYaw));
+                                }
                             } else {
                                 ++pointJumpRefused;
                                 diag_log::writef("point jump: the swing refused the launch (%lu)",
@@ -2272,7 +2466,7 @@ DWORD WINAPI run(void*) {
                         in.master = master;
                         // A chord may start where the legs could move (last frame's finding),
                         // with no prompt naming X or Y and the wheel shut.
-                        in.allowed = master && legBaseLast && !gadgetWheel.open() &&
+                        in.allowed = master && (legBaseLast || legChordAirAnimLast) && !gadgetWheel.open() &&
                                      !(namedPress.claimed() &
                                        (game_pad::NamedPress::controlX | game_pad::NamedPress::controlY));
                         legHoldOut = legHold.update(in);
@@ -2286,6 +2480,133 @@ DWORD WINAPI run(void*) {
                         }
                         if (legHoldOut.disengagedNow)
                             diag_log::writef("legs: disengaged (%s)", leg_hold::whyName(legHoldOut.why));
+                    }
+                    // QUICK SIDESTEP (sidestep.hpp; approved November 12, on by default):
+                    // on the ground under the animation, a left-stick flick then A within
+                    // 120 ms is a short upright burst the way it was flicked (the swing
+                    // drives it: SpidySwingSidestep), then a hard stop. Here, after the
+                    // point jump's chord and the leg hold have had A, B, X and Y: A alone
+                    // (no flick in the last 120 ms) goes on at once, as before; B is the
+                    // game's dodge as before. The A that fires is held back until let go
+                    // of, a new A during the burst reaches the game as it ends, and the
+                    // left stick is still meanwhile (the game turns him nowhere).
+                    // TODO(sidestep sound): the hook for the burst's sound effect and
+                    // Spidey's grunt (no smoke). No sound IDs are known yet: they wait
+                    // for the SOUND TRACE headset session (1008510). Play them where
+                    // `sidestepFired` is set below, once known.
+                    sidestepFired = false;
+                    {
+                        const auto ss = sidestep::paramsOf(values);
+                        const bool ssFresh = swingState.status && swingState.qpc &&
+                                             static_cast<int64_t>(swingState.qpc) > now.QuadPart - frequency.QuadPart / 10;
+                        const bool ssHybrid = values.animatedHybrid && values.animatedMoves;
+                        const char* blockedBy = nullptr;
+                        if (!swingSidestep)
+                            blockedBy = "no swing export";
+                        else if (!(viewing && gameplay && motion.active && !flatScreen && spiderMan &&
+                                   recentPresentation(lastNewImageMs, GetTickCount64())))
+                            blockedBy = "not in play";
+                        else if (phone.open() || gadgetWheel.open())
+                            blockedBy = "phone or wheel";
+                        else if (padLayer.latched())
+                            blockedBy = "pad layer";
+                        else if (calibrationInput)
+                            blockedBy = "calibration";
+                        else if (namedPress.claimed() & game_pad::NamedPress::controlA)
+                            blockedBy = "prompt";
+                        else if (motion.ventCrawl)
+                            blockedBy = "vent";
+                        else if (values.webLines && lineState.phase == 2 && lineState.onLine)
+                            blockedBy = "line";
+                        else if (ssFresh && swingState.wall == static_cast<uint32_t>(game_swing::Surface::floor))
+                            // Nov 13 session: all 8 such denials were in fights, the game's
+                            // ground cleared the same frame (a dodge's or a move's pose
+                            // reporting the floor-crawl flag; CrawlCameraGate) - the swing
+                            // would refuse the burst off the ground anyway. Named apart.
+                            blockedBy = "the game's floor-crawl flag (a vent, or a fight move's pose; off the game's ground)";
+                        else if (ssFresh && (swingState.wall == static_cast<uint32_t>(game_swing::Surface::game) ||
+                                             swingState.wall == static_cast<uint32_t>(game_swing::Surface::wall)))
+                            blockedBy = "on a wall or the game's crawl";
+                        else if (ssFresh && (swingState.takeoff || swingState.takeoffPhase))
+                            blockedBy = "takeoff";
+                        else if (pointJumpHold)
+                            blockedBy = "point jump takeoff";
+                        else if (ssFresh && (swingState.webs[0].attached || swingState.webs[1].attached))
+                            blockedBy = "a web held";
+                        sidestep::Trigger::Input in;
+                        in.seconds = frame.seconds;
+                        in.stickValid = frame.hands[0].valid;
+                        in.stickX = frame.hands[0].stickX;
+                        in.stickY = frame.hands[0].stickY;
+                        in.a = frame.jump;
+                        in.b = sidestepRawB || (frame.buttons & buttonB) != 0;
+                        in.groundAnim = ssHybrid && ssFresh && swingState.grounded && !swingState.owned &&
+                                        hybridOwner.domain == hybrid_owner::Domain::anim;
+                        in.blocked = blockedBy != nullptr;
+                        in.pointJump = pointChord.charging();
+                        in.legs = legHoldOut.engaged;
+                        const bool wasActive = sidestepTrigger.active();
+                        const auto out = sidestepTrigger.update(in, ss);
+                        frame.jump = out.a;
+                        if (out.denied != sidestep::Deny::none) {
+                            ++sidestepDenied;
+                            diag_log::writef("sidestep: denied %s (A went on to the game)",
+                                             out.denied == sidestep::Deny::blocked && blockedBy
+                                                 ? blockedBy
+                                                 : sidestep::denyName(out.denied));
+                        }
+                        if (out.fire) {
+                            float yaw = hybridViewYaw.set ? hybridViewYaw.yaw : NAN;
+                            if (!std::isfinite(yaw) && validTrackedPose(motion.headPose))
+                                yaw = hybrid_handoff::lookYaw(motion.headPose.orientation.rotate({0, 0, -1}));
+                            const Vec3 way = sidestep::worldWay(out.x, out.y, yaw);
+                            const auto burst = sidestep::plan(way, ss);
+                            game_swing::SidestepAsk ask;
+                            ask.serial = ++sidestepSerial;
+                            ask.velocity = burst.velocity;
+                            ask.moveSeconds = burst.moveSeconds;
+                            ask.stopSeconds = burst.stopSeconds;
+                            ask.flags = ss.iframes ? 1u : 0u;
+                            const DWORD result =
+                                length(burst.velocity) > 1.f ? swingSidestep(&ask) : static_cast<DWORD>(2001);
+                            if (result == 0) {
+                                ++sidesteps;
+                                sidestepFired = true;
+                                diag_log::writef("sidestep: fire stick (%.2f, %.2f) way (%.2f, %.2f) %.1f m/s for "
+                                                 "%d ms + stop %d ms, chain %d, i-frames %s",
+                                                 out.x, out.y, way.x, way.z, length(burst.velocity),
+                                                 static_cast<int>(burst.moveSeconds * 1000 + .5f),
+                                                 static_cast<int>(burst.stopSeconds * 1000 + .5f),
+                                                 sidestepTrigger.chain(), ss.iframes ? "on" : "off");
+                                // TODO(sidestep sound): play the burst's sound and Spidey's grunt here.
+                            } else {
+                                ++sidestepRefused;
+                                sidestepTrigger.stop();
+                                diag_log::writef("sidestep: the swing refused the burst (%lu)",
+                                                 static_cast<unsigned long>(result));
+                            }
+                        }
+                        // The swing's account: a burst it refused or ended early ends here too.
+                        if (const volatile game_swing::SidestepLive* live = sidestepLive) {
+                            const uint32_t ended = live->ended;
+                            if (ended != sidestepEndsRead) {
+                                sidestepEndsRead = ended;
+                                MemoryBarrier();
+                                const auto why = static_cast<sidestep::Stop>(live->stop);
+                                diag_log::writef("sidestep: end %s after %.0f ms, %.2f m across (serial %u)",
+                                                 sidestep::stopName(why), live->ms, live->metres,
+                                                 static_cast<unsigned>(live->serial));
+                                if (live->serial == sidestepSerial && why != sidestep::Stop::time)
+                                    sidestepTrigger.stop();
+                            }
+                        }
+                        if (wasActive && !sidestepTrigger.active())
+                            diag_log::write("sidestep: hold over, ground back to the animation");
+                        sidestepHold = sidestepTrigger.active();
+                        if (sidestepHold) {
+                            // The left stick still while the burst lasts.
+                            frame.hands[0].stickX = frame.hands[0].stickY = 0;
+                        }
                     }
                     if (!frame.jump)
                         jumpFromScreen = false;
@@ -2756,29 +3077,112 @@ DWORD WINAPI run(void*) {
                         swingState.wall == static_cast<uint32_t>(game_swing::Surface::wall);
                     rig.animatedYawOwner(
                         hybrid_steer::ownsYaw(hybridInputLocked, values.animatedModelYaw, hybridInputCrawl));
+                    // HANDSTAND (H1): a catch only in SpidyVR's air (hybrid: VR owns him).
+                    const bool handstandVrOwns = !(values.animatedHybrid && values.animatedMoves) ||
+                                                 hybridOwner.domain == hybrid_owner::Domain::vr;
+                    rig.handstandVrAir(flipAir && handstandVrOwns);
+                    // THE TOUCHDOWN CATCH (Nov 13): the game's ground under SpidyVR's
+                    // body this frame (before the landing hands him to the animation).
+                    rig.handstandTouchdown(handstandVrOwns && !flipAir && swingState.grounded != 0 && !onLine,
+                                           handstandVrOwns && swingState.grounded == 0 && !onLine,
+                                           std::isfinite(feet.y) ? feet.y : NAN);
                     motion = rig.update(seated::raised(controller, seatRaise), feet,
                                         {camera[8], camera[9], camera[10]}, gameplay,
                                         swingState.owned ? Vec3{0, 1, 0} : heroUp, flipAir, hold,
                                         {camera[4], camera[5], camera[6]});
-                    // PUNCH VIEW EASE: how each ease ended, once.
+                    // HANDSTAND (H1): its log lines, and the push-off: a launch off the
+                    // hands through the swing's point-jump path (SpidySwingPointJump: its
+                    // own event, no smoke), held for the owner as a point jump's takeoff.
+                    // TODO(handstand sound): the push-off's sound and Spidey's grunt; no
+                    // sound IDs yet (the SOUND TRACE session, 1008510).
+                    {
+                        const auto& hs = motion.handstand;
+                        if (hs.caughtNow)
+                            diag_log::writef("handstand: catch%s (inverted %.0f deg, eyes down %.2f m)",
+                                             hs.touchdownCatch ? " at the touchdown" : "",
+                                             handstand::invertedDegrees(motion.flipTilt.rotate({0, 1, 0})),
+                                             motion.handstandDrop);
+                        else if (hs.touchdownNow && hs.refused != handstand::Refusal::none)
+                            diag_log::writef("handstand: no catch at the touchdown: %s (inverted %.0f deg, "
+                                             "spin %.1f rad/s, palms %.2f m over the floor)",
+                                             handstand::refusalName(hs.refused), hs.inverted, hs.spin, hs.palmGap);
+                        handstandLogAge += std::isfinite(frame.seconds) ? std::clamp(frame.seconds, 0.f, .1f) : 0.f;
+                        if (hs.state != handstandStateLogged ||
+                            (hs.state == handstand::State::balance && handstandLogAge >= .5f)) {
+                            if (hs.state == handstand::State::balance)
+                                diag_log::writef("handstand: balance lean %.1f deg, com speed %.2f m/s, "
+                                                 "cop (%.2f, %.2f)",
+                                                 hs.balance.leanDegrees, length(hs.balance.v), hs.balance.u.x,
+                                                 hs.balance.u.z);
+                            handstandStateLogged = hs.state;
+                            handstandLogAge = 0;
+                        }
+                        if (hs.holdVr && hybridOwner.domain == hybrid_owner::Domain::vr && swingState.grounded &&
+                            hs.caughtNow)
+                            diag_log::write("owner: kept vr (handSupport)");
+                        if (hs.exitNow != handstand::Exit::none) {
+                            diag_log::writef("handstand: exit %s (lean %.1f deg)", handstand::exitName(hs.exitNow),
+                                             hs.balance.leanDegrees);
+                            if (hs.exitNow == handstand::Exit::push) {
+                                game_swing::PointJumpAsk ask;
+                                ask.serial = ++pointJumpSerial;
+                                ask.velocity = hs.launch;
+                                ask.normal = Vec3{0, 1, 0};
+                                const DWORD result = swingPointJump && game_swing::validPointJump(ask)
+                                                         ? swingPointJump(&ask)
+                                                         : static_cast<DWORD>(2001);
+                                if (result == 0) {
+                                    pointJumpHold = true;
+                                    pointJumpHoldAge = 0;
+                                    pointJumpOffLogged = false;
+                                    diag_log::writef("handstand: push-off (%.1f, %.1f, %.1f) m/s", hs.launch.x,
+                                                     hs.launch.y, hs.launch.z);
+                                } else {
+                                    diag_log::writef("handstand: push-off refused (%lu)",
+                                                     static_cast<unsigned long>(result));
+                                }
+                            }
+                        }
+                    }
+                    // PUNCH / AIR VIEW EASE: how each ease ended, once.
                     if (rig.viewEase().ends() != punchEaseEndsLogged) {
                         punchEaseEndsLogged = rig.viewEase().ends();
-                        diag_log::writef("punch view ease: %s after %d ms", view_ease::endName(rig.viewEase().lastEnd()),
+                        diag_log::writef("%s view ease: %s after %d ms", easeWhy,
+                                         view_ease::endName(rig.viewEase().lastEnd()),
                                          static_cast<int>(rig.viewEase().elapsed() * 1000 + .5f));
                     }
                     {
                         // FLIP BREAK, the left stick: the axes CONTROLLED FLIPS (toggled
                         // on in the air) or REALISTIC FLIPS' steering read.
+                        // FRESH PUSH (5061b4a playtest): a left stick already tilted at takeoff is
+                        // the run's. It breaks only after it came back to rest, or moved clearly
+                        // (> 60 deg) from its takeoff direction.
                         hybrid_owner::FlipInput in;
-                        in.leftValid = frame.hands[0].valid;
                         in.leftX = frame.hands[0].stickX;
                         in.leftY = frame.hands[0].stickY;
+                        if (flipBreakHybrid && flipAir && hybridOwner.domain == hybrid_owner::Domain::anim) {
+                            in.leftValid = flipFreshPush.allows(frame.hands[0].valid, in.leftX, in.leftY);
+                        } else {
+                            flipFreshPush.ground(frame.hands[0].valid, in.leftX, in.leftY);
+                            in.leftValid = frame.hands[0].valid;
+                        }
                         in.controlledActive = motion.controlledFlipControls;
                         in.realisticSteering = values.realisticFlips && values.flips;
                         tryFlipBreak(in);
                     }
                     bool hybridInputViewOk = false;
                     float hybridInputViewYaw = 0.f;
+                    // FULL head lock on the stable heading steers from the lock (Step B).
+                    const bool hybridMode =
+                        hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::hybrid;
+                    const bool viewLockSteer =
+                        viewLockActive && viewLock.set &&
+                        hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::stable &&
+                        animated_moves::headFollow(values.animatedHead) == animated_moves::HeadFollow::full;
+                    viewLockHeadingOk = false;
+                    // The player's own turn (headset since the latch + R-stick turns), for
+                    // the runaway-turn detector (stable_yaw.hpp).
+                    float hybridInputIntentYaw = 0.f;
                     Vec3 hybridInputMove{};
                     const float hybridInputL =
                         frame.hands[0].valid ? std::hypot(frame.hands[0].stickX, frame.hands[0].stickY) : 0.f;
@@ -2798,7 +3202,8 @@ DWORD WINAPI run(void*) {
                         Mat4 headMat{};
                         const bool levelHead = animated_moves::headFollow(values.animatedHead) ==
                                                animated_moves::HeadFollow::level;
-                        if (levelHead ? game_fp::frameLevel(headMat) : game_fp::frame(headMat)) {
+                        // The head bone as animated (never the lock's turn): heroHead.
+                        if (levelHead ? game_fp::frameLevel(headMat) : game_fp::heroHead(headMat)) {
                             const Vec3 ahead{headMat[8], headMat[9], headMat[10]};
                             if (finite(ahead) && std::hypot(ahead.x, ahead.z) > .2f) {
                                 float trackedYaw = 0.f, refYaw = 0.f;
@@ -2808,10 +3213,50 @@ DWORD WINAPI run(void*) {
                                     refYaw =
                                         hybrid_handoff::lookYaw(animHeadRef.orientation.rotate({0, 0, -1}));
                                 }
-                                const float target =
-                                    hybrid_steer::viewYaw(hybrid_handoff::lookYaw(ahead), trackedYaw, refYaw,
-                                                          animHeadRefSet ? animHeadTurn : 0.f);
-                                hybridInputViewYaw = hybridViewYaw.update(target, frame.seconds);
+                                const float headBoneYaw = hybrid_handoff::lookYaw(ahead);
+                                const float headTurnNow = animHeadRefSet ? animHeadTurn : 0.f;
+                                hybridInputIntentYaw = stable_yaw::wrap(trackedYaw - refYaw + headTurnNow);
+                                if (hybridMode && viewLockActive && hybridHeading.set && !levelHead) {
+                                    // HYBRID: he runs along the heading (the right stick's);
+                                    // the headset's own turn never steers.
+                                    stableHeading.reset();
+                                    hybridInputIntentYaw = hybridHeading.yaw;
+                                    hybridInputViewYaw = hybridHeading.yaw;
+                                    hybridViewYaw.update(hybridHeading.yaw, frame.seconds, stable_yaw::stableTau);
+                                } else if (viewLockSteer && !levelHead) {
+                                    // FULL head lock (view_yaw_lock.hpp): where the player looks
+                                    // is the lock's heading + the headset's turn; the R stick
+                                    // turned the lock at the top of the frame. No relatch to the
+                                    // head bone, no steering own turn: the hero never turns it.
+                                    const float target = stable_yaw::wrap(viewLock.yaw + trackedYaw - refYaw);
+                                    stableHeading.reset();
+                                    hybridInputIntentYaw = target;
+                                    viewLockHeading = target;
+                                    viewLockHeadingOk = true;
+                                    hybridInputViewYaw =
+                                        hybridViewYaw.update(target, frame.seconds, stable_yaw::stableTau);
+                                } else if (hybrid_movement::viewSource(values.movementMode) == stable_yaw::Source::stable) {
+                                    // VIEW YAW SOURCE: STABLE - a heading of its own, never
+                                    // turned by the head bone while he runs (stable_yaw.hpp).
+                                    stable_yaw::Input in;
+                                    in.dt = frame.seconds;
+                                    in.headBoneYaw = headBoneYaw;
+                                    in.hmdDelta = trackedYaw - refYaw;
+                                    in.headTurn = headTurnNow;
+                                    in.leftTilt = hybridInputL;
+                                    in.rightX = hybridInputR;
+                                    in.levelTurns = levelHead;
+                                    in.smoothDegPerSec = values.smoothTurn;
+                                    in.snapDeg = values.snapTurn;
+                                    const float target = stableHeading.update(in);
+                                    hybridInputIntentYaw = stable_yaw::wrap(hybridInputIntentYaw + stableHeading.ownTurn);
+                                    hybridInputViewYaw =
+                                        hybridViewYaw.update(target, frame.seconds, stable_yaw::stableTau);
+                                } else {
+                                    const float target =
+                                        hybrid_steer::viewYaw(headBoneYaw, trackedYaw, refYaw, headTurnNow);
+                                    hybridInputViewYaw = hybridViewYaw.update(target, frame.seconds);
+                                }
                                 hybridInputViewOk = true;
                             }
                         }
@@ -2819,14 +3264,78 @@ DWORD WINAPI run(void*) {
                             hybridInputViewYaw = hybridViewYaw.yaw;
                             hybridInputViewOk = true;
                         }
+                        // HYBRID's left stick: front half along the heading, the rear
+                        // half one snap of the heading (and the view) to the stick.
+                        const bool hybridGround = hybridMode && viewLockActive && hybridHeading.set &&
+                                                  hybridOwner.domain != hybrid_owner::Domain::vr && swingFresh &&
+                                                  swingState.grounded && !swingState.webs[0].attached &&
+                                                  !swingState.webs[1].attached;
+                        if (hybridGround && frame.hands[0].valid) {
+                            // v2: the headset's yaw off the heading (the view is heading +
+                            // the headset's turn since the head latched), + right.
+                            float hybridGaze = NAN;
+                            if (animHeadRefSet && validTrackedPose(frame.head)) {
+                                const float tracked = hybrid_handoff::lookYaw(
+                                    screenAhead(frame.head, 0).orientation.rotate({0, 0, -1}));
+                                const float ref =
+                                    hybrid_handoff::lookYaw(animHeadRef.orientation.rotate({0, 0, -1}));
+                                if (std::isfinite(tracked) && std::isfinite(ref))
+                                    hybridGaze = -stable_yaw::wrap(tracked - ref);
+                            }
+                            const auto zoneWas = hybridStick.zone;
+                            hybridStick =
+                                hybridGate.update(frame.seconds, frame.hands[0].stickX, frame.hands[0].stickY, hybridGaze);
+                            if (hybridStick.zone != zoneWas && hybridStick.zone != hybrid_movement::Zone::none) {
+                                constexpr float toDeg = 180.f / 3.14159265f;
+                                diag_log::writef("hybrid stick: %s (stick %+.0f deg, gaze %+.0f, run %+.0f off the "
+                                                 "heading)",
+                                                 hybrid_movement::zoneName(hybridStick.zone),
+                                                 hybrid_movement::stickAngle(frame.hands[0].stickX,
+                                                                             frame.hands[0].stickY) * toDeg,
+                                                 std::isfinite(hybridGaze) ? hybridGaze * toDeg : 0.f,
+                                                 hybridStick.dir * toDeg);
+                            }
+                            if (hybridStick.snapped) {
+                                constexpr float toDeg = 180.f / 3.14159265f;
+                                const float from = hybridHeading.yaw;
+                                const float to =
+                                    hybrid_movement::stickYaw(from, frame.hands[0].stickX, frame.hands[0].stickY);
+                                const float heroNow = std::hypot(body[8], body[10]) > .2f
+                                                          ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]})
+                                                          : NAN;
+                                hybridHeading.begin(hybrid_movement::Heading::Hold::snap, to,
+                                                    static_cast<float>(values.rearSnapMs) * .001f);
+                                if (values.rearSnapMs <= 0)
+                                    ++armEpoch; // an instant snap is a jump of the frame, not a hand's motion
+                                diag_log::writef("rear snap: stick %+.0f deg -> facing %.0f (from %.0f, hero %.0f, "
+                                                 "view %s, #%u)",
+                                                 hybridStick.snapAngle * toDeg, to * toDeg, from * toDeg,
+                                                 std::isfinite(heroNow) ? heroNow * toDeg : -999.f,
+                                                 values.rearSnapMs <= 0 ? "instant" : "eased", hybridGate.snaps);
+                            }
+                        } else {
+                            hybridGate.reset();
+                            hybridStick = {};
+                        }
                         if (hybridInputViewOk) {
                             const Vec3 walk =
-                                frame.hands[0].valid
+                                hybridGround
+                                    ? hybrid_steer::viewForward(stable_yaw::wrap(hybridHeading.yaw - hybridStick.dir)) *
+                                          hybridStick.y
+                                : frame.hands[0].valid
                                     ? hybrid_steer::viewMove(frame.hands[0].stickX, frame.hands[0].stickY,
                                                              hybridInputViewYaw)
                                     : Vec3{};
-                            hybridInputMove = animated_model_yaw::composeMove(walk, hybridInputR,
-                                                                              {body[8], body[9], body[10]});
+                            // STABLE: the R stick turns the heading itself while
+                            // the left stick runs (no second turn request).
+                            // FULL head lock: the R stick only ever turns the lock's
+                            // heading; the hero follows by steering or TURN-IN-PLACE.
+                            hybridInputMove = animated_model_yaw::composeMove(
+                                walk,
+                                viewLockSteer || hybridGround ? 0.f
+                                              : stable_yaw::composeTurn(hybrid_movement::viewSource(values.movementMode),
+                                                                        hybridInputR, hybridInputL),
+                                {body[8], body[9], body[10]});
                             // Only ground locomotion consumes the shared vector. Never
                             // renormalize or redirect web/wall/air physical velocities.
                             if (swingFresh && swingState.grounded && !hybridInputCrawl &&
@@ -2837,6 +3346,9 @@ DWORD WINAPI run(void*) {
                         }
                     } else {
                         hybridViewYaw.reset();
+                        stableHeading.reset();
+                        hybridGate.reset();
+                        hybridStick = {};
                     }
                     if (values.eyeAim && motion.active && !flatScreen) {
                         ++eyeAimFrames;
@@ -3347,6 +3859,150 @@ DWORD WINAPI run(void*) {
                         }
                     }
                     levelTurnGate = false; // the eyes, below, say again for the next frame
+                    // FULL head lock on the stable heading: the R stick turns the lock's
+                    // heading (smooth deg/s or snap) for THIS frame, before the hands are
+                    // mapped; eyes, hands and arms all take the published lock.
+                    viewLockDelta = 0;
+                    viewLockSnapped = false;
+                    // SNAP / REALIGN (camera_mode.hpp; the user, November 13 15:42): its own
+                    // system on the right stick's taps left/right, round the full 360, every
+                    // tap a realign of the heading, the model and the headset. Where the R
+                    // stick turns the view (Full on the ground) or the head ride runs; never
+                    // with LEG CONTROL or basic flips on the stick, or another mode holding it.
+                    const bool snapHybrid =
+                        hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::hybrid;
+                    const bool snapGate = values.snapRealign && snapHybrid && viewLockActive && viewLock.set &&
+                                          hybridHeading.set && (fullLockGate || headRide.active()) &&
+                                          !legStickActive && !motion.basicFlipControls && frame.hands[1].valid &&
+                                          !camera_mode::snapInputYielded.load(std::memory_order_relaxed);
+                    const auto snapTap = snapRealign.update(frame.seconds, snapGate ? frame.hands[1].stickX : 0.f,
+                                                            values.smoothTurn > 0, values.snapTurn);
+                    if (snapTap.began)
+                        snapStartView = lastViewYaw;
+                    bool realignNow = false;
+                    float realignTo = NAN, realignTurn = 0;
+                    const char* realignWhy = "tap";
+                    if (snapTap.fire && snapGate) {
+                        const float from = values.smoothTurn > 0 && std::isfinite(snapStartView) ? snapStartView
+                                                                                                : lastViewYaw;
+                        if (std::isfinite(from)) {
+                            realignNow = true;
+                            realignTurn = snapTap.turn;
+                            realignTo = stable_yaw::wrap(from + snapTap.turn);
+                        }
+                    }
+                    {
+                        float asked = NAN;
+                        if (camera_mode::takeRealign(asked) && snapHybrid && viewLock.set && hybridHeading.set) {
+                            realignNow = true;
+                            realignWhy = "asked";
+                            realignTurn = 0;
+                            realignTo = std::isfinite(asked) ? stable_yaw::wrap(asked) : lastViewYaw;
+                        }
+                    }
+                    // The snap's flick is the realign's now (SMOOTH TURN still turns while held).
+                    const float turnX = values.snapRealign && snapHybrid && values.smoothTurn <= 0
+                                            ? 0.f
+                                            : frame.hands[1].stickX;
+                    if (fullLockGate && viewLockActive && viewLock.set && !legStickActive &&
+                        !motion.basicFlipControls && frame.hands[1].valid) {
+                        const uint32_t snapsBefore = viewLock.snaps;
+                        viewLockDelta = viewLock.turn(frame.seconds, turnX, values.smoothTurn,
+                                                      values.snapTurn);
+                        viewLockSnapped = viewLock.snaps != snapsBefore;
+                        if (viewLockSnapped)
+                            ++armEpoch; // a snap is a jump of the frame, not a hand's motion
+                    } else {
+                        viewLock.turn(frame.seconds, 0.f, values.smoothTurn, values.snapTurn);
+                    }
+                    // HYBRID: the right stick turned the heading; the hero is brought onto it
+                    // (walk stick), the view holds it meanwhile and is the head again after.
+                    hybridHeroTurn = false;
+                    if (hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::hybrid &&
+                        viewLockActive && hybridHeading.set) {
+                        constexpr float toDeg = 180.f / 3.14159265f;
+                        hybridHeading.turn(viewLockDelta);
+                        const bool heroOk = std::hypot(body[8], body[10]) > .2f;
+                        hybrid_movement::Heading::In hin;
+                        hin.dt = frame.seconds;
+                        hin.heroOk = heroOk;
+                        hin.hero = heroOk ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]}) : 0.f;
+                        hin.driving = hybridStick.drives;
+                        hin.steerable = hybridOwner.domain != hybrid_owner::Domain::vr && swingFresh &&
+                                        swingState.grounded && !motion.onSurface;
+                        hybridSteerable = hin.steerable;
+                        const auto ho = hybridHeading.update(hin);
+                        hybridHeroTurn = ho.heroTurn;
+                        if (ho.released != hybrid_movement::Heading::Hold::none)
+                            diag_log::writef("hybrid heading: %s hold %s after %d ms, heading %.0f hero %.0f",
+                                             hybrid_movement::holdName(ho.released),
+                                             ho.gaveUp ? "GAVE UP (view rejoins the head)"
+                                             : ho.kept ? "timed out on his feet (heading and view stay; he stays)"
+                                                       : "arrived",
+                                             static_cast<int>(hybridHeading.age * 1000 + .5f),
+                                             hybridHeading.yaw * toDeg, hin.hero * toDeg);
+                        if (ho.unanchored)
+                            diag_log::writef("hybrid heading: the game turns him (parkour/wall/air); it follows him "
+                                             "again (heading %.0f hero %.0f)", hybridHeading.yaw * toDeg, hin.hero * toDeg);
+                        viewLock.yaw = hybridHeading.yaw;
+                    }
+                    if (realignNow && std::isfinite(realignTo)) {
+                        // REALIGN: the heading is where he looked (+ the tap's snap); the hero is
+                        // brought onto it (the snap hold's walk stick), the headset's turn is
+                        // zeroed on it (the head seat recenters below), and the gaze cone, the
+                        // rear snap's arming, the shoulder limit and the hands' filters start afresh.
+                        constexpr float toDeg = 180.f / 3.14159265f;
+                        const float heroNow = std::hypot(body[8], body[10]) > .2f
+                                                  ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]})
+                                                  : NAN;
+                        const float viewWas = lastViewYaw;
+                        hybridHeading.begin(hybrid_movement::Heading::Hold::snap, realignTo, 0.f);
+                        viewLock.yaw = hybridHeading.yaw;
+                        snapRealignPending = true;
+                        if (headRide.active())
+                            rideWhy = camera_mode::RideWhy::none;
+                        headRide.reset();
+                        hybridGate.reset();
+                        hybridStick = {};
+                        shoulderLimit.reset();
+                        viewLimitCorrection = 0;
+                        turnInPlace.reset();
+                        animHeadTurn = 0;
+                        viewLockSnapped = true;
+                        ++armEpoch; // a realign is a jump of the frame, not a hand's motion
+                        ++snapRealigns;
+                        diag_log::writef("snap realign: %s %+.0f deg -> heading %.0f (view was %.0f, hero %.0f); "
+                                         "model, headset, gaze cone, rear snap and filters re-synced, #%u",
+                                         realignWhy, realignTurn * toDeg, realignTo * toDeg,
+                                         std::isfinite(viewWas) ? viewWas * toDeg : -999.f,
+                                         std::isfinite(heroNow) ? heroNow * toDeg : -999.f, snapRealigns);
+                    }
+                    {
+                        const bool hybridNow =
+                            hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::hybrid;
+                        view_yaw_lock::State lock;
+                        lock.on = viewLockActive && viewLock.set;
+                        lock.yaw = viewLock.yaw;
+                        lock.sway = hybridNow ? hybridHeading.swayWeight : view_yaw_lock::swayOf(values.animYawSwayPct);
+                        lock.heroYaw = std::hypot(body[8], body[10]) > .2f
+                                           ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]})
+                                           : NAN; // no facing: no sway term
+                        // ANIM HEAD RIDE: a frame without the head lock's view (the air, a scene)
+                        // wants no ride - it blends out, so a later lock never starts on the bone.
+                        if (!rideStepped) {
+                            if (headRide.update(frame.seconds, false).exited) {
+                                rideWhy = camera_mode::RideWhy::none;
+                                diag_log::writef("camera mode: %s (the head lock's view ended), blend %.0f ms, #%u",
+                                                 camera_mode::modeName(headRide.mode),
+                                                 camera_mode::HeadRide::exitSeconds * 1000.f, headRide.exits);
+                            }
+                        }
+                        rideStepped = false;
+                        // ANIM HEAD RIDE and the SHOULDER LIMIT: last frame's until this frame's (below).
+                        lock.ride = headRide.eased();
+                        lock.limit = lock.on && std::isfinite(viewLimitCorrection) ? viewLimitCorrection : 0.f;
+                        view_yaw_lock::publish(lock);
+                    }
                     // H1: the hands' velocities, in tracking space.
                     for (unsigned i = 0; i < 2; ++i)
                         armVelocity[i].update(frame.hands[i].grip.position,
@@ -3366,6 +4022,9 @@ DWORD WINAPI run(void*) {
                         if (native_body::viewAnchorWorld(headWorld) == 1 &&
                             arm_frame::worldAnchor(armFrameWas, headWorld, level, armWorldEyesWas,
                                                    armView.anchor)) {
+                            // FULL head lock on the stable heading: turned as the eyes are.
+                            if (armFrameWas == animated_view::Frame::full)
+                                view_yaw_lock::turnHead(armView.anchor, view_yaw_lock::live());
                             // CAMERA MOTION: the hands map onto the head the eyes are on
                             // (its tilt, HEAD ANGLE, the bob's shift), so they stay where
                             // the player's hands are in the view.
@@ -3399,6 +4058,15 @@ DWORD WINAPI run(void*) {
                         kin.headValid = finite(kin.head.position);
                         kin.viewYaw = motion.swing.trackingYaw;
                     }
+                    // AIM STEADY (aim_steady.hpp, Nov 13): the webs' line (and the
+                    // marker on it) off the camera's quick motion - the anchor the
+                    // hands are mapped onto, its bob, nod, roll and sway.
+                    Quat aimSteadyTurn{};
+                    if (armView.valid)
+                        aimSteadyTurn = aimAnchorSteady.update(arm_frame::toGame(armView, armView.reference).orientation,
+                                                               std::isfinite(frame.seconds) ? frame.seconds : 0.f);
+                    else
+                        aimAnchorSteady.reset();
                     for (unsigned i = 0; i < 2; ++i) {
                         if (armView.valid && frame.hands[i].valid && validTrackedPose(frame.hands[i].grip)) {
                             // M2: led by the SAME lead and velocity the glove gets in the
@@ -3407,6 +4075,8 @@ DWORD WINAPI run(void*) {
                             led.position = led.position + arm_frame::clampSpeed(armVelocity[i].value()) * armLead;
                             kin.grip[i] = arm_frame::toGame(armView, led);
                             kin.aim[i] = webShooter(kin.grip[i], i);
+                            kin.aim[i].orientation = web_aim::unitOr(aimSteadyTurn * kin.aim[i].orientation,
+                                                                     kin.aim[i].orientation);
                             kin.handValid[i] = true;
                         } else if (motion.active && motion.swing.hands[i].tracked) {
                             kin.grip[i] = motion.grips[i];
@@ -4892,6 +5562,49 @@ DWORD WINAPI run(void*) {
                             message(3, 0, "Pad layer off - the webs are back on your grips and triggers");
                         }
                         padLayerWas = layerOn;
+                        {
+                            // HYBRID AIR FACING SYNC's gate (hybrid_movement.hpp), with hysteresis:
+                            // on past 20 degrees, off under 8.
+                            constexpr float toDeg = 180.f / 3.14159265f;
+                            const bool vrOwned = hybridOwner.domain == hybrid_owner::Domain::vr;
+                            const float actorNow = std::hypot(body[8], body[10]) > .2f
+                                                       ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]})
+                                                       : NAN;
+                            const float lookNow = motion.active && validTrackedPose(motion.headPose)
+                                                      ? hybrid_handoff::lookYaw(
+                                                            motion.headPose.orientation.rotate({0, 0, -1}))
+                                                      : NAN;
+                            const bool hybridAir =
+                                hybrid_movement::modeOf(values.movementMode) == hybrid_movement::Mode::hybrid;
+                            const bool base = hybridAir && vrOwned && swingFresh && swingState.owned &&
+                                              !swingState.grounded && !swingState.webs[0].attached &&
+                                              !swingState.webs[1].attached &&
+                                              swingState.wall == static_cast<uint32_t>(game_swing::Surface::none) &&
+                                              std::isfinite(actorNow) && std::isfinite(lookNow);
+                            const float gap = base ? std::abs(stable_yaw::wrap(lookNow - actorNow)) : 0.f;
+                            if (base)
+                                hybridAirSyncGap = gap;
+                            const bool was = hybridAirSyncOn;
+                            hybridAirSyncOn =
+                                !playing && base &&
+                                (hybridAirSyncOn ? gap > 8.f * (3.14159265f / 180.f)
+                                                 : hybrid_movement::airSyncWanted(true, true, true, false, false,
+                                                                                  actorNow, lookNow));
+                            if (hybridAirSyncOn) {
+                                hybridAirSyncSec += frame.seconds;
+                                if (!was) {
+                                    ++hybridAirSyncStarts;
+                                    diag_log::writef("hybrid air facing sync: on, game facing %.0f view %.0f (gap %.0f), #%u",
+                                                     actorNow * toDeg, lookNow * toDeg, gap * toDeg,
+                                                     hybridAirSyncStarts);
+                                }
+                            } else if (was) {
+                                // The last real gap: `gap` is 0 once the stint's gate is gone (landing,
+                                // a web, the animation), which read as a sync that had worked.
+                                diag_log::writef("hybrid air facing sync: off, last gap %.0f deg",
+                                                 hybridAirSyncGap * toDeg);
+                            }
+                        }
                         if (playing) {
                             const bool momentumDrive = game_swing::momentumWallDrive(
                                 motion.joystickWallRun && !values.joystickRunCamera, swingFresh, swingState);
@@ -4930,6 +5643,19 @@ DWORD WINAPI run(void*) {
                             // while a web carries the player, nor while B skips the
                             // calibration.
                             walk.dodge = (origins.play() & buttonB) && !calibrationInput;
+                        } else if (hybrid_movement::airSyncStick && hybridAirSyncOn && !layerOn &&
+                                   !calibrationInput) {
+                            // HYBRID AIR FACING SYNC (retired, airSyncStick false: it never turned him
+                            // in the 5061b4a playtest): in SpidyVR's air the game gets a light
+                            // walk stick toward where the player looks (as SOFT LANDING hands
+                            // it the stick: the swing still moves the body), so the game's
+                            // facing - the one a landing plays on - stays with the view.
+                            const auto stick = animated_model_yaw::worldToStick(
+                                hybrid_steer::viewForward(hybrid_handoff::lookYaw(
+                                    motion.headPose.orientation.rotate({0, 0, -1}))),
+                                motion.walkForwardAxis, motion.walkRightAxis, hybrid_movement::airSyncTilt);
+                            walk.right = stick.right;
+                            walk.forward = stick.forward;
                         } else if (steering && !layerOn && !calibrationInput && swingFresh &&
                                    swingState.owned &&
                                    swingState.wall == static_cast<uint32_t>(game_swing::Surface::none) &&
@@ -5350,9 +6076,48 @@ DWORD WINAPI run(void*) {
                                 !runGate.mounting && !runGate.ventCrawl && !runGate.onSurface &&
                                 !runGate.onCrawl && runGate.gameOwnsGround)
                                 run_update::curveStick(walk.right, walk.forward, values.runCurve);
-                            const auto runAt = run_update::nativeRunThresholds(values.nativeRunPercent);
+                            // NATIVE RUN AT is the physical stick's tilt: through the curve
+                            // when RUN CURVE bends what NATIVE RUN reads (movement cleanup).
+                            const auto runAt = run_update::nativeRunThresholds(values.nativeRunPercent,
+                                                                               values.runCurve);
                             nativeRun.thresholds(runAt.onAbove, runAt.offBelow);
                             bool runAllowed = game_pad::nativeRunAllowed(runGate, walk);
+                            // PARKOUR RT diagnostic (t86u): on the ground with the stick at
+                            // the run (NATIVE RUN AT or more), why RT - the game's sprint and
+                            // parkour - was not held; one line each 5 s of such frames.
+                            {
+                                const bool wantsRun = runGate.playing && swingFresh && swingState.grounded &&
+                                                      stickTilt >= static_cast<float>(values.nativeRunPercent) * .01f;
+                                if (wantsRun) {
+                                    const auto why = game_pad::nativeRunBlock(runGate, walk);
+                                    ++parkourRtFrames;
+                                    parkourRtSeconds += frame.seconds;
+                                    if (why == game_pad::RunBlock::none && !nativeRun.held())
+                                        ++parkourRtRising; // allowed, RT not yet back (STEADY STATES' rise, hysteresis)
+                                    else if (why != game_pad::RunBlock::none)
+                                        ++parkourRtBlocked[static_cast<int>(why)];
+                                    if (nativeRun.held())
+                                        ++parkourRtHeld;
+                                }
+                                if (parkourRtSeconds >= 5.f) {
+                                    char reasons[400]{};
+                                    int at = 0;
+                                    for (int r = 1; r < static_cast<int>(game_pad::RunBlock::count); ++r)
+                                        if (parkourRtBlocked[r] && at < static_cast<int>(sizeof reasons) - 80)
+                                            at += std::snprintf(reasons + at, sizeof reasons - at, "%s%s %u%%",
+                                                                at ? ", " : "",
+                                                                game_pad::runBlockName(static_cast<game_pad::RunBlock>(r)),
+                                                                parkourRtBlocked[r] * 100u / std::max(parkourRtFrames, 1u));
+                                    diag_log::writef("parkour RT: %u frames with the stick at the run on the ground, RT "
+                                                     "held %u%%; off: %s%s rising %u%%",
+                                                     parkourRtFrames, parkourRtHeld * 100u / std::max(parkourRtFrames, 1u),
+                                                     at ? reasons : "-", at ? ";" : "",
+                                                     parkourRtRising * 100u / std::max(parkourRtFrames, 1u));
+                                    parkourRtFrames = parkourRtHeld = parkourRtRising = 0;
+                                    parkourRtSeconds = 0;
+                                    parkourRtBlocked = {};
+                                }
+                            }
                             // STEADY STATES (off by default): RT comes back only once
                             // everything has allowed it for a moment (ground_state::
                             // RiseDelay); it still goes at once.
@@ -5597,12 +6362,26 @@ DWORD WINAPI run(void*) {
                             if (hybridViewSteer) {
                                 const auto& moveHand = frame.hands[0];
                                 const float walkMag = std::hypot(walk.right, walk.forward);
-                                if (hybridViewOk && moveHand.valid && walkMag > 1e-3f) {
+                                const bool hybridWalk = hybridMode && viewLockActive && hybridHeading.set &&
+                                                        swingFresh && swingState.grounded;
+                                if (hybridWalk && moveHand.valid && walkMag > 1e-3f && !hybridStick.drives) {
+                                    // HYBRID: the rear dead band / settling: no run.
+                                    walk.right = walk.forward = 0;
+                                } else if (hybridViewOk && moveHand.valid && walkMag > 1e-3f) {
                                     // Direction from the raw stick, magnitude from the
-                                    // vanilla walk (its run curve / zeroing kept).
-                                    const auto viewed = hybrid_steer::viewRelativeStick(
-                                        moveHand.stickX, moveHand.stickY, hybridViewYawNow,
-                                        motion.walkForwardAxis, motion.walkRightAxis, std::min(walkMag, 1.f));
+                                    // vanilla walk (its run curve / zeroing kept). HYBRID v2:
+                                    // the gate's run direction off the heading (free front
+                                    // half, the headset's 30-degree window), full magnitude.
+                                    const float tiltNow = std::max(std::hypot(moveHand.stickX, moveHand.stickY), 1e-3f);
+                                    const auto viewed =
+                                        hybridWalk
+                                            ? hybrid_steer::viewRelativeStick(
+                                                  std::sin(hybridStick.dir), std::cos(hybridStick.dir),
+                                                  hybridHeading.yaw, motion.walkForwardAxis, motion.walkRightAxis,
+                                                  std::min(walkMag, 1.f) * std::clamp(hybridStick.y / tiltNow, 0.f, 1.f))
+                                            : hybrid_steer::viewRelativeStick(
+                                                  moveHand.stickX, moveHand.stickY, hybridViewYawNow,
+                                                  motion.walkForwardAxis, motion.walkRightAxis, std::min(walkMag, 1.f));
                                     if (frame.predictedDisplayTime - hybridSteerDiagAt > 1'000'000'000) {
                                         hybridSteerDiagAt = frame.predictedDisplayTime;
                                         diag_log::writef(
@@ -5616,8 +6395,52 @@ DWORD WINAPI run(void*) {
                                     walk.right = viewed.right;
                                     walk.forward = viewed.forward;
                                 }
+                                // Hero vs steer yaw (10 Hz while steering, an event
+                                // when the gap crosses 45 degrees) and runaway turns.
+                                {
+                                    constexpr float toDeg = 180.f / 3.14159265f;
+                                    const bool steeringNow = hybridViewOk && moveHand.valid &&
+                                                             hybridInputL >= hybrid_steer::deadzone;
+                                    const bool heroOk = finite(actorAhead) &&
+                                                        std::hypot(actorAhead.x, actorAhead.z) > .2f;
+                                    const float heroYaw = heroOk ? hybrid_handoff::actorLookYaw(actorAhead) : NAN;
+                                    const bool steerOk = length(hybridInputMove) > .05f;
+                                    const float steerYaw = steerOk ? hybrid_handoff::lookYaw(hybridInputMove) : NAN;
+                                    const float gap = stable_yaw::wrap(steerYaw - heroYaw);
+                                    const float rRaw = frame.hands[1].valid ? frame.hands[1].stickX : 0.f;
+                                    const char* src =
+                                        stable_yaw::sourceName(hybrid_movement::viewSource(values.movementMode));
+                                    const auto watched =
+                                        yawGap.update(frame.seconds, steeringNow && heroOk && steerOk, gap);
+                                    if (watched.line)
+                                        diag_log::writef(
+                                            "yaw sync: hero %.0f view %.0f steer %.0f gap %.0f L %.2f R %.2f src %s",
+                                            heroYaw * toDeg, hybridViewYawNow * toDeg, steerYaw * toDeg,
+                                            gap * toDeg, hybridInputL, rRaw, src);
+                                    if (watched.edge == stable_yaw::GapWatch::Edge::opened)
+                                        diag_log::writef("yaw sync: gap over 45 (#%u) hero %.0f steer %.0f gap %.0f src %s",
+                                                         yawGap.crossings, heroYaw * toDeg, steerYaw * toDeg,
+                                                         gap * toDeg, src);
+                                    else if (watched.edge == stable_yaw::GapWatch::Edge::closed)
+                                        diag_log::writef("yaw sync: gap back under 40 after %d ms src %s",
+                                                         static_cast<int>(watched.wideSeconds * 1000 + .5f), src);
+                                    const auto runaway = yawRunaway.update(
+                                        frame.seconds, heroYaw, hybridInputIntentYaw, steeringNow && heroOk,
+                                        moveHand.valid ? moveHand.stickX : 0.f, moveHand.valid ? moveHand.stickY : 0.f,
+                                        rRaw);
+                                    if (runaway.fired)
+                                        diag_log::writef(
+                                            "yaw sync: RUNAWAY TURN #%u hero swept %+.0f deg in %d ms, own turn "
+                                            "%+.0f, stick (%.2f,%.2f) R %.2f src %s",
+                                            yawRunaway.reports, runaway.sweep * toDeg,
+                                            static_cast<int>(runaway.seconds * 1000 + .5f),
+                                            runaway.headingMove * toDeg, moveHand.stickX, moveHand.stickY, rRaw, src);
+                                }
                             } else {
                                 hybridViewYaw.reset();
+                                stableHeading.reset();
+                                yawGap.update(frame.seconds, false, 0.f);
+                                yawRunaway.clear();
                             }
                             if (hybrid_steer::steeringApplies(values.animatedSteering, yieldingPose,
                                                               hybridViewSteer)) {
@@ -5651,7 +6474,10 @@ DWORD WINAPI run(void*) {
                                 animated_model_yaw::ownsStick(values.animatedModelYaw, yieldingPose,
                                                               airSpinOwnsStick) &&
                                 !motion.basicFlipControls && !legStickActive && !hybridYawHold &&
-                                !midairAnimation;
+                                !midairAnimation &&
+                                // FULL head lock: the R stick turns the lock's heading only.
+                                // HYBRID the same: the heading, the walk stick brings him.
+                                !viewLockSteer && !(hybridMode && viewLockActive && hybridHeading.set);
                             // HYBRID view steering: MODEL YAW frees CameraLook only while
                             // the R-stick turns; otherwise the game camera follows the
                             // view so its parkour assists see a sensible camera.
@@ -5659,7 +6485,12 @@ DWORD WINAPI run(void*) {
                             const bool modelYawClears =
                                 hybridViewSteer && hybridViewOk
                                     ? hybrid_steer::clearsLook(
-                                          modelYawOwns, frame.hands[1].valid ? frame.hands[1].stickX : 0.f)
+                                          modelYawOwns,
+                                          // STABLE: while the left stick runs, the R stick
+                                          // turns the heading the camera follows.
+                                          stable_yaw::composeTurn(
+                                              hybrid_movement::viewSource(values.movementMode),
+                                              frame.hands[1].valid ? frame.hands[1].stickX : 0.f, hybridInputL))
                                     : modelYawOwns;
                             const bool blendHold =
                                 hybridBlend.active &&
@@ -5669,10 +6500,12 @@ DWORD WINAPI run(void*) {
                                 cameraLook.reset();
                                 cameraPitch.reset();
                                 hybridViewYaw.reset();
+                                stableHeading.reset();
                                 hybridBlend.recheckMove = false;
                             }
                             if (modelYawClears || airSpinOwnsStick || hybridYawHold ||
-                                hybridBlend.clearLook || hybridBlend.recheckMove) {
+                                hybridBlend.clearLook || hybridBlend.recheckMove ||
+                                (viewLockSteer && !(hybridViewSteer && hybridViewOk))) {
                                 // Free the right stick from CameraLook so it does not
                                 // also yaw the follow camera (HMD free look stays XR;
                                 // tracking yaw / AIR SPIN keep the stick). After a
@@ -5734,6 +6567,77 @@ DWORD WINAPI run(void*) {
                                 diag_log::writef(
                                     "model yaw: idle (air spin owns R-stick, state %s)",
                                     animated_moves::yieldName(steerState));
+                            }
+                            // TURN-IN-PLACE (view_yaw_lock.hpp): standing with the left stick
+                            // idle, the walk stick points at the lock's heading until the hero
+                            // faces it (closed loop on his facing; no facing write).
+                            {
+                                constexpr float toDeg = 180.f / 3.14159265f;
+                                const bool heroOk =
+                                    finite(actorAhead) && std::hypot(actorAhead.x, actorAhead.z) > .2f;
+                                const float heroYaw = heroOk ? hybrid_handoff::actorLookYaw(actorAhead) : NAN;
+                                view_yaw_lock::TurnInPlace::In tin;
+                                tin.dt = frame.seconds;
+                                tin.allowed = viewLockSteer && viewLockHeadingOk && yieldingPose && hybridViewOk &&
+                                              heroOk && swingFresh && swingState.grounded &&
+                                              hybridInputL < stable_yaw::steerZone && !midairAnimation &&
+                                              !fightLately && !dodging && !zipping && !legStickActive &&
+                                              !motion.onSurface && !motion.basicFlipControls;
+                                tin.heading = viewLockHeading;
+                                tin.heroYaw = heroYaw;
+                                tin.angle = view_yaw_lock::angleOf(values.turnInPlaceDeg);
+                                tin.rTurning = frame.hands[1].valid &&
+                                               viewLock.turning(frame.hands[1].stickX, values.smoothTurn);
+                                // FACING CHECK's hero turn: any angle, right after the event,
+                                // lock or no lock, the landing's frames allowed.
+                                tin.force = facingHeroPending;
+                                tin.forceYaw = facingHeroYaw;
+                                if (hybridHeroTurn) { // HYBRID: bring him onto the heading (any angle)
+                                    tin.force = true;
+                                    tin.forceYaw = hybridHeading.yaw;
+                                }
+                                tin.forceAllowed = yieldingPose && heroOk && swingFresh && swingState.grounded &&
+                                                   hybridInputL < stable_yaw::steerZone && !fightLately &&
+                                                   !dodging && !zipping && !legStickActive;
+                                facingHeroPending = false;
+                                const auto turned = turnInPlace.update(tin);
+                                if (turned.dropped)
+                                    diag_log::writef("facing check: %s hero turn dropped (no standing frame within "
+                                                     "400 ms: moving, fighting or the left stick held)",
+                                                     facing_check::eventName(facingTurnEvent));
+                                if (turned.push) {
+                                    const auto stick = animated_model_yaw::worldToStick(
+                                        hybrid_steer::viewForward(turned.pushYaw), motion.walkForwardAxis,
+                                        motion.walkRightAxis, turned.tilt);
+                                    walk.right = stick.right;
+                                    walk.forward = stick.forward;
+                                }
+                                if (turned.started && turned.forced)
+                                    diag_log::writef("facing check: %s hero turn start, gap %+.0f deg, hero %.0f to %.0f",
+                                                     facing_check::eventName(facingTurnEvent), turned.startGap * toDeg,
+                                                     heroYaw * toDeg, facingHeroYaw * toDeg);
+                                else if (turned.started)
+                                    diag_log::writef(
+                                        "turn in place: start (#%u, %s) gap %+.0f deg, angle %d, hero %.0f heading %.0f",
+                                        turnInPlace.starts, turned.byStick ? "R stick" : "look", turned.startGap * toDeg,
+                                        values.turnInPlaceDeg, heroYaw * toDeg, viewLockHeading * toDeg);
+                                if (turned.ended != view_yaw_lock::TurnInPlace::End::none && turned.forced)
+                                    diag_log::writef("facing check: %s hero turn %s after %d ms, turned %+.0f of %+.0f, "
+                                                     "left %+.0f deg",
+                                                     facing_check::eventName(facingTurnEvent),
+                                                     view_yaw_lock::endName(turned.ended),
+                                                     static_cast<int>(turned.seconds * 1000 + .5f),
+                                                     turned.swept * toDeg, turned.startGap * toDeg, turned.gap * toDeg);
+                                else if (turned.ended != view_yaw_lock::TurnInPlace::End::none)
+                                    diag_log::writef(
+                                        "turn in place: %s after %d ms, hero turned %+.0f of %+.0f deg (%.0f deg/s), "
+                                        "left %+.0f%s; %u done, %u gave up, %u interrupted, %u wrong way",
+                                        view_yaw_lock::endName(turned.ended),
+                                        static_cast<int>(turned.seconds * 1000 + .5f), turned.swept * toDeg,
+                                        turned.startGap * toDeg,
+                                        turned.seconds > 0 ? std::abs(turned.swept) * toDeg / turned.seconds : 0.f,
+                                        turned.gap * toDeg, turned.wrongWay ? " WRONG WAY" : "", turnInPlace.done,
+                                        turnInPlace.gaveUp, turnInPlace.interrupted, turnInPlace.wrongWays);
                             }
                         }
                         // A dodge on a web line is the line's dash (game_swing's LineZip::dash):
@@ -5911,6 +6815,7 @@ DWORD WINAPI run(void*) {
                         heals += walk.heal && !healing;
                         healing = walk.heal;
                         zips += walk.zip && !zipping;
+                        zipBegan = walk.zip && !zipping;
                         zipping = walk.zip;
                     }
                     // Body haptics: what goes on, every frame, in VR play only (a
@@ -5958,6 +6863,52 @@ DWORD WINAPI run(void*) {
                             } else {
                                 feel(body_haptics::Kind::hit, -1, strength);
                             }
+                        }
+                        // MOVE HAPTICS: jumps, wall jumps, zip launches and landings
+                        // on the controllers, at MOVE HAPTICS' own strength; and the
+                        // same events for SOUND TRACE.
+                        {
+                            move_haptics::Input moved;
+                            moved.dt = frame.seconds;
+                            moved.live = immersive;
+                            moved.fresh = fresh;
+                            moved.airborne = felt.airborne;
+                            moved.onWall = felt.onWall;
+                            moved.webbed = fresh && (swingState.webs[0].attached || swingState.webs[1].attached);
+                            moved.zipPressed = zipBegan;
+                            moved.velocity = fresh ? swingState.velocity : Vec3{};
+                            const auto ev = moveDetector.update(moved);
+                            zipBegan = false;
+                            const float moveScale = static_cast<float>(values.moveHapticsPct) / 100;
+                            const auto play = [&](const move_haptics::Pulse& p) {
+                                if (!(p.amplitude > 0))
+                                    return;
+                                for (int hand = 0; hand < 2; ++hand)
+                                    if (p.hand < 0 || p.hand == hand)
+                                        runtime.hapticUnscaled(hand, p.amplitude, p.seconds);
+                            };
+                            moveScheduler.update(frame.seconds, play);
+                            if (ev.kind != move_haptics::Kind::none) {
+                                const auto p = move_haptics::scaled(ev.pulse, moveScale);
+                                play(p);
+                                moveHapticPulses += p.amplitude > 0;
+                                diag_log::writef("move haptics: %s %.1f m/s -> %.2f %d ms (move haptics %d%%)",
+                                                 move_haptics::kindName(ev.kind), ev.speed, p.amplitude,
+                                                 static_cast<int>(p.seconds * 1000 + .5f), values.moveHapticsPct);
+                                if (values.soundTrace && soundTrace) {
+                                    char what[48];
+                                    std::snprintf(what, sizeof(what), "%s %.1f m/s", move_haptics::kindName(ev.kind),
+                                                  ev.speed);
+                                    soundWatch.add(now.QuadPart, what);
+                                }
+                            }
+                            if (pointJumpFired && values.soundTrace && soundTrace)
+                                soundWatch.add(now.QuadPart, "point jump");
+                            if (values.soundTrace && soundTrace)
+                                soundWatch.update(soundTrace, now.QuadPart, frequency.QuadPart,
+                                                  [](const std::string& line) { diag_log::writef("%s", line.c_str()); });
+                            else
+                                soundWatch.clear();
                         }
                         const float landed =
                             landingWatch.update(frame.seconds, felt.airborne, fresh ? -swingState.velocity.y : 0.f);
@@ -6540,6 +7491,10 @@ DWORD WINAPI run(void*) {
                         // and holds it through the takeoff.
                         hybridFrame.pointJump = pointJumpFired;
                         hybridFrame.pointJumpHold = pointJumpHold;
+                        // QUICK SIDESTEP: the burst takes the body on the ground (approved)
+                        // and holds it while it lasts; then the ground's ANIM again.
+                        hybridFrame.sidestep = sidestepFired;
+                        hybridFrame.sidestepHold = sidestepHold;
                         hybridFrame.speedH = hybridSpeedH;
                         hybridFrame.speedHoldNs =
                             static_cast<int64_t>(values.animatedHybridSpeedMs) * 1'000'000ll;
@@ -6571,12 +7526,58 @@ DWORD WINAPI run(void*) {
                         hybridFrame.velY = swingFresh && std::isfinite(swingState.velocity.y)
                                                ? swingState.velocity.y
                                                : NAN;
+                        // JUMP TO SPIDYVR: the midair animation's timer (0 stays to the landing).
+                        hybridFrame.jumpHandoffNs = static_cast<int64_t>(values.jumpHandoffMs) * 1'000'000ll;
+                        // HANDSTAND (H1): the hands hold him on the ground; SpidyVR keeps him.
+                        hybridFrame.handSupport = motion.handstand.holdVr;
                         hybridFrame.moveStick = frame.hands[0].valid && std::isfinite(frame.hands[0].stickX) &&
                                                         std::isfinite(frame.hands[0].stickY)
                                                     ? std::hypot(frame.hands[0].stickX, frame.hands[0].stickY)
                                                     : -1.f;
+                        {
+                            // PERCH (camera_mode::PerchWatch): still off the game's ground on a
+                            // perch it holds him on - the animation's, as a landing (ANIM HEAD RIDE).
+                            camera_mode::PerchWatch::In pin;
+                            pin.dt = frame.seconds;
+                            pin.airborne = swingFresh && !swingState.grounded;
+                            pin.free = swingFresh && animState.playing && !animState.owned && !animState.webbed &&
+                                       animState.wall == 0 && !animState.zipping && !animState.fighting &&
+                                       !animState.dodging && !motion.handstand.holdVr;
+                            pin.speed = hybridSpeedH;
+                            pin.up = hybridFrame.velY;
+                            const auto po = perchWatch.update(pin);
+                            if (po.began)
+                                diag_log::writef("perch: still %.0f ms off the game's ground (%.1f m/s across, %+.1f "
+                                                 "up), the animation's (owner %s), #%u",
+                                                 camera_mode::PerchWatch::enterSeconds * 1000.f, pin.speed, pin.up,
+                                                 hybridOwner.domain == hybrid_owner::Domain::vr ? "vr" : "anim",
+                                                 perchWatch.perches);
+                            if (po.ended)
+                                diag_log::writef("perch: left (%.1f m/s across, %+.1f up, %s)", pin.speed, pin.up,
+                                                 !pin.airborne ? "the ground" : !pin.free ? "a web, wall, swing or fight"
+                                                                                          : "moving");
+                            hybridFrame.perched = values.animHeadRide && perchWatch.perched;
+                            rideMoveStick = std::max(0.f, hybridFrame.moveStick);
+                            rideSpeed = hybridSpeedH;
+                            rideFighting = animState.fighting || animState.dodging;
+                            rideOnWall = animState.wall != 0;
+                        }
+                        legChordAirAnimLast = false;
                         if (hybridOn) {
                             hybridOwner.update(hybridFrame, handoffNs);
+                            if (hybridOwner.enterAnim) {
+                                rideAnimAge = 0;
+                                rideAnimLanding = hybridOwner.lastEnterAnim == hybrid_owner::EnterAnim::land ||
+                                                  hybridOwner.lastEnterAnim == hybrid_owner::EnterAnim::zip;
+                            } else if (hybridOwner.enterVr) {
+                                rideAnimAge = 1e9f;
+                                rideAnimLanding = false;
+                            } else if (rideAnimAge < 1e8f && std::isfinite(frame.seconds)) {
+                                rideAnimAge += std::clamp(frame.seconds, 0.f, .1f);
+                            }
+                            legChordAirAnimLast = hybridOwner.domain == hybrid_owner::Domain::anim &&
+                                                  hybrid_owner::midairAnimation(true, animState) &&
+                                                  !hybridFrame.cutscene;
                             if (hybridOwner.enterVr || hybridOwner.enterAnim) {
                                 ++armEpoch; // another owner's hands: velocities start afresh
                                 actionFrameFloor = pose.serial;
@@ -6598,6 +7599,11 @@ DWORD WINAPI run(void*) {
                                                  hybrid_owner::domainName(hybridOwner.domain),
                                                  hybridOwner.enterAnim ? "vr->anim this frame"
                                                                        : "already anim");
+                            if (hybridOwner.enterVr && hybridOwner.lastEnterVr == hybrid_owner::EnterVr::timed)
+                                diag_log::writef("jump handoff: %s after %d ms (timer %d ms)",
+                                                 hybrid_owner::jumpKindName(hybridOwner.lastJumpKind),
+                                                 static_cast<int>(hybridOwner.lastJumpAirNs / 1'000'000),
+                                                 values.jumpHandoffMs);
                             if (hybridOwner.enterVr) {
                                 // Slice 2 G→T (anim→vr): capture the view the player is seeing,
                                 // re-anchor tracking onto it, warm-reclaim IK, start
@@ -6682,17 +7688,40 @@ DWORD WINAPI run(void*) {
                                         // lock; eyes, hands, webs and body move together (the
                                         // rig's placement), the lock under them unchanged. Punch
                                         // only; 0 is the old snap. Any other switch ends one.
-                                        const bool punchEase =
-                                            hybridOwner.lastEnterVr == hybrid_owner::EnterVr::punch &&
-                                            values.punchViewEaseMs > 0 && eyesOk;
-                                        if (punchEase &&
-                                            rig.beginViewEase(worldEyes, frame.head,
-                                                              static_cast<float>(values.punchViewEaseMs) * .001f)) {
-                                            punchEaseEndsLogged = rig.viewEase().ends();
-                                            diag_log::writef("punch view ease: start offset %.2f m, dur %d ms",
-                                                             rig.viewEase().startOffset(), values.punchViewEaseMs);
-                                        } else {
+                                        // AIR VIEW EASE (November 12 05:41): the same hold and
+                                        // ease for the timed jump handoff, a flip break and the
+                                        // grip cancel (hybrid_owner::viewEaseMs); 0 the snap.
+                                        const int easeMs = hybrid_owner::viewEaseMs(
+                                            hybridOwner.lastEnterVr, values.punchViewEaseMs, values.airViewEaseMs);
+                                        const auto why = hybridOwner.lastEnterVr;
+                                        const char* easeName = why == hybrid_owner::EnterVr::punch  ? "punch"
+                                                               : why == hybrid_owner::EnterVr::timed ? "jump handoff"
+                                                               : why == hybrid_owner::EnterVr::flip  ? "flip-break"
+                                                                                                     : "grip-cancel";
+                                        // Log the previous ease's end under its own name first.
+                                        if (rig.viewEase().active()) {
                                             rig.cancelViewEase(view_ease::End::handoff);
+                                            punchEaseEndsLogged = rig.viewEase().ends();
+                                            diag_log::writef("%s view ease: %s after %d ms", easeWhy,
+                                                             view_ease::endName(rig.viewEase().lastEnd()),
+                                                             static_cast<int>(rig.viewEase().elapsed() * 1000 + .5f));
+                                        }
+                                        if (easeMs > 0 && eyesOk &&
+                                            rig.beginViewEase(worldEyes, frame.head, static_cast<float>(easeMs) * .001f)) {
+                                            easeWhy = easeName;
+                                            punchEaseEndsLogged = rig.viewEase().ends();
+                                            diag_log::writef("%s view ease: start offset %.2f m, dur %d ms", easeName,
+                                                             rig.viewEase().startOffset(), easeMs);
+                                        } else {
+                                            if (easeMs > 0 && eyesOk)
+                                                diag_log::writef("%s view ease: none (offset %.2f m outside 0.01-3 m)",
+                                                                 easeName, length(worldEyes - (lockFeet + Vec3{0, frame.head.position.y, 0})));
+                                            else if (why == hybrid_owner::EnterVr::timed ||
+                                                     why == hybrid_owner::EnterVr::flip ||
+                                                     why == hybrid_owner::EnterVr::cancel)
+                                                diag_log::writef("%s view ease: off (snap)", easeName);
+                                            rig.cancelViewEase(view_ease::End::handoff);
+                                            punchEaseEndsLogged = rig.viewEase().ends();
                                         }
                                     } else if (eyesOk) {
                                         rig.adoptEyes(worldEyes, worldYaw, frame.head);
@@ -6791,9 +7820,25 @@ DWORD WINAPI run(void*) {
                                     hybrid_owner::enterVrName(hybridOwner.lastEnterVr),
                                     hybridBlend.enterEyeDPos, hybridBlend.enterEyeDYaw,
                                     hybrid_handoff::handoffSec * 1000.f);
+                                // HYBRID: SpidyVR owns the view now; a landing starts the heading again.
+                                hybridHeading.reset();
+                                hybridGate.reset();
+                                // FACING CHECK: the view the player saw is what SpidyVR's view
+                                // must start on (a point launch armed at its launch keeps its own).
+                                if (!(facingCheck.armed && facingCheck.event == facing_check::Event::pointLaunch))
+                                    facingCheck.arm(hybridOwner.lastEnterVr == hybrid_owner::EnterVr::pointJump
+                                                        ? facing_check::Event::pointLaunch
+                                                    : hybridOwner.lastEnterVr == hybrid_owner::EnterVr::timed
+                                                        ? facing_check::Event::jumpHandoff
+                                                        : facing_check::Event::takeover,
+                                                    eyesOk ? worldYaw : NAN);
                             }
+                            // Landing on the feet ends an ease at once (the animation's
+                            // view takes over); any other switch back too.
                             if (hybridOwner.enterAnim)
-                                rig.cancelViewEase(view_ease::End::handoff);
+                                rig.cancelViewEase(hybridOwner.lastEnterAnim == hybrid_owner::EnterAnim::land
+                                                       ? view_ease::End::landed
+                                                       : view_ease::End::handoff);
                             if (hybridOwner.enterAnim) {
                                 if (hybridAdoptWaiting)
                                     diag_log::write(
@@ -6879,6 +7924,37 @@ DWORD WINAPI run(void*) {
                                                      "%.1f) eyeBlend %.0f ms, headbone n/a",
                                                      why, landMs, why, landMs, landSpeed,
                                                      hybrid_handoff::handoffSec * 1000.f);
+                                // FACING CHECK: the view SpidyVR showed last is the facing the
+                                // player expects on the animation's side, view and hero.
+                                {
+                                    float before = NAN;
+                                    if (!hybrid_handoff::validShown(hybridShown, handoffNs) ||
+                                        !hybrid_handoff::shownYaw(hybridShown, before))
+                                        before = fromOk ? fromYaw : NAN;
+                                    facingCheck.arm(hybridOwner.lastEnterAnim == hybrid_owner::EnterAnim::land
+                                                        ? facing_check::Event::landing
+                                                        : facing_check::Event::animReentry,
+                                                    before);
+                                    // HYBRID: the heading is the view SpidyVR showed, held from the
+                                    // edge frame (before the animation's first frame turns him onto
+                                    // the game's facing), so the head-locked view cannot swing.
+                                    if (hybrid_movement::modeOf(values.movementMode) ==
+                                            hybrid_movement::Mode::hybrid &&
+                                        std::isfinite(before)) {
+                                        constexpr float toDeg = 180.f / 3.14159265f;
+                                        const float actorNow = hybrid_handoff::actorLookYaw({body[8], body[9], body[10]});
+                                        hybridHeading.begin(hybrid_movement::Heading::Hold::facing, before);
+                                        viewLock.set = true;
+                                        viewLock.yaw = hybridHeading.yaw;
+                                        diag_log::writef(
+                                            "hybrid landing: view %.0f, game facing %.0f (gap %+.0f), air "
+                                            "facing gap past 20 deg for %d ms this stint (no sync stick)",
+                                            before * toDeg, actorNow * toDeg,
+                                            stable_yaw::wrap(before - actorNow) * toDeg,
+                                            static_cast<int>(hybridAirSyncSec * 1000 + .5f));
+                                    }
+                                    hybridAirSyncSec = 0;
+                                }
                             }
                         } else {
                             hybridOwner = {};
@@ -6916,6 +7992,40 @@ DWORD WINAPI run(void*) {
                                     kin.handValid[0] ? 1u : 0u, length(kin.handVelocity[0]), kin.handValid[1] ? 1u : 0u,
                                     length(kin.handVelocity[1]), kin.actorYaw * 57.29578f, kin.viewYaw * 57.29578f,
                                     armView.valid ? "per-frame" : "none");
+                            }
+                        }
+                        // FACING CHECK, SpidyVR's side: the view after a takeover or a
+                        // point launch against the view before it; the rig's yaw turns it back
+                        // (about the eyes). Not on the edge's own frame (the rig adopts then).
+                        {
+                            if (facingCheck.events != facingArmSeen) {
+                                facingArmSeen = facingCheck.events;
+                                facingFrames = 0;
+                            }
+                            if (facingCheck.armed) {
+                                ++facingFrames;
+                                if (hybridOwner.domain == hybrid_owner::Domain::vr) {
+                                    facing_check::Sample fs;
+                                    const bool headOk = motion.active && validTrackedPose(motion.headPose);
+                                    fs.viewOk = headOk && facingFrames >= 2;
+                                    fs.view = headOk ? hybrid_handoff::lookYaw(
+                                                           motion.headPose.orientation.rotate({0, 0, -1}))
+                                                     : 0.f;
+                                    fs.viewFixable = validTrackedPose(frame.head);
+                                    fs.heroMatters = false;
+                                    const auto fc = facingCheck.update(frame.seconds, fs);
+                                    if (fc.viewFix != 0.f) {
+                                        const Vec3 eyesNow{(motion.eyes[0][12] + motion.eyes[1][12]) * .5f,
+                                                           (motion.eyes[0][13] + motion.eyes[1][13]) * .5f,
+                                                           (motion.eyes[0][14] + motion.eyes[1][14]) * .5f};
+                                        rig.adoptEyes(eyesNow, stable_yaw::wrap(fs.view + fc.viewFix), frame.head);
+                                    }
+                                    logFacing(facingCheck, fc);
+                                } else if (facingFrames > 45) {
+                                    // The animation's side never sampled it (no head lock this
+                                    // stint): let it run out and say so.
+                                    logFacing(facingCheck, facingCheck.update(frame.seconds, {}));
+                                }
                             }
                         }
                         // Jump adopt's first frame, once the pose job has seeded it.
@@ -7107,6 +8217,12 @@ DWORD WINAPI run(void*) {
                             animSeatStateWas = -1;
                             animSeatActionWas = 0xffffffffu;
                         }
+                        // SNAP REALIGN: the headset's turn is zeroed on the new heading (the
+                        // lock starts afresh on the neck, the heading kept by its snap hold).
+                        if (snapRealignPending) {
+                            seatWhy = head_seat::Why::recenter;
+                            snapRealignPending = false;
+                        }
                         const int modeNow = headFollow ? static_cast<int>(animHeadMode) : -1;
                         if (headFollow != animatedHeadFollowWas || modeNow != animatedHeadModeWas) {
                             // softlock|full|level|off — never silent "level" for Full midair.
@@ -7146,8 +8262,23 @@ DWORD WINAPI run(void*) {
                             values.animatedArms && yieldAnim && !flatScreen && values.body;
                         const bool armsOverlayLive =
                             armsWanted || (hybridArmFade && animated_arms::anyActive(animatedArmsState));
+                        // A scene or menu has the view (the owner is frozen there, so the
+                        // animation never "owns" it): the game's own body, never SpidyVR's pose
+                        // flashing in. After it, a VR body is seeded from the live pose again.
+                        const bool sceneBody = hybridOn && !animState.playing && !calibrationInput;
+                        if (sceneBody != sceneBodyHeld) {
+                            diag_log::writef(sceneBody ? "scene body: the game's own body while it has the view (owner %s)"
+                                                       : "scene body: play again, owner %s%s",
+                                             hybridOwner.domain == hybrid_owner::Domain::vr ? "vr" : "anim",
+                                             !sceneBody && hybridOwner.domain == hybrid_owner::Domain::vr
+                                                 ? " (the body reseeded from the live pose)"
+                                                 : "");
+                            if (!sceneBody && hybridOwner.domain == hybrid_owner::Domain::vr)
+                                native_body::beginReclaim();
+                            sceneBodyHeld = sceneBody;
+                        }
                         pose.flags =
-                            (flatScreen || !values.body || yieldAnim ? 0u : native_body::bodyOn) |
+                            (flatScreen || !values.body || yieldAnim || sceneBody ? 0u : native_body::bodyOn) |
                             native_body::hideHead | native_body::handTurn |
                             ((swingState.owned || hybridLeapAir) && !motion.standing ? native_body::airborne
                                                                                      : 0u) |
@@ -7198,10 +8329,63 @@ DWORD WINAPI run(void*) {
                                                  values.body && !flatScreen &&
                                                  legsAirOnly && !calibrationInput;
                             const bool legEasing = legBase && !legHoldOut.engaged && legHoldOut.easing;
-                            const bool legMode = legBase && (legHoldOut.engaged || legEasing);
                             legStickOwns = legBase && legHoldOut.engaged;
                             legBaseLast = legBase;
+                            // The legs' layers (leg_layers.hpp): PASSIVE LEGS needs no LEG
+                            // CONTROL (nor a flip mode to be seen; its turn on the body is
+                            // the flips' to apply). One spring for every layer.
+                            const bool legAir = values.body && !flatScreen && legsAirOnly && !calibrationInput;
+                            legsAirLast = legAir;
                             const float legDt = std::isfinite(frame.seconds) ? std::clamp(frame.seconds, 0.f, .1f) : 0.f;
+                            const Quat body = Quat::yaw(motion.swing.trackingYaw) * motion.swing.tilt;
+                            Vec3 look = frame.head.orientation.rotate({0, 0, -1});
+                            look.y = 0;
+                            const Vec3 levelLook = length(look) > .1f ? normalized(look) : Vec3{0, 0, -1};
+                            const Vec3 fwd = body.rotate(levelLook), upB = body.rotate({0, 1, 0});
+                            const Vec3 leftB = cross(upB, fwd);
+                            Vec3 bodySpin{};
+                            if (legAir && legPrevBodySet && legDt > 1e-4f) {
+                                Quat d = body * legPrevBody.conjugate();
+                                if (d.w < 0)
+                                    d = {-d.x, -d.y, -d.z, -d.w};
+                                bodySpin = Vec3{d.x, d.y, d.z} * (2 / legDt);
+                            }
+                            // REACH SPREAD: each tracked hand against the player's pelvis, in
+                            // the level frame he faces (tracking space: his own body).
+                            {
+                                const Vec3 pelvis = frame.head.position -
+                                                    Vec3{0, leg_layers::pelvisDrop(seatStanding), 0};
+                                const Vec3 leftT = cross(Vec3{0, 1, 0}, levelLook);
+                                for (int i = 0; i < 2; ++i) {
+                                    const bool tracked = frame.hands[i].valid && validTrackedPose(frame.hands[i].grip) &&
+                                                         validTrackedPose(frame.head);
+                                    const Vec3 d = frame.hands[i].grip.position - pelvis;
+                                    reachHand[i] = legAir && tracked &&
+                                                   leg_layers::handBetween({dot(d, levelLook), dot(d, leftT), d.y},
+                                                                           reachHand[i]);
+                                }
+                            }
+                            leg_layers::Input layerIn;
+                            layerIn.dt = legDt;
+                            layerIn.air = legAir;
+                            layerIn.active = legBase && legHoldOut.engaged;
+                            layerIn.easing = legEasing;
+                            layerIn.stickX = legStickX;
+                            layerIn.stickY = legStickY;
+                            layerIn.flail = flailNow && legAir;
+                            layerIn.crouch.upDot = upB.y;
+                            layerIn.crouch.vy = finite(swingState.velocity) ? swingState.velocity.y : 0.f;
+                            layerIn.crouch.spin = length(bodySpin);
+                            layerIn.crouch.webbed = swingState.webs[0].attached || swingState.webs[1].attached;
+                            layerIn.handBetween[0] = reachHand[0];
+                            layerIn.handBetween[1] = reachHand[1];
+                            leg_layers::Settings layerSet;
+                            layerSet.passivePct = values.passiveLegsPct;
+                            layerSet.passiveCouplingPct = values.passiveCouplingPct;
+                            layerSet.crouch = values.legAirCrouch;
+                            layerSet.reach = values.legReachSpread;
+                            const auto layered = legMixer.update(layerIn, layerSet);
+                            const bool legMode = layered.run;
                             const Vec3 vel = swingState.velocity;
                             if (legMode && finite(vel) && legPrevVelocitySet && legDt > 1e-4f) {
                                 const Vec3 raw = limited((vel - legPrevVelocity) / legDt, 60.f);
@@ -7211,45 +8395,55 @@ DWORD WINAPI run(void*) {
                             }
                             legPrevVelocity = finite(vel) ? vel : Vec3{};
                             legPrevVelocitySet = legMode && finite(vel);
-                            const Quat body = Quat::yaw(motion.swing.trackingYaw) * motion.swing.tilt;
-                            Vec3 look = frame.head.orientation.rotate({0, 0, -1});
-                            look.y = 0;
-                            const Vec3 levelLook = length(look) > .1f ? normalized(look) : Vec3{0, 0, -1};
-                            const Vec3 fwd = body.rotate(levelLook), upB = body.rotate({0, 1, 0});
-                            const Vec3 leftB = cross(upB, fwd);
                             leg_control::Motion legMotion;
                             if (legMode && legPrevVelocitySet) {
                                 const Vec3 force = legAccel + Vec3{0, 9.81f, 0};
                                 legMotion.specificForce = {dot(force, fwd), dot(force, leftB), dot(force, upB)};
                             }
-                            if (legMode && legPrevBodySet && legDt > 1e-4f) {
-                                Quat d = body * legPrevBody.conjugate();
-                                if (d.w < 0)
-                                    d = {-d.x, -d.y, -d.z, -d.w};
-                                const Vec3 w = Vec3{d.x, d.y, d.z} * (2 / legDt);
-                                legMotion.angularVelocity = {dot(w, fwd), dot(w, leftB), dot(w, upB)};
-                            }
+                            if (legMode && legPrevBodySet && legDt > 1e-4f)
+                                legMotion.angularVelocity = {dot(bodySpin, fwd), dot(bodySpin, leftB), dot(bodySpin, upB)};
                             legPrevBody = body;
-                            legPrevBodySet = legMode;
+                            legPrevBodySet = legAir;
                             auto params = leg_control::fromPercent(values.legStiffnessPct, values.legDampingPct,
                                                                    values.legCouplingPct);
-                            if (legEasing) {
+                            params.coupling *= layered.couplingScale;
+                            if (layered.easing) {
                                 params.frequencyHz = std::max(params.frequencyHz, 2.5f);
                                 params.dampingRatio = 1.f;
                                 params.looseness = 0.f;
                             }
-                            const auto legOut = legSim.update(legDt, legMode, legEasing ? 0.f : legStickX,
-                                                              legEasing ? 0.f : legStickY, legMotion, params);
+                            const auto legOut =
+                                layered.useStick
+                                    ? legSim.update(legDt, legMode, layered.easing ? 0.f : legStickX,
+                                                    layered.easing ? 0.f : legStickY, legMotion, params)
+                                    : legSim.updateTarget(legDt, legMode, layered.pose, legStickX, legStickY, legMotion,
+                                                          params);
                             std::array<body::Targets::LegAngles, 2> angles{};
                             for (int i = 0; i < 2; ++i)
                                 angles[i] = {legOut.legs[i].pitch, legOut.legs[i].side, legOut.legs[i].knee};
-                            native_body::setLegControl(legMode, angles);
-                            if (legMode)
+                            native_body::setLegControl(legMode, angles, layered.amount);
+                            // The legs' turn on the body: the flips' momentum models take it
+                            // (CONTROLLED: FlipMotion; REALISTIC: RealisticFlip).
+                            if (legMode && (values.controlledFlips || values.realisticFlips))
                                 rig.legCoupling(legOut.reactionPitch, legOut.reactionRoll, legOut.spinScale);
-                            if (legMode != legModeLogged) {
+                            if (layered.layerChanged) {
                                 legModeLogged = legMode;
-                                diag_log::writef("leg control: %s", legMode ? (legEasing ? "easing to straight" : "on (air)") : "off");
+                                diag_log::writef("legs: layer %s (shown %.0f%%, coupling %.0f%% of LEG COUPLING)",
+                                                 leg_layers::layerName(layered.layer), layered.amount * 100.f,
+                                                 layered.couplingScale * 100.f);
                             }
+                            if (layered.crouchChanged)
+                                diag_log::writef("legs: air crouch %s (up %.0f deg, air %.2f s, vy %.1f m/s, spin %.1f rad/s%s)",
+                                                 layered.crouchOn ? "on" : "off",
+                                                 std::acos(std::clamp(upB.y, -1.f, 1.f)) * (180.f / 3.14159265f),
+                                                 legMixer.airSeconds(), layerIn.crouch.vy, layerIn.crouch.spin,
+                                                 layerIn.crouch.webbed ? ", webbed" : "");
+                            if (layered.reachChanged)
+                                diag_log::writef("legs: reach spread %s (%s)", layered.reachOn ? "on" : "off",
+                                                 reachHand[0] && reachHand[1] ? "both hands"
+                                                 : reachHand[0]               ? "left hand"
+                                                 : reachHand[1]               ? "right hand"
+                                                                              : "no hand");
                         }
                         // Slice T: hold B (dodge) to tuck. Triggers and grips stay
                         // web. Not while the pad layer is latched, or during a kick.
@@ -7568,11 +8762,13 @@ DWORD WINAPI run(void*) {
                     // Slice C: during a blend into the head lock, the head-locked eyes
                     // are built (reference latched at its first frame) as the blend's
                     // destination, so the blend ends on exactly the view that follows.
+                    bool viewLockRelatch = false;
                     if (headFollowEyes) {
                         // An owner switch or a recenter: the lock starts afresh, on the neck.
                         if (seatWhy == head_seat::Why::owner || seatWhy == head_seat::Why::recenter)
                             animHeadRefSet = false;
                         if (!animHeadRefSet) {
+                            viewLockRelatch = true; // the yaw lock starts afresh with it
                             animHeadRef = {frame.head.position, screenAhead(frame.head, 0).orientation};
                             animHeadRefSet = validTrackedPose(frame.head);
                             animHeadTurn = 0;
@@ -7619,6 +8815,285 @@ DWORD WINAPI run(void*) {
                         // tracking yaw). The turn itself runs at the top of the next
                         // frame, before the hands are mapped (review M1).
                         levelTurnGate = !followFull && !followSoftlock;
+                        // FULL head lock on the stable heading (view_yaw_lock.hpp, Step B):
+                        // latched from the head bone with the head lock, kept through the
+                        // midair softlock, published for the render thread's eyes, the hands'
+                        // map and the arms' IK.
+                        {
+                            constexpr float toDeg = 180.f / 3.14159265f;
+                            const auto moveMode = hybrid_movement::modeOf(values.movementMode);
+                            const bool hybridLock = moveMode == hybrid_movement::Mode::hybrid;
+                            // HYBRID: the same published lock carries the heading the view holds
+                            // while the hero is brought onto it; at rest it is the head bone.
+                            const bool lockWanted =
+                                (hybridLock ||
+                                 (moveMode == hybrid_movement::Mode::stable &&
+                                  view_yaw_lock::lockOn(animated_moves::headFollow(values.animatedHead) ==
+                                                            animated_moves::HeadFollow::full,
+                                                        true, values.animYawSwayPct))) &&
+                                (followFull || followSoftlock) && animHeadRefSet;
+                            const float sway = hybridLock ? hybridHeading.swayWeight
+                                                          : view_yaw_lock::swayOf(values.animYawSwayPct);
+                            const float heroYawNow = std::hypot(body[8], body[10]) > .2f
+                                                         ? hybrid_handoff::actorLookYaw({body[8], body[9], body[10]})
+                                                         : NAN;
+                            Mat4 rawHead{};
+                            float boneYaw = 0;
+                            const bool boneOk = lockWanted && game_fp::heroHead(rawHead) &&
+                                                view_yaw_lock::nativeYaw(rawHead, boneYaw);
+                            if (lockWanted) {
+                                if ((!viewLock.set || viewLockRelatch) && boneOk && hybridLock) {
+                                    // HYBRID: a facing hold (a landing) keeps its heading; else
+                                    // the heading is his facing and the view the head bone.
+                                    if (hybridHeading.hold == hybrid_movement::Heading::Hold::none ||
+                                        !hybridHeading.set)
+                                        hybridHeading.latch(std::isfinite(heroYawNow) ? heroYawNow : boneYaw);
+                                    viewLock.set = true;
+                                    viewLock.yaw = hybridHeading.yaw;
+                                    ++viewLock.latches;
+                                    diag_log::writef("view yaw lock: HYBRID latched at %.0f deg (head bone %.0f, hero "
+                                                     "%.0f, hold %s), #%u",
+                                                     viewLock.yaw * toDeg, boneYaw * toDeg,
+                                                     std::isfinite(heroYawNow) ? heroYawNow * toDeg : -999.f,
+                                                     hybrid_movement::holdName(hybridHeading.hold), viewLock.latches);
+                                } else if ((!viewLock.set || viewLockRelatch) && boneOk) {
+                                    viewLock.latch(boneYaw, heroYawNow, sway);
+                                    turnInPlace.resetLook();
+                                    diag_log::writef("view yaw lock: latched at %.0f deg (head bone %.0f, hero %.0f), "
+                                                     "sway %d%%, turn-in-place %d deg, #%u",
+                                                     viewLock.yaw * toDeg, boneYaw * toDeg,
+                                                     std::isfinite(heroYawNow) ? heroYawNow * toDeg : -999.f,
+                                                     values.animYawSwayPct, values.turnInPlaceDeg, viewLock.latches);
+                                }
+                            } else if (viewLock.set) {
+                                diag_log::writef("view yaw lock: off (%s)",
+                                                 moveMode == hybrid_movement::Mode::old ? "movement mode OLD"
+                                                 : values.animYawSwayPct >= 100 && !hybridLock ? "sway 100%, old feel"
+                                                                                                : "head lock not Full");
+                                viewLock.reset();
+                                if (!hybridLock)
+                                    hybridHeading.reset();
+                                turnInPlace.reset();
+                            }
+                            viewLockActive = lockWanted && viewLock.set;
+                            fullLockGate = viewLockActive && followFull;
+                            // FACING CHECK, the animation's side: the view (the lock + sway +
+                            // headset, or the head bone + headset without the lock) and the
+                            // hero's facing against what SpidyVR showed / the view before.
+                            if (facingCheck.armed && hybridOwner.domain != hybrid_owner::Domain::vr) {
+                                float checkBone = boneYaw;
+                                bool checkBoneOk = boneOk;
+                                if (!checkBoneOk) {
+                                    Mat4 h{};
+                                    checkBoneOk = game_fp::heroHead(h) && view_yaw_lock::nativeYaw(h, checkBone);
+                                }
+                                float hmdNow = 0;
+                                if (validTrackedPose(frame.head))
+                                    hmdNow = stable_yaw::wrap(
+                                        hybrid_handoff::lookYaw(screenAhead(frame.head, 0).orientation.rotate({0, 0, -1})) -
+                                        hybrid_handoff::lookYaw(animHeadRef.orientation.rotate({0, 0, -1})));
+                                view_yaw_lock::State probeLock;
+                                probeLock.on = viewLockActive;
+                                probeLock.yaw = viewLock.yaw;
+                                probeLock.sway = sway;
+                                probeLock.heroYaw = heroYawNow;
+                                facing_check::Sample fs;
+                                fs.viewOk = checkBoneOk && (!lockWanted || viewLockActive);
+                                fs.view = stable_yaw::wrap(view_yaw_lock::shownYaw(probeLock, checkBone) + hmdNow);
+                                fs.viewFixable = viewLockActive;
+                                fs.heroMatters = true;
+                                fs.heroOk = std::isfinite(heroYawNow);
+                                fs.hero = heroYawNow;
+                                auto fc = facingCheck.update(frame.seconds, fs);
+                                // ANIM HEAD RIDE: the view is his head; nothing turns him onto an old view.
+                                if (headRide.active()) {
+                                    fc.viewFix = 0.f;
+                                    fc.heroTurn = false;
+                                }
+                                if (fc.viewFix != 0.f) {
+                                    viewLock.yaw = stable_yaw::wrap(viewLock.yaw + fc.viewFix);
+                                    if (hybridLock)
+                                        hybridHeading.begin(hybrid_movement::Heading::Hold::facing, viewLock.yaw);
+                                }
+                                if (fc.heroTurn && hybridLock) {
+                                    // HYBRID: the heading holds the view on what was shown while
+                                    // the walk stick brings him round (the forced turn).
+                                    hybridHeading.begin(hybrid_movement::Heading::Hold::facing, fc.heroYaw);
+                                    viewLock.yaw = hybridHeading.yaw;
+                                    facingTurnEvent = facingCheck.event;
+                                } else if (fc.heroTurn) {
+                                    facingHeroPending = true;
+                                    facingHeroYaw = fc.heroYaw;
+                                    facingTurnEvent = facingCheck.event;
+                                }
+                                logFacing(facingCheck, fc);
+                            }
+                            view_yaw_lock::State lock;
+                            lock.on = viewLockActive;
+                            lock.yaw = viewLock.yaw;
+                            lock.sway = sway;
+                            lock.heroYaw = heroYawNow;
+                            float hmdNow = 0;
+                            if (validTrackedPose(frame.head))
+                                hmdNow = stable_yaw::wrap(
+                                    hybrid_handoff::lookYaw(screenAhead(frame.head, 0).orientation.rotate({0, 0, -1})) -
+                                    hybrid_handoff::lookYaw(animHeadRef.orientation.rotate({0, 0, -1})));
+                            // ANIM HEAD RIDE (camera_mode.hpp): in a game animation - a landing, a
+                            // perch, standing still - the view's yaw rides his head bone (position,
+                            // pitch and roll were the head's already), the headset's turn on top.
+                            // Walking, running and the air stay LOCOMOTION (Hybrid v2).
+                            {
+                                camera_mode::RideIn rin;
+                                rin.enabled = values.animHeadRide;
+                                rin.lockOn = hybridLock && viewLockActive && boneOk;
+                                rin.animOwns = hybridOwner.domain == hybrid_owner::Domain::anim;
+                                rin.fighting = rideFighting;
+                                rin.onWall = rideOnWall;
+                                rin.turning = values.smoothTurn > 0 && frame.hands[1].valid &&
+                                              std::abs(frame.hands[1].stickX) > view_yaw_lock::turnZone &&
+                                              !legStickActive;
+                                rin.legs = legStickActive;
+                                rin.snapHold = hybridHeading.hold == hybrid_movement::Heading::Hold::snap;
+                                rin.perched = perchWatch.perched;
+                                rin.landing = rideAnimLanding;
+                                rin.sinceAnim = rideAnimAge;
+                                rin.moveStick = rideMoveStick;
+                                rin.speed = rideSpeed;
+                                const auto why = camera_mode::rideWanted(rin);
+                                const float ageWas = headRide.age;
+                                const auto rs = headRide.update(frame.seconds, why != camera_mode::RideWhy::none);
+                                if (rs.entered || rs.exited) {
+                                    const float viewNow =
+                                        stable_yaw::wrap(view_yaw_lock::shownYaw(lock, boneYaw) + hmdNow);
+                                    const char* reason = rs.entered ? camera_mode::rideWhyName(why)
+                                                         : !rin.animOwns  ? "SpidyVR took the body"
+                                                         : !rin.lockOn    ? "the head lock ended"
+                                                         : rin.fighting   ? "a fight"
+                                                         : rin.onWall     ? "a wall"
+                                                         : rin.turning    ? "the right stick turns"
+                                                         : rin.legs       ? "leg control"
+                                                         : rin.snapHold   ? "a snap"
+                                                         : rin.moveStick >= camera_mode::runStick ? "the walk stick"
+                                                                                                  : "moving";
+                                    diag_log::writef(
+                                        "camera mode: %s (%s)%s, blend %.0f ms; head bone %.0f, view %.0f (view-bone "
+                                        "%+.0f), hero %.0f, #%u",
+                                        camera_mode::modeName(headRide.mode), reason,
+                                        rs.exited ? "" : " - the view rides his head", 
+                                        (rs.entered ? camera_mode::HeadRide::enterSeconds
+                                                    : camera_mode::HeadRide::exitSeconds) * 1000.f,
+                                        boneYaw * toDeg, viewNow * toDeg, stable_yaw::wrap(viewNow - boneYaw) * toDeg,
+                                        std::isfinite(heroYawNow) ? heroYawNow * toDeg : -999.f,
+                                        rs.entered ? headRide.enters : headRide.exits);
+                                    if (rs.exited)
+                                        diag_log::writef("camera mode: the head ride lasted %.0f ms", ageWas * 1000.f);
+                                }
+                                if (rs.entered) {
+                                    // The held heading is let go (no forced turn onto an old view):
+                                    // it follows him from here, under the ride's blend.
+                                    hybridHeading.hold = hybrid_movement::Heading::Hold::none;
+                                    hybridHeading.anchored = false;
+                                }
+                                rideWhy = why;
+                                rideStepped = true;
+                                lock.ride = headRide.eased();
+                            }
+                            // SHOULDER LIMIT (camera_mode::ShoulderLimit; it replaced THE 90-DEGREE
+                            // RULE): the view (shown + headset) never past his shoulders - within 90
+                            // degrees of his chest (the animation's chest bone while the animation has
+                            // him, else his facing), this frame only, on the published yaw.
+                            viewLimitCorrection = 0;
+                            lock.limit = 0;
+                            {
+                                float chestYaw = NAN;
+                                const bool chestRead = hybridOwner.domain == hybrid_owner::Domain::anim &&
+                                                       native_body::heroChestYaw(chestYaw);
+                                bool usedChest = false;
+                                const float shoulders =
+                                    camera_mode::shouldersYaw(chestRead, chestYaw, heroYawNow, &usedChest);
+                                const bool limitOn =
+                                    values.shoulderLimit && camera_mode::viewLimitActive.load(std::memory_order_relaxed);
+                                if (limitOn && viewLockActive && boneOk && std::isfinite(shoulders)) {
+                                    const unsigned streakWas = shoulderLimit.streak;
+                                    const float worstWas = shoulderLimit.streakWorst;
+                                    const float sideWas = shoulderLimit.lastOut;
+                                    viewLimitCorrection = shoulderLimit.correction(
+                                        stable_yaw::wrap(view_yaw_lock::shownYaw(lock, boneYaw) + hmdNow), shoulders);
+                                    ++(usedChest ? shoulderLimit.chest : shoulderLimit.hero);
+                                    lock.limit = viewLimitCorrection;
+                                    if (streakWas >= 10 && shoulderLimit.streak == 0 &&
+                                        eyeBlendNow - shoulderLogAt > 1'000'000'000) {
+                                        shoulderLogAt = eyeBlendNow;
+                                        diag_log::writef("shoulder limit: held the view at his %s shoulder %u frames "
+                                                         "(largest excess %.0f deg; shoulders from the %s)",
+                                                         sideWas > 0 ? "left" : "right", streakWas, worstWas * toDeg,
+                                                         usedChest ? "chest bone" : "hero's facing");
+                                    }
+                                } else {
+                                    shoulderLimit.reset();
+                                }
+                            }
+                            view_yaw_lock::publish(lock);
+                            if (viewLockActive && boneOk)
+                                lastViewYaw = stable_yaw::wrap(view_yaw_lock::shownYaw(lock, boneYaw) + hmdNow);
+                            if (viewLockActive && boneOk) {
+                                // Divergence: the view (lock + sway + headset) against the
+                                // hero's facing and against the old view (head bone + headset).
+                                const float hmd = hmdNow;
+                                const float shown = view_yaw_lock::shownYaw(lock, boneYaw);
+                                const float viewYaw = stable_yaw::wrap(shown + hmd);
+                                viewDivergence.add(frame.seconds, viewYaw - heroYawNow, shown - boneYaw);
+                                const float rX = frame.hands[1].valid ? frame.hands[1].stickX : 0.f;
+                                const auto watched =
+                                    viewTurnWatch.update(frame.seconds, fullLockGate && viewLock.turning(rX, values.smoothTurn),
+                                                         viewLockDelta, heroYawNow, viewLockSnapped);
+                                if (watched.ended)
+                                    diag_log::writef(
+                                        "view turn: %s, %d ms, view %+.0f deg (%.0f deg/s, %u snaps), hero %+.0f deg, "
+                                        "#%u",
+                                        values.smoothTurn > 0 ? "smooth" : "snap",
+                                        static_cast<int>(watched.seconds * 1000 + .5f), watched.viewDeg,
+                                        watched.viewRate, watched.snaps, watched.heroDeg, ++viewLockTurnsLogged);
+                                if (eyeBlendNow - viewYawDiagAt > 500'000'000) {
+                                    viewYawDiagAt = eyeBlendNow;
+                                    diag_log::writef(
+                                        "view yaw: lock %.0f bone %.0f hero %.0f shown %.0f hmd %+.0f view %.0f "
+                                        "view-hero %+.0f shown-bone %+.0f sway %d%% %s",
+                                        viewLock.yaw * toDeg, boneYaw * toDeg, heroYawNow * toDeg, shown * toDeg,
+                                        hmd * toDeg, viewYaw * toDeg, stable_yaw::wrap(viewYaw - heroYawNow) * toDeg,
+                                        stable_yaw::wrap(shown - boneYaw) * toDeg, values.animYawSwayPct,
+                                        followFull ? "full" : "softlock");
+                                }
+                                if (!viewDivergenceAt)
+                                    viewDivergenceAt = eyeBlendNow;
+                                if (eyeBlendNow - viewDivergenceAt > 10'000'000'000ll) {
+                                    viewDivergenceAt = eyeBlendNow;
+                                    const auto d = viewDivergence.summary();
+                                    diag_log::writef(
+                                        "view yaw divergence: %u samples, view-hero mean %.1f p95 %.0f max %.0f deg, "
+                                        "over 45 %.1f%%; view-headbone mean %.1f p95 %.0f max %.0f deg; sway %d%%; "
+                                        "turn in place %u (%u done, %u gave up, %u wrong way); mode %s, rear snaps %u, "
+                                        "holds arrived %u gave up %u",
+                                        d.samples, d.meanHero, d.p95Hero, d.maxHero, d.over45 * 100.f, d.meanBone,
+                                        d.p95Bone, d.maxBone, values.animYawSwayPct, turnInPlace.starts,
+                                        turnInPlace.done, turnInPlace.gaveUp, turnInPlace.wrongWays,
+                                        hybrid_movement::modeName(moveMode), hybridGate.snaps, hybridHeading.arrived,
+                                        hybridHeading.gaveUp);
+                                    if (shoulderLimit.held || headRide.enters)
+                                        diag_log::writef(
+                                            "shoulder limit: held %u frames in 10 s (largest excess %.0f deg; "
+                                            "shoulders from the chest bone %u, the hero's facing %u frames); head "
+                                            "ride %u on / %u off, snap realigns %u, perches %u",
+                                            shoulderLimit.held, shoulderLimit.worst * toDeg, shoulderLimit.chest,
+                                            shoulderLimit.hero, headRide.enters, headRide.exits, snapRealigns,
+                                            perchWatch.perches);
+                                    shoulderLimit.held = 0;
+                                    shoulderLimit.worst = 0;
+                                    shoulderLimit.chest = shoulderLimit.hero = 0;
+                                    viewDivergence.reset();
+                                }
+                            }
+                        }
                         const Mat4 axes = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
                         for (unsigned i = 0; i < 2; ++i) {
                             Pose raw = frame.eyes[i].pose;
@@ -7632,6 +9107,12 @@ DWORD WINAPI run(void*) {
                         }
                     } else {
                         animHeadRefSet = false;
+                        if (viewLock.set)
+                            diag_log::writef("view yaw lock: off (head lock off)");
+                        viewLock.reset();
+                        turnInPlace.reset();
+                        viewLockActive = fullLockGate = false;
+                        view_yaw_lock::publish({});
                         eyes.anchored = 1;
                         for (unsigned i = 0; i < 2; ++i) {
                             eyes.eyes[i].world = motion.eyes[i];
@@ -7778,6 +9259,17 @@ DWORD WINAPI run(void*) {
                             frameOk = true;
                         }
                         if (frameOk) {
+                            // FULL head lock on the stable heading: the arms' anchor is
+                            // turned in the pose job as the eyes are (view_yaw_lock.hpp).
+                            if (handView.frame == animated_view::Frame::full) {
+                                const auto lock = view_yaw_lock::live();
+                                handView.yawLock = lock.on;
+                                handView.lockYaw = lock.yaw;
+                                handView.lockSway = lock.sway;
+                                handView.lockHero = lock.heroYaw;
+                                handView.lockRide = lock.ride;
+                                handView.lockLimit = lock.limit;
+                            }
                             handView.head = animated_view::relative(frame.head, reference, turn);
                             for (unsigned i = 0; i < 2; ++i) {
                                 if (frame.hands[i].valid && validTrackedPose(frame.hands[i].grip) &&
@@ -8836,6 +10328,13 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
     aimGameThrow = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidyThrowAim"));
     soundResults = reinterpret_cast<const game_sound::Data*>(GetProcAddress(rays, "SpidySoundData"));
     soundMode = reinterpret_cast<DWORD(WINAPI*)(void*)>(GetProcAddress(rays, "SpidySoundMode"));
+    soundTrace = reinterpret_cast<const sound_trace::Ring*>(GetProcAddress(rays, "SpidySoundTrace"));
+    soundTraceMode = reinterpret_cast<DWORD(WINAPI*)(void*)>(GetProcAddress(rays, "SpidySoundTraceMode"));
+    if (const sound_trace::Ring* expected = soundTrace;
+        expected && (expected->magic != 0x53535443 || expected->version != 1 || expected->bytes != sizeof(sound_trace::Ring)))
+        soundTrace = nullptr;
+    if (!soundTrace)
+        soundTraceMode = nullptr;
     if (const game_sound::Data expected; soundResults && (soundResults->magic != expected.magic ||
                                                           soundResults->version != expected.version ||
                                                           soundResults->bytes != expected.bytes))
@@ -8853,6 +10352,12 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyXrStart(void* input) {
     swingSettings = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidySwingSettings"));
     setSwingPoseCoupling = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidySwingPoseCoupling"));
     swingPointJump = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidySwingPointJump"));
+    swingSidestep = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidySwingSidestep"));
+    sidestepLive = reinterpret_cast<const game_swing::SidestepLive*>(GetProcAddress(rays, "SpidySidestepLive"));
+    if (const game_swing::SidestepLive expected;
+        sidestepLive && (sidestepLive->magic != expected.magic || sidestepLive->version != expected.version ||
+                         sidestepLive->bytes != expected.bytes))
+        sidestepLive = nullptr;
     swingWebTurns = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidySwingWebTurns"));
     // Optional: an older ray module has no web shooter.
     startShooter = reinterpret_cast<BridgeCall>(GetProcAddress(rays, "SpidyShooterStart"));

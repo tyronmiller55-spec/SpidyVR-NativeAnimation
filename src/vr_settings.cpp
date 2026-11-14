@@ -219,6 +219,46 @@ static_assert(std::size(pointJumpPushChoices) == std::size(pointJumpPushes));
 constexpr int punchViewEases[] = {0, 150, 200, 250, 300, 400};
 constexpr const char* punchViewEaseChoices[] = {"OFF (SNAP)", "150 MS", "200 MS", "250 MS", "300 MS", "400 MS"};
 static_assert(std::size(punchViewEaseChoices) == std::size(punchViewEases));
+// MOVE HAPTICS (move_haptics.hpp): move_haptics_pct, its own strength.
+constexpr int moveHapticLevels[] = {0, 25, 50, 75, 100, 125, 150, 175, 200};
+constexpr const char* moveHapticChoices[] = {"OFF", "25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"};
+static_assert(std::size(moveHapticChoices) == std::size(moveHapticLevels));
+// VIEW YAW SOURCE (stable_yaw.hpp): view_yaw_source.
+constexpr int viewYawSources[] = {0, 1};
+constexpr const char* viewYawSourceChoices[] = {"BODY (OLD)", "STABLE"};
+static_assert(std::size(viewYawSourceChoices) == std::size(viewYawSources));
+// JUMP TO SPIDYVR (hybrid_owner.hpp): jump_handoff_ms; 0 stays to the landing.
+constexpr int jumpHandoffs[] = {0, 300, 400, 500, 700, 1000};
+constexpr const char* jumpHandoffChoices[] = {"STAY TO LANDING", "300 MS", "400 MS", "500 MS", "700 MS", "1000 MS"};
+static_assert(std::size(jumpHandoffChoices) == std::size(jumpHandoffs));
+// AIR VIEW EASE (view_ease.hpp): air_view_ease_ms; 0 is the old snap.
+constexpr int airViewEases[] = {0, 150, 200, 250, 300, 400};
+constexpr const char* airViewEaseChoices[] = {"OFF (SNAP)", "150 MS", "200 MS", "250 MS", "300 MS", "400 MS"};
+static_assert(std::size(airViewEaseChoices) == std::size(airViewEases));
+// ANIM YAW SWAY (view_yaw_lock.hpp): anim_yaw_sway_pct; 100 is the old feel.
+constexpr int animYawSways[] = {0, 10, 20, 30, 40, 50, 60, 80, 100};
+constexpr const char* animYawSwayChoices[] = {"0% (STEADY)", "10%", "20%", "30%", "40%",
+                                              "50%", "60%", "80%", "100% (OLD FEEL)"};
+static_assert(std::size(animYawSwayChoices) == std::size(animYawSways));
+// TURN-IN-PLACE ANGLE (view_yaw_lock.hpp): turn_in_place_deg; 0 OFF.
+constexpr int turnInPlaces[] = {0, 20, 25, 30, 35, 45, 60, 90};
+constexpr const char* turnInPlaceChoices[] = {"OFF", "20 DEG", "25 DEG", "30 DEG",
+                                              "35 DEG", "45 DEG", "60 DEG", "90 DEG"};
+static_assert(std::size(turnInPlaceChoices) == std::size(turnInPlaces));
+// PASSIVE LEGS (leg_layers.hpp): passive_legs_pct, the share shown; 0 OFF.
+constexpr int passiveLegsSteps[] = {0, 20, 40, 60, 80, 100};
+constexpr const char* passiveLegsChoices[] = {"OFF", "20%", "40%", "60%", "80%", "100%"};
+static_assert(std::size(passiveLegsChoices) == std::size(passiveLegsSteps));
+// PASSIVE COUPLING: passive_coupling_pct, percent of LEG COUPLING.
+constexpr int movementModes[] = {0, 1, 2};
+constexpr const char* movementModeChoices[] = {"HYBRID", "STABLE", "OLD"};
+static_assert(std::size(movementModeChoices) == std::size(movementModes));
+constexpr int rearSnaps[] = {0, 100, 150, 200, 300};
+constexpr const char* rearSnapChoices[] = {"INSTANT", "100 MS", "150 MS", "200 MS", "300 MS"};
+static_assert(std::size(rearSnapChoices) == std::size(rearSnaps));
+constexpr int passiveCouplingSteps[] = {0, 5, 10, 15, 25, 50, 100};
+constexpr const char* passiveCouplingChoices[] = {"OFF", "5%", "10%", "15%", "25%", "50%", "100%"};
+static_assert(std::size(passiveCouplingChoices) == std::size(passiveCouplingSteps));
 } // namespace
 
 std::span<const int> steps(Item item) {
@@ -297,6 +337,26 @@ std::span<const int> steps(Item item) {
         return pointJumpTriggers;
     case Item::punchViewEase:
         return punchViewEases;
+    case Item::moveHaptics:
+        return moveHapticLevels;
+    case Item::viewYawSource:
+        return viewYawSources;
+    case Item::jumpHandoff:
+        return jumpHandoffs;
+    case Item::airViewEase:
+        return airViewEases;
+    case Item::animYawSway:
+        return animYawSways;
+    case Item::turnInPlace:
+        return turnInPlaces;
+    case Item::passiveLegs:
+        return passiveLegsSteps;
+    case Item::passiveCoupling:
+        return passiveCouplingSteps;
+    case Item::movementMode:
+        return movementModes;
+    case Item::rearSnap:
+        return rearSnaps;
     case Item::pointJumpMinSpeed:
         return pointJumpMinSpeeds;
     case Item::pointJumpMaxSpeed:
@@ -448,6 +508,26 @@ float numberOf(Item item, const Values& v) {
         return static_cast<float>(v.pointJumpTrigger);
     case Item::punchViewEase:
         return static_cast<float>(v.punchViewEaseMs);
+    case Item::moveHaptics:
+        return static_cast<float>(v.moveHapticsPct);
+    case Item::viewYawSource:
+        return static_cast<float>(v.viewYawSource);
+    case Item::jumpHandoff:
+        return static_cast<float>(v.jumpHandoffMs);
+    case Item::airViewEase:
+        return static_cast<float>(v.airViewEaseMs);
+    case Item::animYawSway:
+        return static_cast<float>(v.animYawSwayPct);
+    case Item::turnInPlace:
+        return static_cast<float>(v.turnInPlaceDeg);
+    case Item::passiveLegs:
+        return static_cast<float>(v.passiveLegsPct);
+    case Item::passiveCoupling:
+        return static_cast<float>(v.passiveCouplingPct);
+    case Item::movementMode:
+        return static_cast<float>(v.movementMode);
+    case Item::rearSnap:
+        return static_cast<float>(v.rearSnapMs);
     case Item::pointJumpMinSpeed:
         return static_cast<float>(v.pointJumpMinSpeed);
     case Item::pointJumpMaxSpeed:
@@ -601,6 +681,12 @@ template <class V> auto switchOf(Item item, V& v) -> decltype(&v.aimMarkers) {
         return &v.palmShooters;
     case Item::headProbe:
         return &v.headProbe;
+    case Item::soundTrace:
+        return &v.soundTrace;
+    case Item::legAirCrouch:
+        return &v.legAirCrouch;
+    case Item::legReachSpread:
+        return &v.legReachSpread;
     case Item::animatedMoves:
         return &v.animatedMoves;
     case Item::animatedAir:
@@ -676,6 +762,16 @@ Values sanitized(Values v) {
     v.legDoubleTapMs = std::clamp(v.legDoubleTapMs, 150, 600);
     v.pointJumpTrigger = std::clamp(v.pointJumpTrigger, 0, 1);
     v.punchViewEaseMs = std::clamp(v.punchViewEaseMs, 0, 1000);
+    v.moveHapticsPct = std::clamp(v.moveHapticsPct, 0, 200);
+    v.viewYawSource = std::clamp(v.viewYawSource, 0, 1);
+    v.jumpHandoffMs = std::clamp(v.jumpHandoffMs, 0, 2000);
+    v.airViewEaseMs = std::clamp(v.airViewEaseMs, 0, 1000);
+    v.animYawSwayPct = std::clamp(v.animYawSwayPct, 0, 100);
+    v.turnInPlaceDeg = std::clamp(v.turnInPlaceDeg, 0, 180);
+    v.passiveLegsPct = std::clamp(v.passiveLegsPct, 0, 100);
+    v.passiveCouplingPct = std::clamp(v.passiveCouplingPct, 0, 100);
+    v.movementMode = std::clamp(v.movementMode, 0, 2);
+    v.rearSnapMs = std::clamp(v.rearSnapMs, 0, 1000);
     v.pointJumpChordMs = std::clamp(v.pointJumpChordMs, 20, 150);
     v.pointJumpTapMs = std::clamp(v.pointJumpTapMs, 50, 400);
     v.pointJumpFullMs = std::clamp(v.pointJumpFullMs, 300, 2000);
@@ -685,6 +781,16 @@ Values sanitized(Values v) {
     v.pointJumpNormalBias = std::clamp(v.pointJumpNormalBias, 0, 100);
     v.pointJumpMinOutDegrees = std::clamp(v.pointJumpMinOutDegrees, 0, 45);
     v.pointJumpKeep = std::clamp(v.pointJumpKeep, 0, 100);
+    // QUICK SIDESTEP (sidestep.hpp).
+    v.sidestepDistanceCm = std::clamp(v.sidestepDistanceCm, 100, 300);
+    v.sidestepMs = std::clamp(v.sidestepMs, 120, 300);
+    v.sidestepCooldownMs = std::clamp(v.sidestepCooldownMs, 0, 2000);
+    v.sidestepChain = std::clamp(v.sidestepChain, 1, 10);
+    v.sidestepLockoutMs = std::clamp(v.sidestepLockoutMs, 0, 3000);
+    v.sidestepFlickFrom = std::clamp(v.sidestepFlickFrom, 20, 60);
+    v.sidestepFlickTo = std::clamp(v.sidestepFlickTo, std::max(50, v.sidestepFlickFrom + 20), 95);
+    v.sidestepFlickMs = std::clamp(v.sidestepFlickMs, 30, 200);
+    v.sidestepAMs = std::clamp(v.sidestepAMs, 40, 250);
     v.pointJumpCoyoteMs = std::clamp(v.pointJumpCoyoteMs, 0, 500);
     v.pointJumpBufferMs = std::clamp(v.pointJumpBufferMs, 0, 500);
     v.pointJumpCooldownMs = std::clamp(v.pointJumpCooldownMs, 0, 2000);
@@ -696,6 +802,7 @@ Values sanitized(Values v) {
     v.animatedAirSpin = std::clamp(v.animatedAirSpin, 0, 2);
     v.animatedHybridSpeedMs = v.animatedHybridSpeedMs <= 0 ? 0 : std::clamp(v.animatedHybridSpeedMs, 5, 500);
     v.earlyJump = std::clamp(v.earlyJump, 0, 2);
+    v.movementDefaults = std::clamp(v.movementDefaults, 0, movementDefaultsRevision);
     v.webAimSource = std::clamp(v.webAimSource, 0, 1);
     v.forearmBlend = std::clamp(v.forearmBlend, 0, 100);
     v.forearmAimLimit = std::clamp(v.forearmAimLimit, 35, 180);
@@ -712,14 +819,21 @@ Values sanitized(Values v) {
     v.automaticSpeed = std::clamp(v.automaticSpeed, 90, 360);
     v.automaticMinimumSpeed = std::clamp(v.automaticMinimumSpeed, 3, 16);
     v.automaticResponse = std::clamp(v.automaticResponse, 100, 750);
+    // HANDSTAND (handstand.hpp).
+    v.handstandPushGain = std::clamp(v.handstandPushGain, 100, 400);
+    v.handstandPushMax = std::clamp(v.handstandPushMax, 2, 12);
+    v.handstandFallDegrees = std::clamp(v.handstandFallDegrees, 15, 60);
+    v.handstandHeightCm = std::clamp(v.handstandHeightCm, 60, 140);
+    v.handstandGainPct = std::clamp(v.handstandGainPct, 50, 600);
+    v.handstandEyeDropCm = std::clamp(v.handstandEyeDropCm, 0, 120);
     v.automaticHandStrength = std::clamp(v.automaticHandStrength, 0, 200);
     v.automaticFalloff = std::clamp(v.automaticFalloff, 500, 3000);
     v.automaticHandThreshold = std::clamp(v.automaticHandThreshold, 50, 300);
     return v;
 }
-const std::array<Row, 142>& rows() {
+const std::array<Row, 155>& rows() {
     // The help fits the game's description column beside the rows.
-    static const std::array<Row, 142> all{{
+    static const std::array<Row, 155> all{{
         {Item::none, "WEBS", nullptr, {}},
         {Item::webStyle, "WEB STYLE",
          "Arcade: webs pass lamp posts, signs and cars, and swings stay above the street.", webStyleChoices},
@@ -898,7 +1012,7 @@ const std::array<Row, 142>& rows() {
          "The view leans or rolls with the game's dodge, so you see it was one.", dodgeTumbleChoices},
         {Item::runCurve,
          "RUN CURVE",
-         "Ground only: full run at 80% of the stick, faster sooner. Off as before.",
+         "Ground only: full run at 80% of the stick, faster sooner. On by default.",
          {}},
         {Item::nativeRunAt, "NATIVE RUN AT", "The stick's tilt past which NATIVE RUN sprints. 70% as before.",
          nativeRunPercentChoices},
@@ -911,7 +1025,7 @@ const std::array<Row, 142>& rows() {
          "Charged leaps keep run speed. EARLY JUMP: RUNNING skips charging in a sprint.",
          {}},
         {Item::earlyJump, "EARLY JUMP",
-         "A jumps sooner: a quicker tap, or at once while running. OFF as before.", earlyJumpChoices},
+         "A jumps sooner: a quicker tap, or at once while running. QUICK TAP by default.", earlyJumpChoices},
         {Item::softLanding,
          "SOFT LANDING",
          "A fall with no web eases to 9 m/s down just before the ground. Off as before.",
@@ -1086,6 +1200,42 @@ const std::array<Row, 142>& rows() {
         // November 12: PUNCH VIEW EASE (view_ease.hpp).
         {Item::punchViewEase, "PUNCH VIEW EASE",
          "A punch's switch to VR: view held, then eased onto your feet. OFF: the old snap.", punchViewEaseChoices},
+        // November 12: MOVE HAPTICS (move_haptics.hpp), VIEW YAW SOURCE
+        // (stable_yaw.hpp), SOUND TRACE (sound_trace.hpp).
+        {Item::moveHaptics, "MOVE HAPTICS",
+         "Jump and landing thumps. Own strength: CONTROLLER VIBRATION doesn't scale it.", moveHapticChoices},
+        {Item::viewYawSource, "VIEW YAW SOURCE",
+         "STABLE: steer by a steady heading (no circling). BODY: old head-bone steering.",
+         viewYawSourceChoices, Place::launcher}, // superseded by MOVEMENT MODE (in game)
+        {Item::soundTrace, "SOUND TRACE",
+         "Diagnostics: logs game sound ids around jumps and landings. Changes nothing.", {}},
+        // November 12: JUMP TO SPIDYVR (hybrid_owner.hpp), AIR VIEW EASE (view_ease.hpp).
+        {Item::jumpHandoff, "JUMP TO SPIDYVR",
+         "Jumps, zip launches, vaults, wall launches: SpidyVR after this. STAY: old way.",
+         jumpHandoffChoices},
+        {Item::airViewEase, "AIR VIEW EASE",
+         "Jump timer, flip and grip breaks: view held, then eased. OFF: the old snap.", airViewEaseChoices},
+        // November 12 (Step B): FULL head lock on the stable heading (view_yaw_lock.hpp).
+        // November 12 (hybrid movement): hybrid_movement.hpp.
+        {Item::movementMode, "MOVEMENT MODE",
+         "HYBRID: view on his head, stick back snaps. STABLE: steady heading. OLD.", movementModeChoices},
+        {Item::rearSnap, "REAR SNAP TURN",
+         "HYBRID: left stick back turns you that way, as a head turn. INSTANT: a cut.", rearSnapChoices},
+        {Item::animYawSway, "ANIM YAW SWAY",
+         "Full lock, stable yaw: share of the head's yaw sway shown. 100%: the old feel.", animYawSwayChoices},
+        {Item::turnInPlace, "TURN-IN-PLACE ANGLE",
+         "Standing: he turns to where you look past this angle. OFF: he never does.", turnInPlaceChoices,
+         Place::launcher}, // STABLE only since MOVEMENT MODE; the camera tab holds 20
+        // November 12 (legs): leg_layers.hpp.
+        {Item::passiveLegs, "PASSIVE LEGS",
+         "In the air without LEG CONTROL: legs swing with momentum, this much shown.", passiveLegsChoices},
+        {Item::passiveCoupling, "PASSIVE COUPLING",
+         "How much passive legs turn you, as a share of LEG COUPLING. Swing for more.",
+         passiveCouplingChoices},
+        {Item::legAirCrouch, "AIR CROUCH",
+         "Upright with hang time: the legs fold into the jump's midair crouch.", {}},
+        {Item::legReachSpread, "REACH SPREAD",
+         "A hand down between your legs: they spread and lift to clear it.", {}},
         {Item::realisticFlips,
          "REALISTIC FLIPS",
          "Momentum rotation from arms and webs. FLIPS also enables left-stick steering.",
@@ -1158,7 +1308,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::automaticAirBrake, Item::automaticCombat, Item::dodgeTumble, Item::flipReprojection,
     };
     static constexpr Item feedback[] = {
-        Item::haptics, Item::reelHaptics, Item::swingHaptics, Item::bodyHaptics,
+        Item::haptics, Item::moveHaptics, Item::reelHaptics, Item::swingHaptics, Item::bodyHaptics,
         Item::hapticWebs, Item::hapticWind, Item::hapticCombat, Item::hapticMovement,
         Item::blowSounds, Item::pcMedia,
     };
@@ -1170,7 +1320,8 @@ const std::array<Screen, categoryCount>& screens() {
         Item::nativeAnimation, Item::animatedHead, Item::animatedHeadsetSmooth,
         Item::animatedArms, Item::animatedTorso, Item::animatedModelYaw, Item::animatedHybridSpeed,
         Item::animatedMoves, Item::animatedHybrid, Item::animatedAir, Item::animatedOnly,
-        Item::animatedSteering, Item::animatedAirSpin, Item::headProbe, Item::runSpeed,
+        Item::animatedSteering, Item::viewYawSource, Item::movementMode, Item::jumpHandoff, Item::animatedAirSpin, Item::headProbe, Item::soundTrace,
+        Item::runSpeed,
         Item::slowMotionLength, Item::softLock,
     };
     // CAMERA & STABILIZATION (November 11): how much the animation moves the
@@ -1178,7 +1329,7 @@ const std::array<Screen, categoryCount>& screens() {
     static constexpr Item camera[] = {
         Item::cameraMotion, Item::cameraPitch, Item::cameraRoll, Item::cameraBobVertical,
         Item::cameraBobSide, Item::cameraHeadAngle,
-        Item::cameraStabilization, Item::punchViewEase, Item::cameraVertical, Item::cameraHorizontal, Item::cameraAngle,
+        Item::cameraStabilization, Item::punchViewEase, Item::airViewEase, Item::rearSnap, Item::animYawSway, Item::turnInPlace, Item::cameraVertical, Item::cameraHorizontal, Item::cameraAngle,
         Item::lightVertical, Item::lightHorizontal, Item::lightAngle,
         Item::heavyVertical, Item::heavyHorizontal, Item::heavyAngle,
     };
@@ -1193,6 +1344,7 @@ const std::array<Screen, categoryCount>& screens() {
     // saying why (shownWhenInactive).
     static constexpr Item legs[] = {
         Item::legControl, Item::legStiffness, Item::legDamping, Item::legCoupling,
+        Item::passiveLegs, Item::passiveCoupling, Item::legAirCrouch, Item::legReachSpread,
     };
     // POINT JUMP (November 11): its switch, trigger and feel.
     static constexpr Item pointJump[] = {
@@ -1217,6 +1369,12 @@ const std::array<Screen, categoryCount>& screens() {
 }
 const char* inactiveReason(Item item, const Values& v) {
     switch (item) {
+    case Item::rearSnap:
+        return v.movementMode != 0 ? "Set MOVEMENT MODE to HYBRID to use the rear snap." : nullptr;
+    case Item::viewYawSource:
+        return "MOVEMENT MODE sets it now (OLD: body; HYBRID, STABLE: stable).";
+    case Item::animYawSway:
+        return v.movementMode != 1 ? "Set MOVEMENT MODE to STABLE to use it." : nullptr;
     case Item::snapTurn:
         return v.smoothTurn > 0 ? "Turn Smooth turn off to use Snap turn." : nullptr;
     case Item::smartAnchor:
@@ -1285,6 +1443,10 @@ const char* inactiveReason(Item item, const Values& v) {
         return !v.pointJump ? "Turn POINT JUMP on first." : nullptr;
     case Item::recordingSmoothing:
         return v.recordingFov == 0 ? "Enable Recording FOV first." : nullptr;
+    case Item::passiveCoupling:
+        return v.passiveLegsPct == 0 ? "Turn PASSIVE LEGS on first."
+               : !v.controlledFlips && !v.realisticFlips ? "Turns you only with CONTROLLED or REALISTIC FLIPS."
+                                                         : nullptr;
     default:
         return nullptr;
     }
@@ -1502,6 +1664,36 @@ bool choose(Item item, int index, Values& v) {
     case Item::punchViewEase:
         v.punchViewEaseMs = s[index];
         break;
+    case Item::moveHaptics:
+        v.moveHapticsPct = s[index];
+        break;
+    case Item::viewYawSource:
+        v.viewYawSource = s[index];
+        break;
+    case Item::jumpHandoff:
+        v.jumpHandoffMs = s[index];
+        break;
+    case Item::airViewEase:
+        v.airViewEaseMs = s[index];
+        break;
+    case Item::animYawSway:
+        v.animYawSwayPct = s[index];
+        break;
+    case Item::turnInPlace:
+        v.turnInPlaceDeg = s[index];
+        break;
+    case Item::passiveLegs:
+        v.passiveLegsPct = s[index];
+        break;
+    case Item::passiveCoupling:
+        v.passiveCouplingPct = s[index];
+        break;
+    case Item::movementMode:
+        v.movementMode = s[index];
+        break;
+    case Item::rearSnap:
+        v.rearSnapMs = s[index];
+        break;
     case Item::pointJumpMinSpeed:
         v.pointJumpMinSpeed = s[index];
         v.pointJumpMaxSpeed = std::max(v.pointJumpMaxSpeed, v.pointJumpMinSpeed);
@@ -1611,6 +1803,15 @@ constexpr TabOnly tabOnly[] = {
     {"wall_run_camera_tilt", &Values::wallRunCameraTilt, nullptr},
     {"half_punch_damage", &Values::halfPunchDamage, nullptr},
     {"realistic_flips", &Values::realisticFlips, nullptr},
+    // HANDSTAND (H1, handstand.hpp): spidy_vr.ini only.
+    {"handstand", &Values::handstand, nullptr},
+    {"handstand_assist", &Values::handstandAssist, nullptr},
+    {"handstand_push_gain", nullptr, &Values::handstandPushGain},
+    {"handstand_push_max", nullptr, &Values::handstandPushMax},
+    {"handstand_fall_degrees", nullptr, &Values::handstandFallDegrees},
+    {"handstand_height_cm", nullptr, &Values::handstandHeightCm},
+    {"handstand_gain_pct", nullptr, &Values::handstandGainPct},
+    {"handstand_eye_drop_cm", nullptr, &Values::handstandEyeDropCm},
     {"rotation_strength", nullptr, &Values::automaticStrength},
     {"rotation_speed", nullptr, &Values::automaticSpeed},
     {"flight_speed_min", nullptr, &Values::automaticMinimumSpeed},
@@ -1708,12 +1909,38 @@ constexpr TabOnly tabOnly[] = {
     {"leg_coupling_pct", nullptr, &Values::legCouplingPct},
     {"leg_double_tap_ms", nullptr, &Values::legDoubleTapMs},
     {"punch_view_ease_ms", nullptr, &Values::punchViewEaseMs},
+    {"move_haptics_pct", nullptr, &Values::moveHapticsPct},
+    {"view_yaw_source", nullptr, &Values::viewYawSource},
+    {"sound_trace", &Values::soundTrace, nullptr},
+    {"jump_handoff_ms", nullptr, &Values::jumpHandoffMs},
+    {"air_view_ease_ms", nullptr, &Values::airViewEaseMs},
+    {"anim_yaw_sway_pct", nullptr, &Values::animYawSwayPct},
+    {"turn_in_place_deg", nullptr, &Values::turnInPlaceDeg},
+    {"passive_legs_pct", nullptr, &Values::passiveLegsPct},
+    {"passive_coupling_pct", nullptr, &Values::passiveCouplingPct},
+    {"movement_mode", nullptr, &Values::movementMode},
+    {"rear_snap_turn_ms", nullptr, &Values::rearSnapMs},
+    {"leg_air_crouch", &Values::legAirCrouch, nullptr},
+    {"leg_reach_spread", &Values::legReachSpread, nullptr},
     {"air_fists", &Values::airFists, nullptr},
     {"camera_pitch_pct", nullptr, &Values::cameraPitchPct},
     {"camera_roll_pct", nullptr, &Values::cameraRollPct},
     {"camera_bob_vertical_pct", nullptr, &Values::cameraBobVerticalPct},
     {"camera_bob_side_pct", nullptr, &Values::cameraBobSidePct},
     {"camera_head_angle_deg", nullptr, &Values::cameraHeadAngleDeg},
+    // QUICK SIDESTEP (November 12, sidestep.hpp): spidy_vr.ini only.
+    {"sidestep", &Values::sidestep, nullptr},
+    {"sidestep_distance_cm", nullptr, &Values::sidestepDistanceCm},
+    {"sidestep_ms", nullptr, &Values::sidestepMs},
+    {"sidestep_cooldown_ms", nullptr, &Values::sidestepCooldownMs},
+    {"sidestep_chain", nullptr, &Values::sidestepChain},
+    {"sidestep_lockout_ms", nullptr, &Values::sidestepLockoutMs},
+    {"sidestep_iframes", &Values::sidestepIframes, nullptr},
+    {"sidestep_flick_from", nullptr, &Values::sidestepFlickFrom},
+    {"sidestep_flick_to", nullptr, &Values::sidestepFlickTo},
+    {"sidestep_flick_ms", nullptr, &Values::sidestepFlickMs},
+    {"sidestep_a_ms", nullptr, &Values::sidestepAMs},
+    {"sidestep_forward", &Values::sidestepForward, nullptr},
     {"point_jump", &Values::pointJump, nullptr},
     {"point_jump_trigger", nullptr, &Values::pointJumpTrigger},
     {"point_jump_chord_ms", nullptr, &Values::pointJumpChordMs},
@@ -1731,6 +1958,11 @@ constexpr TabOnly tabOnly[] = {
     {"point_jump_zip_guard_ms", nullptr, &Values::pointJumpZipGuardMs},
     {"point_jump_dodge_hold_ms", nullptr, &Values::pointJumpDodgeHoldMs},
     {"point_jump_in_combat", &Values::pointJumpInCombat, nullptr},
+    // CAMERA MODES (camera_mode.hpp): spidy_vr.ini only.
+    {"anim_head_ride", &Values::animHeadRide, nullptr},
+    {"shoulder_limit", &Values::shoulderLimit, nullptr},
+    {"snap_realign", &Values::snapRealign, nullptr},
+    {"movement_defaults", nullptr, &Values::movementDefaults},
 };
 } // namespace
 std::string tabOnlyText(const Values& v) {
@@ -1764,6 +1996,33 @@ Values withTabOnly(Values v, std::string_view text) {
                     v.*s.number = number;
             }
     }
+    return sanitized(v);
+}
+Values withMovementDefaults(Values v, std::string_view text) {
+    // The revision the text has seen: 0 when it names none (older than the
+    // November 12 cleanup, or no file at all).
+    int seen = 0;
+    while (!text.empty()) {
+        const size_t end = text.find('\n');
+        std::string_view line = text.substr(0, end);
+        text.remove_prefix(end == std::string_view::npos ? text.size() : end + 1);
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        constexpr std::string_view key = "movement_defaults=";
+        if (line.substr(0, key.size()) != key)
+            continue;
+        const std::string_view value = line.substr(key.size());
+        int number{};
+        const auto [rest, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (error == std::errc{} && rest == value.data() + value.size())
+            seen = number;
+    }
+    if (seen < 1) {
+        // Revision 1 (November 12): RUN CURVE on, EARLY JUMP QUICK TAP (RUNNING kept).
+        v.runCurve = true;
+        v.earlyJump = std::max(v.earlyJump, 1);
+    }
+    v.movementDefaults = movementDefaultsRevision;
     return sanitized(v);
 }
 } // namespace spidy::vr_settings

@@ -1,6 +1,45 @@
 # Native Animation cumulative 0.8.5 source provenance
 
-## Current user-approved cumulative integration — Nov 12, 2026 (0a593c0)
+## Current user-approved cumulative integration — Nov 13, 2026 (46195f7)
+
+Authoritative working source:
+`46195f712689a8811aa3695b261a1e01c29b6908`
+https://github.com/tyronmiller55-spec/SpidyVR/commit/46195f712689a8811aa3695b261a1e01c29b6908
+
+Branch `feat/c6a8279-ports`: the build the owner played on Nov 13, 2026, in a
+session of about 20 minutes from 10:24 PM PST (stamp `46195f7`). The stack is
+`0a593c0` plus HYBRID movement and v2, move haptics, a stable heading, passive
+legs, quick sidestep, handstand H1, camera modes (ANIM HEAD RIDE, SHOULDER
+LIMIT, SNAP REALIGN 360), and the ported Nov 13 playtest fixes (fresh-push flip
+break, air-crouch hysteresis, air facing sync retired).
+
+Publication starts from live NativeAnimation main
+`d2e5ec72dfd28fd1ba65c4282ef66a115e047eaf` (after PR #4), preserving history.
+The user approved merging the previous commits and updating the CURRENT latest
+beta to the last version they played at 11:43 PM PST Nov 13, 2026 (`t56u`),
+and confirmed the testers' release is the one labeled CURRENT (`t57u`). That
+approval is not a request to post to Discord.
+
+Exact tree parity policy (same as before, verify with Git blob IDs and modes):
+- All tracked files other than the two below match the working source exactly.
+- `README.md` is publication-specific documentation.
+- This provenance document is additional publication-only documentation.
+- `.github/workflows/release.yml` remains deliberately omitted. No workflow, rule
+  change or automatic publication is added.
+- The existing `test logs` directory is unchanged from main and from `46195f7`.
+
+Windows build of `46195f7` (22/22 CTest, Python protocol tests passed):
+https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/43540575990
+Release asset `Spidy-0.8.6-win64-c6a8279-ports-46195f7.zip` (unpacks to
+`Spidy-0.8.6-player-torso-46195f7`), SHA256
+`307cff6a7d02f570d515c39c7d48d920373312edb6dfefb691dcb0e0e253e47b`,
+18,260,967 bytes.
+
+Known limits going into this CURRENT (fixes in progress, not in this source):
+web drops on game hitches, arms deforming in animations, handstands rarely
+catching, and weak stabilization outside animation.
+
+## Earlier integration — Nov 12, 2026 (0a593c0)
 
 Authoritative working source:
 `c342baa570c6c451594b8aa2da2e2b6befb545f1`

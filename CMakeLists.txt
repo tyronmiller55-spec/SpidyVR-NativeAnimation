@@ -69,14 +69,56 @@ add_executable(spidy_point_jump_tests tests/point_jump_tests.cpp)
 target_link_libraries(spidy_point_jump_tests PRIVATE spidy_core)
 target_compile_definitions(spidy_point_jump_tests PRIVATE SPIDY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME point_jump COMMAND spidy_point_jump_tests)
+
+add_executable(spidy_handstand_tests tests/handstand_tests.cpp)
+target_link_libraries(spidy_handstand_tests PRIVATE spidy_core)
+add_test(NAME handstand COMMAND spidy_handstand_tests)
 # LEG HOLD (leg_hold.hpp): Y+X chord, suppression, stick persistence, neutral cancel, easing (portable).
 add_executable(spidy_leg_hold_tests tests/leg_hold_tests.cpp)
 target_link_libraries(spidy_leg_hold_tests PRIVATE spidy_core)
 add_test(NAME leg_hold COMMAND spidy_leg_hold_tests)
+
+add_executable(spidy_sidestep_tests tests/sidestep_tests.cpp)
+target_link_libraries(spidy_sidestep_tests PRIVATE spidy_core)
+add_test(NAME sidestep COMMAND spidy_sidestep_tests)
 # PUNCH VIEW EASE (view_ease.hpp): hold and ease at a punch's switch, cancels, rig offset, setting (portable).
 add_executable(spidy_view_ease_tests tests/view_ease_tests.cpp)
 target_link_libraries(spidy_view_ease_tests PRIVATE spidy_core)
 add_test(NAME view_ease COMMAND spidy_view_ease_tests)
+# MOVE HAPTICS (move_haptics.hpp): takeoffs, landings, the point jump's double thump, the scale (portable).
+add_executable(spidy_move_haptics_tests tests/move_haptics_tests.cpp)
+target_link_libraries(spidy_move_haptics_tests PRIVATE spidy_core)
+add_test(NAME move_haptics COMMAND spidy_move_haptics_tests)
+# VIEW YAW SOURCE: STABLE (stable_yaw.hpp): the closed loop, the heading, the yaw watch (portable).
+add_executable(spidy_stable_yaw_tests tests/stable_yaw_tests.cpp)
+target_link_libraries(spidy_stable_yaw_tests PRIVATE spidy_core)
+add_test(NAME stable_yaw COMMAND spidy_stable_yaw_tests)
+# SOUND TRACE (sound_trace.hpp): the ring and the event lines (portable).
+add_executable(spidy_sound_trace_tests tests/sound_trace_tests.cpp)
+target_link_libraries(spidy_sound_trace_tests PRIVATE spidy_core)
+add_test(NAME sound_trace COMMAND spidy_sound_trace_tests)
+# JUMP TO SPIDYVR (hybrid_owner.hpp) and AIR VIEW EASE: the timer, kinds, breaks, eases, settings (portable).
+add_executable(spidy_jump_handoff_tests tests/jump_handoff_tests.cpp)
+target_link_libraries(spidy_jump_handoff_tests PRIVATE spidy_core)
+add_test(NAME jump_handoff COMMAND spidy_jump_handoff_tests)
+# FULL head lock on the stable heading, ANIM YAW SWAY, TURN-IN-PLACE (view_yaw_lock.hpp; portable).
+add_executable(spidy_view_yaw_lock_tests tests/view_yaw_lock_tests.cpp)
+target_link_libraries(spidy_view_yaw_lock_tests PRIVATE spidy_core)
+add_test(NAME view_yaw_lock COMMAND spidy_view_yaw_lock_tests)
+# CAMERA MODES (camera_mode.hpp): the head ride, the shoulder limit, the snap/realign, the perch (portable).
+add_executable(spidy_camera_mode_tests tests/camera_mode_tests.cpp)
+target_link_libraries(spidy_camera_mode_tests PRIVATE spidy_core)
+add_test(NAME camera_mode COMMAND spidy_camera_mode_tests)
+# PASSIVE LEGS, AIR CROUCH, REACH SPREAD, FLAIL (leg_layers.hpp; portable).
+add_executable(spidy_passive_legs_tests tests/passive_legs_tests.cpp)
+target_link_libraries(spidy_passive_legs_tests PRIVATE spidy_core)
+add_test(NAME passive_legs COMMAND spidy_passive_legs_tests)
+add_executable(spidy_facing_check_tests tests/facing_check_tests.cpp)
+target_link_libraries(spidy_facing_check_tests PRIVATE spidy_core)
+add_test(NAME facing_check COMMAND spidy_facing_check_tests)
+add_executable(spidy_hybrid_movement_tests tests/hybrid_movement_tests.cpp)
+target_link_libraries(spidy_hybrid_movement_tests PRIVATE spidy_core)
+add_test(NAME hybrid_movement COMMAND spidy_hybrid_movement_tests)
 
 find_package(Threads REQUIRED)
 add_executable(spidy_action_protocol_tests tests/action_protocol_tests.cpp)

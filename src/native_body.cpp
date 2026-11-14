@@ -7,6 +7,7 @@
 #include "spidy/game_fp.hpp"
 #include "spidy/hybrid_handoff.hpp"
 #include "spidy/arm_frame.hpp"
+#include "spidy/view_yaw_lock.hpp"
 #include "spidy/native_appearance.hpp"
 #include <MinHook.h>
 #include <algorithm>
@@ -98,6 +99,7 @@ bool airTuckHeld{};
 // LEG CONTROL (setLegControl): mapped onto Targets::legControl when airborne.
 bool legControlOn{};
 std::array<body::Targets::LegAngles, 2> legControlAngles{};
+float legControlAmount = 1.f; // PASSIVE LEGS' shown share (setLegControl)
 // ANIMATED HYBRID jump / air adopt (beginJumpAdopt): wanted since this tick (0 none), the live
 // pose snapshot taken at the first bodyOn job, and that first frame's result.
 uint64_t adoptWantedTick{};
@@ -137,6 +139,10 @@ std::atomic<uint64_t> lastDrawn{};
 std::atomic<bool> latestSolved{};
 // HEAD PROBE (head_probe.hpp): on, and the latest sample (headLock).
 std::atomic<bool> headProbeOn{};
+// SHOULDER LIMIT (camera_mode.hpp): the chest's forward in world (x, z) as the
+// game's animation left it, before the body's solve, and when (GetTickCount64).
+std::atomic<float> chestForwardX{0}, chestForwardZ{0};
+std::atomic<uint64_t> chestTick{};
 head_probe::Sample headProbeSample{};
 uint64_t headProbeJobs{};
 
@@ -464,6 +470,22 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
             probe.head = -1;
         }
     }
+    // SHOULDER LIMIT: the chest (the spine's top) as the animation left it,
+    // before the body's solve (the player's torso turns the drawn one toward
+    // the headset; the limit is the animation's shoulders). Read only.
+    if (!problem && turned && cache.ik.ready && !cache.ik.spine.empty() &&
+        cache.ik.spineForward.size() == cache.ik.spine.size()) {
+        const int chest = cache.ik.spine.back();
+        if (chest >= 0 && chest < static_cast<int>(cache.joints)) {
+            const body::Pose game(out, static_cast<int>(cache.joints));
+            const Vec3 f = toWorld.rotate(game.direction(chest, cache.ik.spineForward.back()));
+            if (finite(f) && std::hypot(f.x, f.z) > .2f) {
+                chestForwardX.store(f.x, std::memory_order_relaxed);
+                chestForwardZ.store(f.z, std::memory_order_relaxed);
+                chestTick.store(GetTickCount64(), std::memory_order_release);
+            }
+        }
+    }
     // The gameplay camera must never anchor to the HMD-driven render head.
     // Preserve explicit authored full-body air-spin's original camera/torso
     // policy; its arm solve and actual action frames still run below.
@@ -589,6 +611,7 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
             t.tuck = airLegs && airTuckHeld;
             t.legControl = airLegs && legControlOn;
             t.legAngles = legControlAngles;
+            t.legAmount = legControlAmount;
             t.eyes = toModel.rotate(wanted.eyes);
             t.facing = toModel * wanted.facing;
             if (const Quat tilt = wanted.tilt; tilt.x != 0 || tilt.y != 0 || tilt.z != 0)
@@ -633,6 +656,18 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
                     game.direction(cache.ik.head, cache.ik.headUp), cache.ik.eyesFromHead, anchor);
                 valid = valid && animated_view::modelAnchor(view, toWorld, anchor, anchor,
                     {transform[12], transform[13], transform[14]});
+                // FULL head lock on the stable heading: the arms' anchor turned
+                // as the eyes are (view_yaw_lock.hpp), so the hands stay in view.
+                if (valid && view.frame == animated_view::Frame::full && view.yawLock) {
+                    view_yaw_lock::State lock;
+                    lock.on = true;
+                    lock.yaw = view.lockYaw;
+                    lock.sway = view.lockSway;
+                    lock.heroYaw = view.lockHero;
+                    lock.ride = view.lockRide;
+                    lock.limit = view.lockLimit;
+                    view_yaw_lock::turnModel(anchor, toWorld, lock);
+                }
                 if (valid) {
                     const auto head = animated_view::resolve(anchor, view.head);
                     t.eyes = head.position;
@@ -1076,11 +1111,13 @@ void native_body::setTuck(bool held) {
     ReleaseSRWLockExclusive(&solveLock);
 }
 
-void native_body::setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs) {
+void native_body::setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs, float amount) {
     AcquireSRWLockExclusive(&solveLock);
     legControlOn = on;
-    if (on)
+    if (on) {
         legControlAngles = legs;
+        legControlAmount = std::isfinite(amount) ? std::clamp(amount, 0.f, 1.f) : 1.f;
+    }
     ReleaseSRWLockExclusive(&solveLock);
 }
 
@@ -1235,6 +1272,16 @@ int native_body::viewAnchorWorld(Mat4& world) {
 }
 void native_body::setHeadProbe(bool on) {
     headProbeOn = on;
+}
+bool native_body::heroChestYaw(float& yaw) {
+    const uint64_t at = chestTick.load(std::memory_order_acquire);
+    if (!at || GetTickCount64() - at > 250)
+        return false;
+    const float x = chestForwardX.load(std::memory_order_relaxed), z = chestForwardZ.load(std::memory_order_relaxed);
+    if (!std::isfinite(x) || !std::isfinite(z) || std::hypot(x, z) < .2f)
+        return false;
+    yaw = std::atan2(-x, -z); // the rig's yaw (view_yaw_lock::nativeYaw's)
+    return true;
 }
 head_probe::Sample native_body::headSample() {
     AcquireSRWLockShared(&headLock);
