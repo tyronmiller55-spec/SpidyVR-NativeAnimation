@@ -40,3 +40,23 @@ Once B is held in the air with Y+X physically held, B is taken **before** POINT 
 - `legs: air crouch on|off (up D deg, air S s, vy V m/s, spin W rad/s[, webbed])`
 - `legs: reach spread on|off (left hand|right hand|both hands|no hand)`
 - `legs: flail B taken (...)` and `legs: flail B let go of`
+
+## First midair poses (Nov 18)
+
+The owner's first four poses: legs, and since Nov 18 1:09 PM the torso too (the torso channel, BODY.md; the arms stay
+on the controllers). Their own switch since Nov 18 1:09 PM: **MIDAIR POSES** (`air_poses`, on; NA · BODY & LEGS and the launcher's Body & Legs page). They use the auto-pose layer: one at
+a time, in this order, eased in over 0.2 s and out over 0.25 s; on, a pose stays at least 0.3 s (only TUCK cuts in)
+and leaves when its reason has been gone 0.12 s. While one shows, AIR CROUCH and REACH SPREAD give way (not added on
+top). Gone at once on landing.
+
+| Pose | When (in / to stay) | Legs | Torso (J1, Nov 18 1:09 PM) |
+|---|---|---|---|
+| TUCK | the body's pitch + roll turn over 3 rad/s / 2 (a flip; no hang time needed, webbed too) | thighs to the chest, knees fully bent | curled in 0.55 rad |
+| DIVE | looking over 45 deg down / 35 and falling faster than 4 m/s / 2.5 | together, straight, trailing back | stretched, a slight arch (-0.25 rad) |
+| SUPERHERO | one hand above the head (/ 10 cm below) and 25 cm ahead (/ 15), the other 45 cm below the head (/ 35), rising over 1 m/s (/ -0.5) | one straight and trailing, the other knee bent forward | arched (-0.2 rad), twisted 0.15 rad toward the raised fist |
+| STARFISH | both hands tracked over 1.1 m apart (/ 0.9), falling (vy under 0 / 1) | spread wide, nearly straight | chest open (-0.18 rad arch) |
+
+All but TUCK need no web attached and 0.15 s in the air. Log: `legs: air pose NAME on|off (tumble T rad/s, look P
+deg, vy V m/s, hands tracked D m apart, L up/ahead R up/ahead of the head, air S s[, webbed])`, and `legs: air pose
+OLD off (to NEW)` on a switch.
+

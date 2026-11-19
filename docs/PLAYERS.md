@@ -20,15 +20,21 @@ SPIDY - VR for Marvel's Spider-Man Remastered
 
 ## SpidyVR Native Animation community build
 
-This build is a community layer on **Ilya Mezerowsky's SpidyVR**, based on upstream
-main at `bdd4c9150f` (0.8.1 fixes, STEADY HUD, official NATIVE RUN and WEB LINES).
+This build is a community layer on **Ilya Mezerowsky's SpidyVR 0.8.7**. The testers'
+**CURRENT** package is **0.8.7-na-beta1**, from
+[SpidyVR-NativeAnimation Releases](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest).
 Inspired by **vrfloofy's first-person mod**: keep Insomniac's animation suite while
 SpidyVR controls and your tracked arms sit on top. GPL-3.0. Not an official Marvel
 or Insomniac product. Community support/source: `tyronmiller55-spec/SpidyVR`.
 
-Use **Spidy Launcher.exe > Native Animation** (after Options), or the contiguous
-**NATIVE ANIMATION** block in the headset's SPIDY VR tab. Launcher changes apply
-on the next VR start; use the headset menu to change the running session.
+Use **Spidy Launcher.exe > Native Animation** (after Options), or the headset's
+**NA ·** tabs (CORE, CAMERA, HANDOFF, BODY & LEGS, KICKS & COMBAT, WEB SHOOTERS,
+POINT JUMP, SHOWTIME) and **NA · HELP**. HELP says what to try in this beta and
+where to send logs (the newest files in the reports folder, on Discord). Launcher
+changes apply on the next VR start; use the headset menu to change the running
+session. Current features (Showtime, kicks, hand grab, tethers, point jump, wall
+brake, grip fling, the mid-air landing handoff) start on so you can try them; a
+saved off stays off.
 
 Fresh launch / missing keys: MOVES + HYBRID on, HEAD Full, ARMS + TORSO + MODEL YAW
 on, NATIVE RUN + SPIDY RUN on, HYBRID SPEED 200 ms. AIR, ONLY, STEERING and AIR SPIN
@@ -1070,7 +1076,8 @@ VR settings
                    recenter. Stand up with SEATED on and you tower: switch
                    it off first.
   COMBAT VISUALS ... in DISPLAY, on by default. Off hides Spidy's punch
-                   arrows, target circle, impact/combo effects, KO text and
+                   arrows, target circle, impact/combo effects, the shield
+                   of a blow an enemy's guard stopped, KO text and
                    automatic combat slow-motion screen effects. Spider-Sense
                    attack warnings and offscreen direction markers remain
                    visible. Off also removes directional combo requirements:
@@ -1097,6 +1104,22 @@ VR settings
                    hand moved fast closes into a fist even with nobody to
                    punch. Off: only with an enemy marked or within reach,
                    so hands moved about at rest never close.
+  ENEMY TYPES .... in the launcher's Options (Movement, under Air fists),
+                   off by default. On, the enemies that block in the
+                   base game block here too: the ones with a baton, the
+                   swordsmen, the brutes and the shield bearers stop your
+                   punches and web strikes, no web drags one whose guard
+                   stands, and each kind has its own block sound (a baton,
+                   a sword, a slayer, a shield; BLOW SOUNDS mutes them).
+                   A guard is open while the enemy is webbed, stunned,
+                   held, down or flying, when a gadget or a thrown prop
+                   hurts him, and for a moment after you dodge over him;
+                   a swing kick goes through a baton's guard, and an enemy
+                   who has not noticed you does not guard. Punching never
+                   breaks a guard, but a few blocked punches in a row make
+                   the enemy swing back and stagger you. Off: nobody
+                   guards, as before. Finer rules are in guard.txt in the
+                   Spidy folder, written the first time the game starts.
   WEB TIE ........ in VR WEBS, off by default.
                    Web an enemy up, put one web on a wall (a ceiling, a
                    beam, a crane, a lamp post) and the other on him, bring

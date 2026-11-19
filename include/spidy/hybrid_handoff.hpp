@@ -26,6 +26,86 @@ inline float blendAlpha(int64_t elapsedNs) {
 
 inline bool blendDone(int64_t elapsedNs) { return elapsedNs >= handoffNs; }
 
+// ONE HANDOFF BLEND (handoff_one_blend): the same smoothstep over `durationNs` (handoffNs when not positive).
+inline float blendAlphaFor(int64_t elapsedNs, int64_t durationNs) {
+    const int64_t d = durationNs > 0 ? durationNs : handoffNs;
+    if (elapsedNs <= 0)
+        return 0.f;
+    if (elapsedNs >= d)
+        return 1.f;
+    const float t = static_cast<float>(elapsedNs) / static_cast<float>(d);
+    return t * t * (3.f - 2.f * t);
+}
+inline bool blendDoneFor(int64_t elapsedNs, int64_t durationNs) {
+    return elapsedNs >= (durationNs > 0 ? durationNs : handoffNs);
+}
+// Its length: AIR VIEW EASE's (150-400 ms) with the setting on, else handoffNs (also when AIR VIEW EASE is off).
+inline int64_t oneBlendNs(bool on, int airViewEaseMs) {
+    if (!on || airViewEaseMs <= 0)
+        return handoffNs;
+    return static_cast<int64_t>(std::clamp(airViewEaseMs, 150, 400)) * 1'000'000;
+}
+
+// HANDOFF GLIDE SPEED (handoff_glide_cm_s, handoff_glide_max_ms): a glide's length so the camera's peak speed stays
+// under `speedCmS` - `peak` is the curve's peak over its average speed (1.5 smoothstep, 1.875 smootherstep, 3 the
+// cubic ease-out). Never shorter than `baseMs`, never longer than `maxMs` (or baseMs, if larger). speedCmS <= 0: baseMs.
+inline int glideMs(float metres, int baseMs, int speedCmS, int maxMs, float peak) {
+    if (speedCmS <= 0 || !std::isfinite(metres) || !(metres > 0) || !std::isfinite(peak) || peak <= 0)
+        return baseMs;
+    const float need = peak * metres / (static_cast<float>(speedCmS) * .01f) * 1000.f;
+    const int top = (std::max)(baseMs, maxMs);
+    return std::clamp(static_cast<int>(std::ceil(need)), baseMs, top);
+}
+inline constexpr float peakSmoothstep = 1.5f, peakSmootherstep = 1.875f, peakEaseOut = 3.f;
+
+// HANDOFF PLACE (handoff_place_cm; the owner, Nov 17): what a landing's blend onto the head does with the distance the
+// view has to go - glide (stretched by HANDOFF GLIDE SPEED, glideMs) or, farther than `placeCm`, place the view on the
+// head at once (the position only: the angle blends as before, so the headset still leads and no view yaw is
+// written). b318cb1: glides of 5 to 47 m squeezed into 700 ms were a slide at up to 67 m/s. placeCm <= 0: always glide.
+// HANDOFF SOFT PLACE (the 2 AM log of Nov 18, approved 1:53 PM): 39 places of 2.0 to 43.6 m arrived in one frame.
+// Now only the far part is placed at once (`placed` metres), and the last placeCm glide onto the head over `ms`
+// (glideMs of that remainder), so the view settles onto him instead of landing in one frame.
+struct LandingGlide {
+    bool place{};
+    int ms{};
+    float placed{}; // metres placed at once (0: none); the rest glides
+};
+inline LandingGlide landingGlide(float metres, int baseMs, int speedCmS, int maxMs, int placeCm, float peak) {
+    LandingGlide g;
+    g.ms = baseMs;
+    if (!std::isfinite(metres) || metres <= 0.f)
+        return g;
+    if (placeCm > 0 && metres * 100.f > static_cast<float>(placeCm)) {
+        g.place = true;
+        const float rest = static_cast<float>(placeCm) * .01f;
+        g.placed = metres - rest;
+        g.ms = glideMs(rest, baseMs, speedCmS, maxMs, peak);
+        return g;
+    }
+    g.ms = glideMs(metres, baseMs, speedCmS, maxMs, peak);
+    return g;
+}
+
+// A blend stretched after it began (the landing's, once the head's first frame tells the distance; 14-28 ms in, up to
+// 278 ms in b318cb1): the same smoothstep at the same progress t, so the view does not step back. Keeping the start
+// and changing only the length moved the view back by s(t_old) - s(t_new) of the distance in one frame (a 1.5 m glide
+// stretched 250 -> 700 ms at 28 ms: 4.5 cm back; at 100 ms: 0.45 m back), and a blend already finished started over.
+// Returns the clock the place runs on now: its start (moved earlier) and its new length. A blend already done, or a
+// length not longer, keeps its own clock.
+struct BlendClock {
+    int64_t startNs{}, durNs{};
+};
+inline BlendClock stretchKeepingProgress(int64_t nowNs, int64_t startNs, int64_t durNs, int64_t newDurNs) {
+    const int64_t d = durNs > 0 ? durNs : handoffNs;
+    const int64_t elapsed = nowNs - startNs;
+    if (newDurNs <= d || elapsed >= d)
+        return {startNs, d};
+    if (elapsed <= 0)
+        return {startNs, newDurNs};
+    const double t = static_cast<double>(elapsed) / static_cast<double>(d);
+    return {nowNs - static_cast<int64_t>(t * static_cast<double>(newDurNs)), newDurNs};
+}
+
 // World look yaw from a level forward (0 = facing −Z, same as the tracking rig).
 inline float lookYaw(Vec3 forward) {
     if (!finite(forward))
@@ -171,6 +251,13 @@ inline Vec3 travel(Vec3 from, Vec3 now) {
     return length(d) <= carryLimit ? d : Vec3{};
 }
 
+// Where the blend's source view is now: the centre of the eyes shown at the switch, carried with the player's travel
+// since (travel; none past carryLimit). The distance from it to the head is the distance the view actually glides -
+// not the tracked eyes' (b318cb1: the landing's glide measured from the tracked eyes read 5 to 47 m where the
+// shown view was at the body).
+inline Vec3 shownSource(const Vec3 (&eyePos)[2], Vec3 fromAnchor, Vec3 anchorNow) {
+    return (eyePos[0] + eyePos[1]) * .5f + travel(fromAnchor, anchorNow);
+}
 inline bool validShown(const Shown& s, int64_t nowNs) {
     if (!s.valid || !finite(s.anchor) || nowNs < s.ns || nowNs - s.ns > shownMaxAgeNs)
         return false;
@@ -200,6 +287,18 @@ inline bool shownYaw(const Shown& s, float& yaw) {
 // One eye of the blend: the shown eye carried by the player's travel since it was
 // shown, toward the new owner's eye. a = blendAlpha: 0 is exactly the source, 1
 // exactly the destination.
+// ONE HANDOFF BLEND: the place and the angle on their own weights (the view ease carries the place: `aPos` 1).
+inline Pose blendEyeSplit(Pose from, Vec3 carry, Pose to, float aPos, float aOri) {
+    return {lerpVec(from.position + carry, to.position, aPos), slerpQuat(from.orientation, to.orientation, aOri)};
+}
+// HANDOFF HEAD LEADS (handoff_head_leads): the angle between the two views at the switch (from = offset * to), fading
+// out on its own weight `a` while `to` (the live view) passes every head turn through 1:1.
+inline Quat oriOffsetOf(Quat from, Quat to) {
+    return from * to.conjugate();
+}
+inline Quat headLeadOri(Quat offset, Quat to, float a) {
+    return slerpQuat(offset, Quat{}, a) * to;
+}
 inline Pose blendEye(Pose from, Vec3 carry, Pose to, float a) {
     return {lerpVec(from.position + carry, to.position, a), slerpQuat(from.orientation, to.orientation, a)};
 }

@@ -1,4 +1,5 @@
 #include "system.hpp"
+#include "spidy/text_read.hpp"
 #include <bcrypt.h>
 #include <dxgi.h>
 #include <shellapi.h>
@@ -66,14 +67,20 @@ std::wstring knownFolder(REFKNOWNFOLDERID id) {
     return result;
 }
 
-std::string readText(const fs::path& path, size_t limit = 4 << 20) {
+// The whole file up to limit, in chunks (text_read.hpp): nothing is allocated for bytes a file does not have.
+std::string readText(const fs::path& path, size_t limit = spidy::text_read::kSettingsLimit) {
     std::ifstream file(path, std::ios::binary);
     if (!file)
         return {};
-    std::string content(limit, '\0');
-    file.read(content.data(), static_cast<std::streamsize>(limit));
-    content.resize(static_cast<size_t>(file.gcount()));
-    return content;
+    return spidy::text_read::readAll(
+               [&file](char* buffer, size_t capacity) -> long long {
+                   file.read(buffer, static_cast<std::streamsize>(capacity));
+                   if (file.bad())
+                       return -1;
+                   return static_cast<long long>(file.gcount());
+               },
+               limit)
+        .text;
 }
 
 bool isFile(const fs::path& path) {
@@ -406,7 +413,7 @@ bool processRunning(const wchar_t* name) {
 std::string manifestName(const std::wstring& manifest) {
     if (auto label = text::runtimeLabel(narrow(manifest)); !label.empty())
         return label;
-    const std::string json = readText(fs::path(manifest), 1 << 16);
+    const std::string json = readText(fs::path(manifest));
     const size_t runtime = json.find("\"runtime\"");
     const size_t name = json.find("\"name\"", runtime == std::string::npos ? 0 : runtime);
     if (name != std::string::npos) {
@@ -520,9 +527,12 @@ std::wstring widen(std::string_view value) {
 
 Settings loadSettings() {
     Settings settings;
-    std::istringstream lines(readText(settingsPath(), 1 << 16));
+    std::istringstream lines(readText(settingsPath()));
     std::string line;
     int weight = 0, percentWeight = 0, legacyWeight = 0;
+    // Polish pass: the default scene resolution went from 67% to 50%. A file that has not seen that
+    // (no upscale_default) with the old default saved in it takes the new one once; any other choice stays.
+    int upscaleDefault = 0;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
@@ -559,12 +569,15 @@ Settings loadSettings() {
         // eye_size (a square size, before October 8) is no longer read: 2048 x 2048 rendered one player's game
         // below the 2496 x 2688 their headset asked for, and it looked blurry.
         else if (key == "render_scale") o.renderScale = spidy::validRenderScale(number()) ? number() : 100;
+        else if (key == "upscale_default") upscaleDefault = number();
         else if (key == "upscale")
             o.upscale = spidy::validEyeUpscale(number()) ? number() : static_cast<int>(spidy::defaultEyeUpscale);
         else if (key == "monitor_rate")
             o.monitorRate = number() >= 0 && spidy::validMonitorRate(static_cast<uint32_t>(number()))
                                 ? number()
                                 : static_cast<int>(spidy::defaultMonitorRate);
+        else if (key == "render_memory_mb")
+            o.renderMemoryMb = std::clamp(number(), text::minimumRenderMemoryMb, text::maximumRenderMemoryMb);
         else if (key == "swing_speed") o.swingSpeed = std::clamp(number(), 10, 65);
         else if (key == "snap_turn") o.snapTurn = std::clamp(number(), 0, 90);
         else if (key == "smooth_turn") o.smoothTurn = std::clamp(number(), 0, 360);
@@ -590,6 +603,8 @@ Settings loadSettings() {
         else if (key == "update_check") settings.updateCheck = number() != 0;
         else if (key == "profile") settings.profile = value;
     }
+    if (upscaleDefault < 2 && settings.options.upscale == 67)
+        settings.options.upscale = static_cast<int>(spidy::defaultEyeUpscale);
     if (weight)
         settings.options.weight = weight;
     else if (percentWeight && percentWeight != 80)
@@ -620,7 +635,8 @@ void saveSettings(const Settings& settings) {
          << "\ngame_depth_of_field=" << o.gameDepthOfField
          << "\ngame_sharpening=" << o.gameSharpening
          << "\nrender_scale=" << o.renderScale << "\nupscale=" << o.upscale
-         << "\nmonitor_rate=" << o.monitorRate
+         << "\nupscale_default=2"
+         << "\nmonitor_rate=" << o.monitorRate << "\nrender_memory_mb=" << o.renderMemoryMb
          << "\nswing_speed=" << o.swingSpeed << "\ngravity_percent=" << o.weight << "\nsnap_turn=" << o.snapTurn
          << "\nsmooth_turn=" << o.smoothTurn
          << "\nhaptics=" << o.haptics << "\nbody_haptics=" << o.bodyHaptics << "\nscreen_size=" << o.screenSize
@@ -704,7 +720,7 @@ bool deleteProfile(const std::string& name) {
 
 spidy::vr_settings::Values loadTabOnly() {
     const fs::path path = tabOnlyPath();
-    const std::string text = path.empty() ? std::string() : readText(path, 1 << 16);
+    const std::string text = path.empty() ? std::string() : readText(path);
     // The movement cleanup's defaults reach a file older than them once.
     return spidy::vr_settings::withMovementDefaults(spidy::vr_settings::withTabOnly({}, text), text);
 }
@@ -719,7 +735,7 @@ bool saveTabOnly(const spidy::vr_settings::Values& values) {
 }
 
 std::string readTextFile(const std::wstring& path) {
-    std::string bytes = readText(path, 1 << 16);
+    std::string bytes = readText(path);
     // Notepad's "UTF-16 LE": the byte order mark FF FE, then two bytes a unit.
     if (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
         static_cast<unsigned char>(bytes[1]) == 0xFE) {

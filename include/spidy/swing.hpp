@@ -1,5 +1,9 @@
 #pragma once
+#include "grip.hpp"
+#include "hitch_guard.hpp"
+#include "jump_pull.hpp"
 #include "math.hpp"
+#include "swing_kick.hpp"
 #include "web_landing.hpp"
 #include <algorithm>
 #include <cmath>
@@ -211,6 +215,10 @@ struct HandInput {
     // Physical controller grip and position, independent of the web-button mapping.
     float wallGrip{};
     Vec3 wallPosition{};
+    // Not tracked, but there: the headset lost the controller's pose (an arm
+    // at the side, behind the head), not its buttons. Its grip and trigger
+    // count; aim and gripRelativeToHead do not (issue #81).
+    bool lost{};
 };
 struct Input {
     std::array<HandInput, 2> hands{};
@@ -345,6 +353,7 @@ enum class EventKind {
     Slingshot, // both drawn webs released: strength is the stored charge
     Shoot,     // WEB SPEED: a web shot and flying, which holds nothing yet (Attach when it arrives)
     PointJump, // POINT JUMP (point_jump.hpp): off a surface the way he looks; strength: its speed, m/s
+    GripFling, // GRIP FLING (grip.hpp): a pull let go of launched the body; strength: its speed, m/s
 };
 struct Event {
     EventKind kind;
@@ -666,6 +675,38 @@ class Swing {
     // A near-wall squeeze that points at the wall (SwingConfig::gripAim)
     // belongs to climbing before other actions.
     bool wallHand(int hand, const Input&, const WorldQueries&) const;
+    // GRIP ACROSS THE GAME (grip.hpp, G1; both off until set). The wall brake: a hand climbing hold that
+    // closes on a sliding body slows it as friction does (and holds it under 0.5 m/s). The grip fling: a
+    // pull let go of, from a wall, the ground or the air, launches the body the other way.
+    void gripSettings(bool brake, bool fling, const grip::Config& config = {}) {
+        gripBrake_ = brake;
+        gripFling_ = fling;
+        grip_ = config;
+        if (!brake)
+            for (auto& c : climbing_)
+                c.braking = false;
+        if (!fling) {
+            gripHands_ = {};
+            flingQueued_ = false;
+        }
+    }
+    // The grip fling holds this hand's grip (a palm at a surface it faces, or the grip already closed on
+    // one): the caller starts no web with it, as for wallHand.
+    bool gripHand(int hand, const Input&, const WorldQueries&) const;
+    struct GripReport {
+        unsigned brakeHands{};  // bits: hands braking now
+        float brakeSpeed{};     // the slide along the wall, m/s
+        float brakeDecel{};     // the braking, m/s^2
+        std::uint32_t brakes{}; // brakes begun
+        std::uint32_t grips{};  // fling grips begun
+        std::uint32_t flings{}, groundFlings{}, wallFlings{}, airFlings{}, slow{}, refused{};
+        float flingSpeed{}; // the last fling's, m/s
+        Vec3 flingVelocity{};
+        std::uint32_t source{}; // the last: 1 ground, 2 wall, 3 air
+    };
+    const GripReport& gripReport() const {
+        return gripReport_;
+    }
     unsigned climbingHands() const {
         return (climbing_[0].attached ? 1u : 0u) | (climbing_[1].attached ? 2u : 0u);
     }
@@ -763,6 +804,11 @@ class Swing {
     bool boostedFlight() const {
         return slingshotFlight_ && slingshotSpeed_ > 65;
     }
+    // Speeds over twice the limit that were not believed (one frame, or a long one): WEBS SURVIVE
+    // HITCHES, hitch_guard.hpp.
+    uint32_t hitchIgnored() const {
+        return overLimit_.ignoredFrames();
+    }
     float speedLimit() const {
         return slingshotFlight_ ? std::max(config_.maxSpeed, slingshotSpeed_) : config_.maxSpeed;
     }
@@ -789,6 +835,41 @@ class Swing {
     }
     std::uint32_t pointJumps() const {
         return pointJumps_;
+    }
+    // MANUAL SWING KICK (swing_kick.hpp): the assist for the steps to come, set again every native step
+    // (off by itself when not). While on, in the air, each ready web's length moves toward the aim's
+    // distance from its anchor (at most ropeMetres from its length when the assist began, ropeRate m/s)
+    // and the velocity turns toward the aim (at most steer m/s^2, |v| kept): `weight` 0..1 scales both.
+    struct KickAssist {
+        bool on{};
+        Vec3 aim{};
+        float weight{};
+    };
+    void kickAssist(const KickAssist& assist, const swing_kick::Config& config = {});
+    // What the assist has done since it began: the biggest rope change (signed, metres) and the most
+    // steering used (m/s^2).
+    struct KickReport {
+        float rope{}, steer{};
+    };
+    KickReport kickReport() const {
+        return kickReport_;
+    }
+    // JUMP PULL (jump_pull.hpp, polish pass slice 8): toward `aim` with `weight` 0..1 (the module's pick), set each sample;
+    // `on` false (or never set) pulls nothing. Applied in SpidyVR's own air only (this step), with no web out, until the
+    // jump has added the config's cap; what it has added this jump is jumpPullAdded().
+    void jumpPull(bool on, const jump_pull::Config& config, Vec3 aim, float weight) {
+        pullOn_ = on && finite(aim) && std::isfinite(weight);
+        pullConfig_ = config;
+        pullAim_ = aim;
+        pullWeight_ = weight;
+    }
+    float jumpPullAdded() const {
+        return pulled_;
+    }
+    // The player kept `keep` of his velocity from a kick's blow, on the next step.
+    void kickRecoil(float keep) {
+        if (std::isfinite(keep) && keep >= 0 && keep <= 1)
+            kickKeep_ = keep;
     }
     bool gestureTakeoff() const {
         return gestureTakeoff_;
@@ -944,6 +1025,7 @@ class Swing {
     float sinceZip_ = 100, sinceLanding_ = 100, zipSpeed_{};
     Vec3 zipDirection_{};
     bool jumpHeld_{}, jumpQueued_{};
+    hitch_guard::OverLimit overLimit_;
     std::uint32_t jumpCancels_{}, runJumps_{};
     float runJump_{};
     Vec3 runJumpVelocity_{};
@@ -954,9 +1036,23 @@ class Swing {
     bool pointJumpQueued_{};
     Vec3 pointJumpVelocity_{};
     std::uint32_t pointJumps_{};
+    // MANUAL SWING KICK: the assist in force, the ropes' lengths when it began, what it has done, and a
+    // blow's recoil waiting.
+    KickAssist kick_{};
+    swing_kick::Config kickConfig_{};
+    std::array<float, 2> kickStart_{};
+    KickReport kickReport_{};
+    float kickKeep_ = -1;
+    // JUMP PULL: the pick in force, the speed this jump has had added, and how long it has been in the air.
+    bool pullOn_{};
+    jump_pull::Config pullConfig_{};
+    Vec3 pullAim_{};
+    float pullWeight_{}, pulled_{}, pullAir_{};
     WallHold wall_{};
     struct ClimbingHand {
         bool attached{}, held = true;
+        bool braking{}; // the wall brake is slowing the body (grip.hpp)
+        float press{};  // the palm's depth past the wall's face, m
         Vec3 previous{}, rate{};
         uint64_t surface{};
     };
@@ -964,6 +1060,17 @@ class Swing {
     bool handClimb_{};
     float climbSeconds_{};
     void climbInputs(const Input&, const WorldQueries&);
+    void gripInputs(const Input&, const WorldQueries&);
+    std::optional<RayHit> palmContact(const HandInput&, const WorldQueries&) const;
+    bool gripBrake_{}, gripFling_{};
+    grip::Config grip_{};
+    std::array<grip::Hand, 2> gripHands_{};
+    std::array<Vec3, 2> gripPrevious_{};
+    std::array<float, 2> gripYaw_{};
+    std::array<bool, 2> gripHave_{};
+    bool flingQueued_{};
+    Vec3 flingVelocity_{};
+    GripReport gripReport_{};
     std::optional<RayHit> wallContact(const HandInput&, const WorldQueries&) const;
     // The hand's aim meets the wall the body is on within gripAim of its palm.
     bool pointsAtWall(const HandInput&) const;

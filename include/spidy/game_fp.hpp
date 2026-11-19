@@ -99,6 +99,18 @@ bool heroHead(Mat4& head);
 // where the character faced when the scene (or the cut to its next shot) began, so only where he is follows
 // him, not where he looks, and the viewer looks about freely from there.
 bool frameLevel(Mat4& head);
+// SHOWTIME (showtime.hpp): the XR thread publishes the outside camera's level frame (showtime::levelFrame: the rig's place, level,
+// facing the rig yaw) every frame while the view is out, and null when it comes back. While a frame was published in the last
+// 250 ms, frame() and frameLevel() hand the eyes THAT frame (never turned by the view yaw lock) instead of the hero's head;
+// nothing is hidden or shrunk by this call. showtimeActive(): one is current.
+void showtimeFrame(const Mat4* frame);
+bool showtimeActive();
+// SHOWTIME: the head shrink (shrinkHead) stands down while true is refreshed every frame (250 ms lease): his head is seen from outside.
+void showtimeHead(bool shown);
+// The game's own gameplay camera (the stock follow or combat camera, sampled every frame by the render thread): its place and where
+// it faces, yaw as the rig has it (0 facing -z). False when no sample is under half a second old. Read only: SHOWTIME reads its
+// distance behind him as the world's own limit on a camera back there.
+bool stockSeat(Vec3& position, float& yaw);
 // The heading the scene's view has in the world, for the play that follows it (the XR worker): the
 // character's head (`level` false) or frameLevel's frame (`level` true), yaw in radians as the rig has it (0
 // facing -z). False before one was sampled.
@@ -120,6 +132,8 @@ void setHeadAxes(Vec3 forward, Vec3 up, Vec3 eyes);
 // be shown this way.
 bool available();
 Status status();
+// A line for the session log (the block sounds' pool says what the audio device did).
+void note(const char* text);
 // The worker's latest line for the session log, when it is not the one `seen`
 // already names (pass 0 at first): what it found, hid or lost.
 bool note(uint32_t& seen, char* out, size_t size);

@@ -29,7 +29,7 @@ from probe_native_rays import snapshot as ray_snapshot
 from probe_game_swing import snapshot as swing_snapshot
 from probe_native_motion import snapshot as motion_snapshot
 from vr_launcher import (LauncherLock, alive, exit_status, bring_to_front, wait_for_game, enlarge_render_memory, elevated,
-                         RENDER_MEMORY_HOOKS, NeedsAdministrator, NEEDS_ADMINISTRATOR_EXIT, CLOSE_GAME_EXIT,
+                         RENDER_MEMORY_HOOKS, RENDER_RING_MB, NeedsAdministrator, NEEDS_ADMINISTRATOR_EXIT, CLOSE_GAME_EXIT,
                          close_game)
 import game_freeze
 from session_summary import write_summary
@@ -51,7 +51,7 @@ GAME_HOOKS = (*HOOKS, 0x2e67010, 0x1fbe360, 0x1fbda50, 0xa7b3a0, 0x1f9db60,
 RENDER_SCALES = (50, 200)
 # Upscaling: the percent of the eye's size, per side, the eyes' scene is rendered at, and its default
 # (spidy::minimumEyeUpscale, maximumEyeUpscale and defaultEyeUpscale).
-UPSCALES, DEFAULT_UPSCALE = (50, 100), 67
+UPSCALES, DEFAULT_UPSCALE = (50, 100), 50
 # How often the game's window gets the left eye in immersive VR: presents a second, 0 for every frame
 # (include/spidy/monitor_rate.hpp).
 MONITOR_RATES, DEFAULT_MONITOR_RATE = (0, 240), 30
@@ -94,6 +94,48 @@ def game_memory(log):
         if len(found) == len(GAME_MEMORY_FIELDS):
             rows.append(dict(time=line[:8], **{GAME_MEMORY_FIELDS[k]: float(v) for k, v in found.items()}))
     return rows
+
+
+def commit_trend(memory, free=None):
+    """G5 (beta polish): the game's commit memory over the session, to tell our growth from the system's pressure.
+
+    From the minute lines (game_memory): the first, last and peak commit (MB), the growth over the session's second
+    half in MB per minute (a leak keeps climbing there; the game's own streaming levels off in the first minutes),
+    a verdict ('flat' under 5 MB/min, else 'growing'), and the system's free commit (start, lowest, end) beside it.
+    None with fewer than four lines.
+    """
+    rows = [r for r in memory or [] if isinstance(r.get('commit_mb'), (int, float))]
+    if len(rows) < 4:
+        return None
+    def minutes(t):
+        try:
+            h, m, sec = (int(x) for x in t.split(':'))
+        except (ValueError, AttributeError):
+            return None
+        return h*60 + m + sec/60
+    half = rows[len(rows)//2:]
+    t0, t1 = minutes(half[0]['time']), minutes(half[-1]['time'])
+    span = (t1 - t0) % (24*60) if t0 is not None and t1 is not None else 0
+    rate = (half[-1]['commit_mb'] - half[0]['commit_mb'])/span if span > 0 else 0.0
+    trend = dict(first_mb=rows[0]['commit_mb'], last_mb=rows[-1]['commit_mb'],
+                 peak_mb=max(r['commit_mb'] for r in rows), second_half_mb_per_min=round(rate, 1),
+                 verdict='flat' if rate < 5 else 'growing', lines=len(rows))
+    if free:
+        trend['free_commit_mb'] = free
+    return trend
+
+
+def commit_line(trend):
+    """The summary's one line for commit memory."""
+    if not trend:
+        return 'commit memory: not enough game memory lines'
+    free = trend.get('free_commit_mb') or {}
+    text = ('commit memory: game %.0f -> %.0f MB (peak %.0f), second half %+.1f MB/min (%s)'
+            % (trend['first_mb'], trend['last_mb'], trend['peak_mb'], trend['second_half_mb_per_min'],
+               trend['verdict']))
+    if free.get('lowest') is not None:
+        text += '; system free commit lowest %s MB' % free['lowest']
+    return text
 
 
 def keep_game_log(report, source=None):
@@ -296,8 +338,20 @@ def real_vr_refusal(folder, files):
             'Steam leaves them there), then press START VR.')
 
 
+# The names a plugin loader (an ASI loader: the sky mod of November 18 came as winmm.dll) takes: it loads
+# other mods' plugins and leaves the game's picture alone, so Spidy runs beside it. Spidy's own libraries are
+# put into the game by the launcher from Spidy's folder, under names no other mod has (spidy_*.dll), and
+# nothing of Spidy's goes into the game's folder (docs/MOD_COMPAT.md).
+LOADERS = ('winmm.dll', 'version.dll', 'dinput8.dll', 'winhttp.dll', 'dsound.dll')
+
+
 def other_mods_warning(folder, files):
     """The console's line on any other library in the game's folder that loads into the game."""
+    if all(name.lower() in LOADERS for name in files):
+        return (f"Another mod loads into the game from its folder ({', '.join(files)}): Spidy runs beside it, "
+                "going in front of any game function it hooks too (docs/MOD_COMPAT.md). If the headset stays "
+                f"black or the game closes, close the game, move {'it' if len(files) == 1 else 'them'} out of "
+                f"{folder} and press START VR again.")
     return (f"WARNING: another mod or tool loads into the game from its folder ({', '.join(files)}). Spidy "
             'has not been run beside it. If the headset stays black or the game closes, close the game, move '
             f"{'it' if len(files) == 1 else 'them'} out of {folder} and press START VR again.")
@@ -458,6 +512,41 @@ def preflight(requested):
                           recommended_eye=[int(eye[1]), int(eye[2])] if eye else None)
 
 
+LINK_DROPPED = ('The Link connection dropped. Put the headset on, re-enable Link (or reconnect the cable), and the '
+                'game will continue.')
+
+
+def clock_text(at):
+    """A check's time on this PC's clock, for the console: 10:52:21."""
+    return time.strftime('%H:%M:%S', time.localtime(at))
+
+
+def check_again(manifest, first, probe=None, now=time.time):
+    """The headset checked again just before the game asks for it (November 17: Meta's logs showed the USB Link
+    connection dropping in the seconds between preflight's check and the game's start, and the game waiting).
+    Never stops the session: the game waits for the headset and says what happened. Prints both checks' times
+    and returns what the report keeps."""
+    probe = probe or xr_runtime.probe
+    at = now()
+    try:
+        found, said = probe(manifest, timeout=20)
+    except (OSError, RuntimeError, ValueError) as error:
+        found, said = None, str(error)
+    gap = at-first
+    if found:
+        print(f'Headset check again before VR starts: found at {clock_text(at)}, {gap:.0f} s after the first '
+              f'check at {clock_text(first)}.', flush=True)
+    elif found is False:
+        print(f'Headset check again before VR starts: not found at {clock_text(at)}, {gap:.0f} s after the first '
+              f'check at {clock_text(first)} found it. {LINK_DROPPED}', flush=True)
+        print(said, flush=True)
+    else:
+        print(f'Headset check again before VR starts: could not ask at {clock_text(at)} ({said}); the game '
+              'asks next.', flush=True)
+    return [dict(at=round(first, 3), found=True),
+            dict(at=round(at, 3), found=found, seconds_after=round(gap, 1))]
+
+
 class _Echo:
     """A console stream that writes to the session's console log as well."""
 
@@ -613,6 +702,55 @@ def pad_ignored(watch, sample, quiet=5):
         watch['warned'] = True
         return True
     return False
+
+
+# LOW FPS (polish pass; include/spidy/low_fps.hpp is the same rule for the diagnostics' quiet mode). The 4d58169
+# playtest's game ran at 8.7 fps for 104 minutes (its own render load and a failing DLSS evaluate; the mod was
+# under 1% of the game thread) and nothing told the player. A rate under LOW_FPS for LOW_FPS_SECONDS says so,
+# once, and a return to LOW_FPS_GOOD says that too. A game that stops altogether is the freeze watch's.
+LOW_FPS, LOW_FPS_GOOD, LOW_FPS_SECONDS, LOW_FPS_WINDOW = 15.0, 24.0, 60.0, 5.0
+LOW_FPS_LINE = 'WARNING: the game has run slowly'
+LOW_FPS_OVER = 'The game is back up to speed'
+
+
+def low_fps_advice(fps, seconds):
+    return (f"{LOW_FPS_LINE}, about {fps:.0f} fps for {seconds:.0f} s. That is the game's own drawing (a render load "
+            "or a failing DLSS evaluate), not Spidy: its cost is in the diagnostics' 'game thread cost' lines. If "
+            "it does not clear, close the game and start VR again from Spidy's launcher. A lower Upscaling in the "
+            "launcher (50% is the default now) and a lower render scale also help.")
+
+
+def low_fps_watch(watch, sample):
+    """None, 'slow' or 'over' (once each per spell): `watch` (at, frames, slow_for, slow, good, fps) carries what
+    earlier samples showed; the rate is the frame counter's over windows of LOW_FPS_WINDOW seconds."""
+    frames = sample.get('frames', sample.get('submitted'))
+    now = sample.get('seconds')
+    if frames is None or now is None:
+        return None
+    if watch.get('at') is None or frames < watch.get('frames', 0):
+        watch.update(at=now, frames=frames)
+        return None
+    if now-watch['at'] < LOW_FPS_WINDOW:
+        return None
+    span, count = now-watch['at'], frames-watch['frames']
+    watch.update(at=now, frames=frames, fps=count/span)
+    fps = watch['fps']
+    if 0.5 < fps < LOW_FPS:
+        watch['good'] = 0
+        watch['slow_for'] = watch.get('slow_for', 0.0)+span
+        if not watch.get('slow') and watch['slow_for'] >= LOW_FPS_SECONDS:
+            watch['slow'] = True
+            return 'slow'
+    elif fps >= LOW_FPS:
+        watch['slow_for'] = 0.0
+        if watch.get('slow') and fps >= LOW_FPS_GOOD:
+            watch['good'] = watch.get('good', 0)+1
+            if watch['good'] >= 2:
+                watch.update(slow=False, good=0)
+                return 'over'
+        elif fps < LOW_FPS_GOOD:
+            watch['good'] = 0
+    return None
 
 
 # What the game makes while it runs - eye images, frames of its screen, camera commits, reads of Spidy's
@@ -1228,18 +1366,30 @@ def sound_snapshot(game, address):
     struck having none; the sound sources the latest blow's switches were set on and the switches that took; `live`
     while the headset leaves the blows' sound to the game."""
     for _ in range(8):
-        raw = game.read(address, 72)
-        if len(raw) != 72:
+        # Version 1 is 72 bytes, version 2 104: read the larger and keep what the header names.
+        raw = game.read(address, 104)
+        if len(raw) < 72:
             return None
-        if struct.unpack_from('<3I', raw) != (0x53534e44, 1, 72):
+        version_size = struct.unpack_from('<3I', raw)
+        if version_size not in ((0x53534e44, 1, 72), (0x53534e44, 2, 104)):
             raise RuntimeError('Sound protocol mismatch')
+        size = version_size[2]
+        if len(raw) < size:
+            return None
+        raw = raw[:size]
         if struct.unpack_from('<Q', raw, 16)[0] & 1 or raw[16:24] != game.read(address+16, 8):
             continue
         status, = struct.unpack_from('<I', raw, 12)
         asked, played, refused, dropped = struct.unpack_from('<4Q', raw, 24)
         on_player, sources, live, switches = struct.unpack_from('<4I', raw, 56)
-        return dict(status=SOUND_STATUS.get(status, status), asked=asked, played=played, refused=refused,
-                    dropped=dropped, on_player=on_player, sources=sources, switches=switches, live=bool(live))
+        result = dict(status=SOUND_STATUS.get(status, status), asked=asked, played=played, refused=refused,
+                      dropped=dropped, on_player=on_player, sources=sources, switches=switches, live=bool(live))
+        if size >= 104:
+            # Version 2 (beta polish R4): blows by intensity, and the hero's cues played, guarded and dropped.
+            light, medium, heavy, extreme, cues, guarded, cue_dropped = struct.unpack_from('<7I', raw, 72)
+            result.update(by_intensity=dict(light=light, medium=medium, heavy=heavy, extreme=extreme),
+                          cues=cues, cues_guarded=guarded, cues_dropped=cue_dropped)
+        return result
     return None
 
 
@@ -2099,21 +2249,33 @@ def hud_snapshot(game, address):
     return None
 
 
-def wait_for_renderer(game, process, render_data, timeout=180, problems=None, tell_every=20):
+def wait_for_renderer(game, process, render_data, timeout=180, problems=None, tell_every=20, module_patience=30):
     """The game's graphics queue, as soon as the game draws frames (its intro, seconds after it starts).
 
     `render_data` is the render memory module's telemetry, when that module is loaded: its frame count
-    shows the renderer running before the queue is looked for. `problems` collects why each look found
-    no queue (for the session's report); the console hears the latest every `tell_every` seconds.
+    shows the renderer running before the queue is looked for. A module that has counted no 30 frames in
+    `module_patience` seconds is no longer waited for: an Intel Arc A750's game drew at 86 to 240 frames a
+    second while its count never got there, and the session waited out the three minutes (October 24).
+    `problems` collects why each look found no queue (for the session's report); the console hears the
+    latest every `tell_every` seconds.
     """
-    deadline = time.monotonic()+timeout
+    started = time.monotonic()
+    deadline = started+timeout
     problem = 'the game drew no frames'
-    told, fronted = time.monotonic(), False
+    told, fronted, unheeded = time.monotonic(), False, False
     while alive(game) and time.monotonic() < deadline:
-        memory = render_memory_snapshot(game, render_data) if render_data else None
-        if render_data and (not memory or memory['frames'] < 30):
-            time.sleep(.25)
-            continue
+        memory = render_memory_snapshot(game, render_data) if render_data and not unheeded else None
+        if render_data and not unheeded and (not memory or memory['frames'] < 30):
+            if time.monotonic()-started < module_patience:
+                time.sleep(.25)
+                continue
+            unheeded = True
+            note = (f"Spidy's render memory module counted {memory['frames'] if memory else 'no'} game frames "
+                    f"in {module_patience:.0f} s (ring {memory['ring'] if memory else 'unread'}): looking for "
+                    "the graphics queue without it")
+            if problems is not None:
+                problems.append(note)
+            print(note, flush=True)
         try:
             return discover_queue(game, process)
         except TimeoutError as error:
@@ -2252,6 +2414,9 @@ def main():
                    help='How often the game window gets your left eye in immersive VR: pictures a second (1..240; '
                         'default %d), or 0 for every frame, as builds before October 11 did. Each one costs the '
                         'graphics card time the headset could have.' % DEFAULT_MONITOR_RATE)
+    p.add_argument('--render-memory-mb', type=int, default=RENDER_RING_MB,
+                   help="Megabytes of the game's per-frame graphics memory Spidy's module gives it (128..1024; "
+                        "default %d; the game's own is 128): the launcher ini's render_memory_mb" % RENDER_RING_MB)
     p.add_argument('--no-eye-reflections', action='store_true',
                    help="The eyes without the game's screen-space reflections, as builds before October 11's "
                         "second did. Without it they follow the game's own Screen Space Reflections setting")
@@ -2273,6 +2438,9 @@ def main():
                         "at about half the distance the flat game has them, and an upscaled eye's textures are "
                         'asked for at its smaller rendered size (about 2 percent more frames)')
     p.add_argument('--auto-launch',action='store_true')
+    p.add_argument('--game-exe', default='',
+                   help="The Spider-Man.exe the Spidy Launcher uses: --auto-launch starts it through the Epic "
+                        "Games Store when it is Epic's copy, even with a Steam copy installed too")
     p.add_argument('--close-game', action='store_true',
                    help='A running game that already holds Spidy (VR ran in it, or another build is in it) is '
                         'closed as its close button does, then started again (the launcher asks the player first)')
@@ -2380,6 +2548,8 @@ def main():
         p.error('Use an upscale of %d..%d%%' % UPSCALES)
     if not 50 <= a.building_reach <= 400:
         p.error('Use a building reach of 50..400% of the game\'s distance')
+    if not 128 <= a.render_memory_mb <= 1024:
+        p.error('Use a render memory of 128..1024 MB')
     if not MONITOR_RATES[0] <= a.monitor_rate <= MONITOR_RATES[1]:
         p.error('Use a monitor rate of %d..%d a second (0: every frame)' % MONITOR_RATES)
     if not 0 <= a.snap_turn <= 90 or not 0 <= a.smooth_turn <= 360 or not 0 <= a.haptics <= 100:
@@ -2435,6 +2605,9 @@ def session(a, startup):
             raise GameNeedsRestart(reason)
     startup.stage = 'finding the headset'
     manifest, runtime = preflight(a.xr_runtime)
+    first_check = time.time()
+    print(f'Headset check: found at {clock_text(first_check)}.', flush=True)
+    runtime['headset_checks'] = [dict(at=round(first_check, 3), found=True)]
     startup.fields['xr_runtime'] = runtime
     links = network_links()
     startup.fields['network'] = links
@@ -2484,7 +2657,7 @@ def session(a, startup):
         # In time only in a game that has just started: it creates its render memory once. That is the graphics
         # card's memory for each frame's drawing, not the PC's (a player with 32 GB read it so on October 16).
         try:
-            render_module.update(enlarge_render_memory(pid))
+            render_module.update(enlarge_render_memory(pid, a.render_memory_mb))
         except GameNeedsRestart:
             raise
         except (OSError, RuntimeError) as error:
@@ -2496,7 +2669,8 @@ def session(a, startup):
     # switch); before October 5's seventh build the launcher found one, once, and VR stayed on the
     # screen after any reload.
     if a.auto_launch:
-        game = wait_for_game(prepare=prepare_display, early=render_memory_module, ready=lambda game: True)
+        game = wait_for_game(prepare=prepare_display, early=render_memory_module, ready=lambda game: True,
+                             game_exe=getattr(a, 'game_exe', None) or None)
     else:
         game = Game(find_game())
         render_memory_module(game.pid)
@@ -2594,6 +2768,8 @@ def session(a, startup):
                                                  a.render_scale, a.weight, a.eye_height, a.arm_length, a.hud,
                                                  a.flip_speed, a.upscale, a.monitor_rate, a.screen_depth,
                                                  a.body_haptics)
+        startup.stage = 'checking the headset again'
+        runtime['headset_checks'] = check_again(manifest, first_check)
         startup.stage = 'starting VR'
         code = call_with_payload(process, xr['SpidyXrStart'], config)
         if code:
@@ -2676,6 +2852,7 @@ def session(a, startup):
         # The game's reads of Spidy's controller: none while buttons are held on the game screen means its
         # menus cannot be played (the October 7 Steam Link session: the game had turned XInput off).
         pad_watch = dict(reads=None, since=0.0, warned=False)
+        low_fps_state = {}
         # A game that stops answering: the counters it stood still with, and its threads once saved.
         freeze_watch, freeze = {}, None
 
@@ -2757,7 +2934,7 @@ def session(a, startup):
                         flip_reprojection=reprojection, eye_jobs=eye_jobs,
                         render_memory=render_memory, scene_pool=scene_pool(), timing=timing, network=links,
                         stream_stalls=stream_stalls(list(samples)),
-                        free_commit_mb=dict(start=start_commit, lowest=lowest_commit),
+                        free_commit_mb=dict(start=start_commit, lowest=lowest_commit, end=free_commit_mb()),
                         eye_snapshots=list(eye_shots), eye_snapshot_folder=str(eye_folder) if eye_shots else None,
                         hud_capture=hud_capture, hud_captures=list(hud_shots), hud_coverage=list(hud_coverage),
                         hud_capture_folder=str(hud_folder) if hud_shots else None,
@@ -2772,6 +2949,9 @@ def session(a, startup):
             # Texture and video memory pressure and the game's own frame rate, minute by minute.
             copy, memory = keep_game_log(a.output)
             result.update(game_log=str(copy) if copy else None, game_memory=memory)
+            # G5: the commit trend, and one line for it on the console.
+            result['commit_memory'] = commit_trend(memory, result.get('free_commit_mb'))
+            print(commit_line(result['commit_memory']), flush=True)
             try:
                 log = copy.read_text(encoding='utf-8', errors='replace') if copy else ''
             except OSError:
@@ -2969,6 +3149,11 @@ def session(a, startup):
                     samples.append(sample)
                     if pad_ignored(pad_watch, sample):
                         print(PAD_IGNORED, flush=True)
+                    slowed = low_fps_watch(low_fps_state, sample)
+                    if slowed == 'slow':
+                        print(low_fps_advice(low_fps_state['fps'], low_fps_state['slow_for']), flush=True)
+                    elif slowed == 'over':
+                        print(f"{LOW_FPS_OVER}: about {low_fps_state['fps']:.0f} fps.", flush=True)
                     # Saved once, while it still hangs: the dump is what says where (game_freeze.py).
                     if freeze is None and game_frozen(freeze_watch, sample) and \
                             time.monotonic() >= freeze_watch.get('asked', 0)+1:

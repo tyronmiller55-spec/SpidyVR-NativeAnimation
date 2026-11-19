@@ -95,6 +95,122 @@ class ChangeOnly {
     int reason_{};
     float turn_{}, since_{};
 };
+// QUIET LOG (the 4d58169 playtest: six lines made up about 40% of 2.6 million - "head probe: cutscene" 36k,
+// "forearm sign:" 62k, "shooter lock:" 51k, "spherical aim:" 36k, "animated hand:" 42k, "tracking lock:" 22k -
+// and a game stuck at 8.7 fps for 104 minutes wrote 50+ MB). A line of one of those kinds is kept when its
+// SHAPE (the line with its numbers taken out) changed, or `heartbeat` seconds passed since the last kept
+// one of its kind; while the game is not stepping (slow mode), those kinds are kept only on a change and
+// the rest of the lines at most once per slowHeartbeat seconds per shape. Pure; the clock is the caller's.
+class Throttle {
+  public:
+    static constexpr double heartbeat = 2.0, slowHeartbeat = 10.0;
+    // LOG LEVEL (log_level, beta polish G4; diag was 13.2 MB for 27 min, the head probe and the aim family over
+    // 60% of it): 2 VERBOSE keeps the 12 kinds below at the 2 s heartbeat, as before; 1 (the default) adds the head
+    // probe's samples, the forearm aim and the player torso and repeats each kind's unchanged shape once per 5 s;
+    // 0 QUIET once per 30 s. A changed shape (a new state or reason) is always kept at once.
+    static constexpr unsigned kinds = 15, baseKinds = 12, shapeChars = 48;
+    static constexpr double levelHeartbeat[3] = {30.0, 5.0, heartbeat};
+    // Polish pass: and the repeats of the 4d58169 playtest (point jump: denied 296, handstand: no catch 673,
+    // sidestep: denied 54, hybrid: adopt never seeded 27): a new REASON is a new shape and is kept at once.
+    static constexpr const char* noisy[kinds] = {"head probe: cutscene", "forearm sign:",  "shooter lock:",
+                                                 "spherical aim:",       "animated hand:", "animated hand points:",
+                                                 "tracking lock:",       "vr stabilization: tilt",
+                                                 "point jump: denied",   "sidestep: denied",
+                                                 "handstand: no catch",  "hybrid: adopt never seeded",
+                                                 "head probe:",          "forearm aim:",
+                                                 "player torso:"};
+    // Is `text` (without the time stamp) one of the noisy kinds? Its index, or -1. VERBOSE (level 2) leaves the
+    // three added at the beta out.
+    static int kindOf(std::string_view text, int level = 1) {
+        const unsigned count = level >= 2 ? baseKinds : kinds;
+        for (unsigned i = 0; i < count; ++i) {
+            const std::string_view k = noisy[i];
+            if (text.substr(0, k.size()) == k)
+                return static_cast<int>(i);
+        }
+        return -1;
+    }
+    // The line with digits and number signs taken out (first shapeChars characters).
+    static void shapeOf(std::string_view text, char (&out)[shapeChars]) {
+        unsigned n = 0;
+        for (const char c : text) {
+            if ((c >= '0' && c <= '9') || c == '.' || c == '+' || c == '-')
+                continue;
+            if (n + 1 >= shapeChars)
+                break;
+            out[n++] = c;
+        }
+        out[n] = 0;
+    }
+    // The number of lines kept and dropped, per everything.
+    uint64_t kept = 0, dropped = 0;
+    void slow(bool on) {
+        slow_ = on;
+    }
+    bool isSlow() const {
+        return slow_;
+    }
+    void level(int l) {
+        level_ = l < 0 ? 0 : l > 2 ? 2 : l;
+    }
+    int level() const {
+        return level_;
+    }
+    bool allow(std::string_view text, double seconds) {
+        const int kind = kindOf(text, level_);
+        char shape[shapeChars];
+        shapeOf(text, shape);
+        if (kind >= 0) {
+            auto& e = entry_[kind];
+            const bool same = e.set && std::strncmp(e.shape, shape, shapeChars) == 0;
+            const bool due = !e.set || seconds - e.at >= levelHeartbeat[level_] || seconds < e.at;
+            if (same && (slow_ || !due)) {
+                ++dropped;
+                return false;
+            }
+            std::snprintf(e.shape, shapeChars, "%s", shape);
+            e.set = true;
+            e.at = seconds;
+            ++kept;
+            return true;
+        }
+        if (!slow_) {
+            ++kept;
+            return true;
+        }
+        // Slow mode: the other lines once per shape per slowHeartbeat seconds (a small table, oldest replaced).
+        for (auto& e : other_)
+            if (e.set && std::strncmp(e.shape, shape, shapeChars) == 0) {
+                if (seconds - e.at < slowHeartbeat && seconds >= e.at) {
+                    ++dropped;
+                    return false;
+                }
+                e.at = seconds;
+                ++kept;
+                return true;
+            }
+        auto* oldest = &other_[0];
+        for (auto& e : other_)
+            if (!e.set || e.at < oldest->at)
+                oldest = &e;
+        std::snprintf(oldest->shape, shapeChars, "%s", shape);
+        oldest->set = true;
+        oldest->at = seconds;
+        ++kept;
+        return true;
+    }
+
+  private:
+    struct Entry {
+        bool set = false;
+        double at = 0;
+        char shape[shapeChars]{};
+    };
+    Entry entry_[kinds]{};
+    Entry other_[32]{};
+    bool slow_ = false;
+    int level_ = 1;
+};
 // STARTUP STAGES and the VR worker's WATCHDOG. The November 3 sessions froze
 // the headset at start, and the diagnostics said nothing of how far VR had got:
 // now each stage is a "stage:" line (headset active, the eye views started, the
@@ -185,6 +301,12 @@ class Stages {
 // Off by default: write() keeps nothing.
 void enable(bool on);
 bool enabled();
+// The game is not stepping (stuck under about 15 fps): the diagnostics write only what changed (Throttle).
+void setSlow(bool on);
+// LOG LEVEL (log_level: 0 quiet, 1 default, 2 verbose; Throttle::level).
+void setLevel(int level);
+// Lines the Throttle kept and dropped since the session began.
+uint64_t droppedLines();
 // A line for the diagnostics (and only there: the report's timeline is
 // game_prompts::note's, which calls this too), while enabled. Stamped with the
 // seconds since the session's first line. Thread-safe. In the stereo module

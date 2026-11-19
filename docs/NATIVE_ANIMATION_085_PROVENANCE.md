@@ -1,6 +1,51 @@
 # Native Animation cumulative 0.8.5 source provenance
 
-## Current user-approved cumulative integration — Nov 13, 2026 (46195f7)
+## Current user-approved cumulative integration — Nov 19, 2026 (9e8d7cb)
+
+Authoritative working source:
+`9e8d7cb50b39fbc6903ff5071e9f07dd9ddc9fea`
+https://github.com/tyronmiller55-spec/SpidyVR/commit/9e8d7cb50b39fbc6903ff5071e9f07dd9ddc9fea
+
+Branch `feat/087-beta1`: 0.8.7-na-beta1, the testers' CURRENT. The owner played
+`81fc830` on Nov 19, 2026, in a session of about 26 minutes from 1:09 PM PT
+(stamp `game-vr-20261119-130907`, Quest 3S, Meta Quest Link) and reported the
+game had never felt better, Showtime working, and handoffs solid. He asked for
+this to become CURRENT (`t78u`). Three follow-up commits on the same branch
+turn the session's features on by default (revision 14), add NA Help testing
+pages, and update the docs: `99082d8`, `8609464`, `9e8d7cb`.
+
+The stack is Ilya's SpidyVR 0.8.7 plus the Native Animation work since the
+previous CURRENT (`46195f7`): headset-first view, air takeover and landing
+blend, NA · tabs and Help, Showtime, kicks, hand grab, wall brake, grip fling,
+tethers, point jump, handstand polish, jump sounds and web aim.
+
+Publication starts from live NativeAnimation main
+`2a200a27944f9f0d572a2fd8305b46328f4464a5` (after PR #5), preserving history.
+The owner explicitly authorized this CURRENT release.
+
+Exact tree parity policy (same as before, verify with Git blob IDs and modes):
+- All tracked files other than the two below match the working source exactly.
+- `README.md` is publication-specific documentation.
+- This provenance document is additional publication-only documentation.
+- `.github/workflows/release.yml` remains deliberately omitted. No workflow, rule
+  change or automatic publication is added.
+- The existing `test logs` directory is unchanged from main and matches
+  `9e8d7cb` (same four files and blobs).
+
+Windows build of `9e8d7cb` (core tests 955/955 locally; CI CTest and Python
+protocol tests):
+https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/44624649131
+Release asset `Spidy-0.8.7-na-beta1-win64-9e8d7cb.zip` (unpacks to
+`Spidy-0.8.7-player-torso-9e8d7cb`), SHA256
+`0018c3f537d6a6fd7048b4a06ac93f8010513696ce3047d3d7f823e87d659d54`,
+18,515,954 bytes.
+
+Known limits going into this CURRENT (see the README): Showtime camera uses
+stock collision only; finishers log only, with no button; handstands still
+rarely catch; no air dodge, ragdoll, trigger-squeeze cancel, or web-line rope
+physics.
+
+## Earlier integration — Nov 13, 2026 (46195f7)
 
 Authoritative working source:
 `46195f712689a8811aa3695b261a1e01c29b6908`

@@ -4,6 +4,7 @@
 #include "spidy/game_tracking.hpp"
 #include "spidy/leg_control.hpp"
 #include "spidy/xr_connect.hpp"
+#include "spidy/frame_steps.hpp"
 #include "spidy/native_eye_frame.hpp"
 #include "spidy/native_hud.hpp"
 #include "spidy/native_eye_history.hpp"
@@ -22,6 +23,7 @@
 #include "spidy/swing_haptics.hpp"
 #include "spidy/controller_layout.hpp"
 #include "spidy/game_swing.hpp"
+#include "spidy/swing_kick.hpp"
 #include "spidy/swing_coupling.hpp"
 #include "spidy/headset_smoothing.hpp"
 #include "spidy/native_movement.hpp"
@@ -71,6 +73,7 @@
 #include "spidy/run_update.hpp"
 #include "spidy/game_dodge.hpp"
 #include "spidy/web_aim.hpp"
+#include "spidy/hitch_guard.hpp"
 #include <algorithm>
 #include <bitset>
 #include <cstring>
@@ -98,6 +101,7 @@
 #include "spidy/animated_torso.hpp"
 #include "spidy/animated_model_yaw.hpp"
 #include "spidy/animated_air_spin.hpp"
+#include "spidy/target_scan.hpp"
 #ifdef _WIN32
 #include "spidy/game_targets.hpp"
 // Stand-ins for the game's classes, by the names the target scan's rules look
@@ -143,6 +147,19 @@ class EnemyTurret : public Component {};
 extern "C" char __ImageBase;
 #endif
 using namespace spidy;
+// NA TABS (beta polish M4, the owner's D1): the launcher-only NA rows players tune in the headset, now in the game's
+// NA tabs too; and D3: the retired legacy rows, hidden in the game (launcher only).
+static bool naInGame(vr_settings::Item i) {
+    using vr_settings::Item;
+    return i == Item::groundKicks || i == Item::kicks || i == Item::kickGazeCone || i == Item::handstand ||
+           i == Item::handstandAssist || i == Item::handstandGrace || i == Item::punchTrackCone ||
+           i == Item::punchTrackRange || i == Item::jumpPull;
+}
+static bool naRetired(vr_settings::Item i) {
+    using vr_settings::Item;
+    return i == Item::animatedAir || i == Item::animatedOnly || i == Item::animatedSteering ||
+           i == Item::animatedAirSpin;
+}
 void check(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
@@ -690,6 +707,86 @@ int main() {
                   std::string::npos,
               "the waiting line does not name the runtime");
     });
+    test("frame steps: the longest time per step every 5 s, and the step a stuck worker is in", [] {
+        using namespace spidy::frame_steps;
+        Steps steps;
+        char line[240];
+        check(!steps.peaks(1000, line, sizeof(line)), "the first call starts the window");
+        uint64_t t = 1000;
+        for (int frame = 0; frame < 3; ++frame) {
+            steps.mark(worker, t);
+            steps.mark(waitFrame, t += 2000 + frame * 1000); // worker 2, 3, 4 ms
+            steps.mark(beginFrame, t += 11000);              // wait 11 ms
+            steps.mark(worker, t += 200);
+            steps.mark(swing, t += 500);
+            steps.mark(worker, t += 600);
+            steps.mark(eyeImages, t += 100);
+            steps.mark(gpuCopy, t += 100);
+            steps.mark(worker, t += 3400);
+            steps.mark(endFrame, t += 100);
+            steps.mark(worker, t += 1900);
+        }
+        check(steps.current() == worker && steps.since() == t, "where the worker is");
+        check(!steps.peaks(t, line, sizeof(line)), "not before 5 s");
+        check(steps.peaks(1000 + 5000000, line, sizeof(line)), "due at 5 s");
+        check(std::string(line).rfind("steps: longest in 5.0 s, ms: wait 11.0, begin 0.2, images 0.1, copy 3.4, "
+                                      "end 1.9, swing 0.6, worker ",
+                                      0) == 0 &&
+                  std::string(line).find("; 3 frames") != std::string::npos,
+              line);
+        // The worker's own code ran on to the window's end: that counts.
+        check(std::string(line).find("worker 4") != std::string::npos, line);
+        // The longest of a window huge in every step stays in the diagnostics' 239 characters.
+        Steps big;
+        big.peaks(1, line, sizeof(line));
+        for (int i = 0; i < count; ++i)
+            big.mark(i, 1 + i * 999999999999ull + 1);
+        check(big.peaks(999999999999999ull, line, sizeof(line)) && std::strlen(line) < 240, line);
+        // The watchdog: the step and how long, once each 10 s.
+        Steps stuck;
+        stuck.mark(waitFrame, 1000000);
+        check(!stuck.stuck(5900000, 5000000, 10000000, 5120, line, sizeof(line)), "not before 5 s");
+        check(stuck.stuck(7200000, 5000000, 10000000, 5120, line, sizeof(line)), "stuck");
+        check(std::string(line) == "watchdog: the VR worker is stuck in xrWaitFrame for 6.2 s (free commit 5120 MB)",
+              line);
+        check(!stuck.stuck(8200000, 5000000, 10000000, 5120, line, sizeof(line)), "again only after 10 s");
+        check(stuck.stuck(17300000, 5000000, 10000000, 5120, line, sizeof(line)), "again after 10 s");
+        check(stuck.claimStack() && !stuck.claimStack(), "the stack once a session");
+        stuck.idle();
+        check(!stuck.stuck(99000000, 5000000, 0, 5120, line, sizeof(line)), "no step after the frame loop");
+        stuck.reset();
+        check(stuck.claimStack(), "a new session takes it again");
+        {
+            Steps scoped;
+            {
+                Steps::Scope step(&scoped, swing);
+                check(scoped.current() == swing, "the scope marks its step");
+            }
+            check(scoped.current() == worker, "and the worker's own code after it");
+            Steps::Scope none(nullptr, swing); // no steps: nothing marked
+        }
+        char longest[240];
+        std::snprintf(longest, sizeof(longest), "watchdog: the VR worker is stuck in %s for 99999.9 s (free commit "
+                      "18446744073709551615 MB)", name(worker));
+        check(std::strlen(longest) < 240, "the longest watchdog line fits");
+    });
+    test("a headset lost after the launcher's check: the Link-drop line, and a new instance now and then", [] {
+        using namespace spidy::xr_connect;
+        const std::string meta = droppedLine("Oculus", 5, 120);
+        check(meta.rfind(linkDropped, 0) == 0, meta.c_str());
+        check(meta.find("(5 of 120 s)") != std::string::npos, "the wait's seconds");
+        check(meta.size() < 256, "fits XrData::message");
+        const std::string other = droppedLine("SteamVR/OpenXR", 10, 120);
+        check(other.find("reconnect it in SteamVR/OpenXR") != std::string::npos && other.size() < 256,
+              other.c_str());
+        check(metaRuntime("Oculus") && metaRuntime("Meta Quest Link") && !metaRuntime("VirtualDesktopXR") &&
+                  !metaRuntime(nullptr),
+              "Meta's runtime by name");
+        Renew renew;
+        check(!renew.due(0) && !renew.due(19.9), "not before 20 s");
+        check(renew.due(20.1) && !renew.due(21) && !renew.due(50), "once at 20 s");
+        check(renew.due(50.2) && !renew.due(60), "then each 30 s");
+    });
     struct SlingWorld : TwoAnchors {
         std::optional<RayHit> raycast(Vec3 o, Vec3 d, float distance) const override {
             return enabled ? TwoAnchors::raycast(o, d, distance) : std::nullopt;
@@ -960,6 +1057,20 @@ int main() {
         using namespace vr_settings;
         Values v;
         check(!v.swingAssist && defaultChoice(Item::swingAssist) == 0, "swing assist on by default");
+        check(!Values{}.legHoldEverywhere && withTabOnly({}, "leg_hold_everywhere=1\n").legHoldEverywhere &&
+                  !withTabOnly({}, tabOnlyText(Values{})).legHoldEverywhere,
+              "LEG HOLD EVERYWHERE: off by default (the X throw is never held back), on from the ini");
+        check(!Values{}.swingKickGrunt && withTabOnly({}, "swing_kick_grunt=1\n").swingKickGrunt &&
+                  !withTabOnly({}, tabOnlyText(Values{})).swingKickGrunt,
+              "SWING KICK GRUNT: off by default, on from the ini");
+        {
+            game_swing::SwingKickAsk ask;
+            ask.flags = 15u;
+            check(game_swing::validSwingKick(ask), "swing kick ask: the grunt's bit 3 refused");
+            ask.flags = 16u;
+            check(!game_swing::validSwingKick(ask), "swing kick ask: an unknown bit taken");
+            check(swing_kick::gruntId == 0xdab33491u, "swing kick grunt: not the game's own jump grunt");
+        }
         check(choose(Item::swingAssist, 1, v) && withTabOnly({}, tabOnlyText(v)).swingAssist,
               "spidy_vr.ini lost SWING ASSIST");
         game_swing::Settings s;
@@ -1907,7 +2018,7 @@ int main() {
     });
     test("slingshot settings append to the old wire format and default off", [] {
         game_swing::Settings s;
-        check(s.version == 40 && s.bytes == 188 && !s.webSlingshot, "wrong slingshot defaults");
+        check(s.version == 42 && s.bytes == 196 && !s.webSlingshot, "wrong slingshot defaults");
         check(offsetof(game_swing::Settings, webSlingshot) == 48, "old settings moved");
         s.webSlingshot = 1; check(game_swing::validSettings(s), "ON refused");
         s.webSlingshot = 2; check(!game_swing::validSettings(s), "invalid switch accepted");
@@ -2573,7 +2684,7 @@ int main() {
         check(vr_settings::choose(vr_settings::Item::betterClimbing, 1, v), "ON failed");
         check(vr_settings::withTabOnly({}, vr_settings::tabOnlyText(v)).betterClimbing, "switch not saved");
         game_swing::Settings s;
-        check(s.version == 40 && s.bytes == 188 && offsetof(game_swing::Settings, betterClimbing) == 52,
+        check(s.version == 42 && s.bytes == 196 && offsetof(game_swing::Settings, betterClimbing) == 52,
               "settings moved old fields");
         s.betterClimbing = 1; check(game_swing::validSettings(s), "ON refused");
         s.betterClimbing = 2; check(!game_swing::validSettings(s), "invalid switch accepted");
@@ -2638,6 +2749,48 @@ int main() {
             for(const auto& e:s.events()){wrapped|=e.kind==EventKind::Wrap;cut|=e.kind==EventKind::Obstructed;}
         }
         check(cut&&!wrapped&&!s.webs()[0].attached,"the wall in the way kept the web");
+    });
+    test("a web that flies (WEB SPEED) bends round the corner passed meanwhile, and holds once it arrives", [physical] {
+        // A player on 0.8.1, WEB SPEED on: "when I'm moving and shoot a web
+        // between two buildings ... it attaches but immediately detaches". A
+        // flying web's line went unwatched until it arrived; by then the body
+        // was past the corner, the line crossed the building with no clear one
+        // before it to bend from, and the web was cut 0.15 s after it arrived.
+        // Shot from 220 m below its end (0.6 to 3.7 s of flight), the body past
+        // the corner in 0.3 s and waiting there; with WEB SPEED off the same.
+        for(int mode=0;mode<=3;++mode) {
+            Corner w;Swing s(physical());s.webTravel(1000,mode);
+            Input in=w.held();in.hands[0].aim.position.y=-200;
+            Body body{{14,20,2},{-10,0,0},false};
+            float arrived=-1;bool wrapped{},cut{};
+            for(int i=0;i<300&&(arrived<0||i/60.f<arrived+.5f);++i) {
+                const auto intent=s.predictNativeStep(1.f/60,in,w,body);
+                for(const auto& e:s.events()) {
+                    if(e.kind==EventKind::Attach&&arrived<0)arrived=i/60.f;
+                    wrapped|=e.kind==EventKind::Wrap;cut|=e.kind==EventKind::Obstructed;
+                }
+                body={intent.target,{intent.target.x>11?-10.f:0.f,0,0},false};
+            }
+            check(arrived>=0&&(mode==0||arrived>.5f),"the web did not fly there");
+            const auto& web=s.webs()[0];
+            check(!cut&&web.ready()&&wrapped&&web.bent==1,"the flown web was cut at the corner, or did not bend");
+            near(length(web.end()-w.anchor),0);
+            check(length(Vec3{web.anchor.x-10,0,web.anchor.z})<.2f,"the bend is not at the corner's edge");
+        }
+    });
+    test("without physical webs a flying web the corner cuts is cut in flight, never caught and let go", [] {
+        for(int mode=1;mode<=3;++mode) {
+            Corner w;Swing s(inert());s.webTravel(1000,mode);
+            Input in=w.held();in.hands[0].aim.position.y=-200;
+            Body body{{14,20,2},{-10,0,0},false};
+            bool arrived{},cut{};
+            for(int i=0;i<300&&!cut;++i) {
+                const auto intent=s.predictNativeStep(1.f/60,in,w,body);
+                for(const auto& e:s.events()){arrived|=e.kind==EventKind::Attach;cut|=e.kind==EventKind::Obstructed;}
+                body={intent.target,{intent.target.x>11?-10.f:0.f,0,0},false};
+            }
+            check(cut&&!arrived&&!s.webs()[0].attached,"the web was caught behind the building and let go");
+        }
     });
     // Arcade webs. Boxes the rays meet from either side, as the game's own do:
     // from inside one a ray meets the face it leaves by, turned along the ray.
@@ -3489,6 +3642,129 @@ int main() {
             check(body.position.y >= rested - .01f, "releasing a climb dropped the sticky body");
         }
     });
+    test("grip: the wall brake slows a slide as friction does, then holds", [] {
+        constexpr float dt = 1.f / 60;
+        for (const bool brake : {false, true}) {
+            Building w;
+            Swing s(walled());
+            s.allowHandClimb(true);
+            s.gripSettings(brake, false);
+            Input in;
+            Body body{{4.1f, 10, 0}, {1, 0, 0}, false};
+            auto advance = [&] {
+                const auto motion = s.predictNativeStep(dt, in, w, body);
+                check(motion.valid, "brake prediction failed");
+                body = {motion.target, motion.velocity, false};
+            };
+            advance();
+            check(s.wall().on, "the brake test body did not reach the wall");
+            auto& h = in.hands[0];
+            h.tracked = true;
+            h.wallPosition = {4.95f, 10, 0};
+            h.aim.orientation = arc({0, 0, -1}, {1, 0, 0});
+            h.gripRelativeToHead = {.4f, 0, 0};
+            advance();
+            body.velocity = {0, -8, 0}; // sliding down the facade
+            h.wallGrip = h.grip = 1;
+            advance();
+            check(s.climbingHands() == 1u, "the palm did not catch the wall");
+            if (!brake) {
+                check(length(body.velocity) < .01f, "without the brake the grip stops the slide at once");
+                continue;
+            }
+            check(body.velocity.y < -7.f && body.velocity.y > -8.f, "the brake took only a step of friction");
+            check(s.gripReport().brakeHands == 1u && s.gripReport().brakes == 1,
+                  "the brake was not reported");
+            float seconds = 0, speed = -body.velocity.y;
+            while (speed >= .5f && seconds < 3) {
+                const float before = speed;
+                advance();
+                speed = -body.velocity.y;
+                check(speed <= before + 1e-4f, "the slide sped up under the brake");
+                seconds += dt;
+            }
+            // One hand from 8 m/s at mu 2.0 (the palm sits .05 past the face: 2.0 x (9.81 + 2) = 23.6 m/s^2): ~0.34 s.
+            check(seconds > .25f && seconds < .5f, "one hand's brake time from 8 m/s");
+            for (int i = 0; i < 10; ++i)
+                advance();
+            check(length(body.velocity) < .05f && s.climbingHands() == 1u, "under 0.5 m/s it is the hold");
+            check(s.gripReport().brakeHands == 0, "the brake ended");
+        }
+    });
+    test("grip: a pull let go of flings along a wall, from the ground and in the air; off by default", [] {
+        constexpr float dt = 1.f / 60;
+        enum class Where { wall, ground, air };
+        const auto fling = [&](Where where, bool on, bool otherHand = false) {
+            Building w;
+            Swing s(walled());
+            s.allowHandClimb(true);
+            s.gripSettings(false, on);
+            Input in;
+            Body body{where == Where::wall ? Vec3{4.1f, 10, 0} : Vec3{0, 10, 0},
+                      where == Where::wall ? Vec3{1, 0, 0} : Vec3{}, where == Where::ground};
+            auto advance = [&] {
+                const auto motion = s.predictNativeStep(dt, in, w, body);
+                check(motion.valid, "fling prediction failed");
+                body = {motion.target, motion.velocity, where == Where::ground && !motion.velocity.y};
+                return motion;
+            };
+            advance();
+            check(s.wall().on == (where == Where::wall), "the fling test body is not where it should be");
+            for (auto& h : in.hands) {
+                h.tracked = true;
+                h.wallPosition = {4.95f, where == Where::wall ? 10.f : 10.f, 0};
+                h.aim.orientation = arc({0, 0, -1}, {1, 0, 0});
+                h.gripRelativeToHead = {.4f, 0, 0};
+            }
+            in.hands[1].wallPosition.z = 3;
+            advance();
+            in.hands[0].wallGrip = 1; // the caller strips the web grip (Swing::gripHand)
+            if (otherHand)
+                in.hands[1].wallGrip = 1;
+            advance();
+            if (where == Where::wall)
+                check(s.climbingHands() & 1u, "the palm did not catch the wall");
+            for (int i = 0; i < 10; ++i) {
+                in.hands[0].gripRelativeToHead.z -= .02f; // a pull of 1.2 m/s
+                advance();
+            }
+            in.hands[0].wallGrip = 0;
+            advance();
+            return std::pair{s, body};
+        };
+        // Along a wall: 1.3 x the hand's 1.2 m/s, along the wall; still on it.
+        {
+            auto [s, body] = fling(Where::wall, true);
+            check(s.gripReport().wallFlings == 1 && s.wall().on, "a wall fling was not made");
+            check(body.velocity.z > 1.3f && body.velocity.z < 1.7f, "the wall fling's speed");
+            auto [off, rest] = fling(Where::wall, false);
+            check(off.gripReport().flings == 0 && rest.velocity.z < body.velocity.z * .85f,
+                  "off by default: no fling");
+            auto [held, kept] = fling(Where::wall, true, true);
+            check(held.gripReport().flings == 0, "the other hand still holding: no fling");
+        }
+        // The air: the velocity gains 1.3 x the hand's speed the other way, at most 9 m/s.
+        {
+            auto [s, body] = fling(Where::air, true);
+            check(s.gripReport().airFlings == 1, "an air fling was not made");
+            check(body.velocity.z > 1.3f && body.velocity.z < 1.7f && length(body.velocity) < 9.f,
+                  "the air fling's speed");
+            auto [off, rest] = fling(Where::air, false);
+            check(off.gripReport().flings == 0 && std::abs(rest.velocity.z) < .01f,
+                  "off by default: none in the air");
+        }
+        // The ground: out of the ground's own control, off it with the hop.
+        {
+            auto [s, body] = fling(Where::ground, true);
+            check(s.gripReport().groundFlings == 1, "a ground fling was not made");
+            check(body.velocity.y >= 2.2f && body.velocity.z > 1.3f && body.velocity.z < 1.7f,
+                  "the ground fling's launch");
+            bool launched = false;
+            for (const auto& e : s.events())
+                launched |= e.kind == EventKind::GripFling;
+            check(launched, "the ground fling did not announce itself as a takeoff");
+        }
+    });
     test("hand climbing: two hands share movement, handovers and jumps release holds", [] {
         constexpr float dt = 1.f / 60;
         Building w;
@@ -3929,7 +4205,7 @@ int main() {
     test("merged settings keep phone suppression, arcade webs and hand climbing independent", [] {
         using namespace game_swing;
         Settings s;
-        check(s.version == 40 && s.bytes == 188, "updated settings did not append the climbing field");
+        check(s.version == 42 && s.bytes == 196, "updated settings did not append the climbing field");
         check(offsetof(Settings, noBlows) == 36 && offsetof(Settings, arcade) == 40 &&
               offsetof(Settings, handClimb) == 44, "upstream phone or arcade fields moved");
         s.noBlows = 3;
@@ -4415,6 +4691,94 @@ int main() {
             near(length(view.headPose.position - old.headPose.position), 0, .0001f);
             for (const auto& ray : rig.handCollisionRays(view.headPose.position)) near(ray.distance, 0);
         }
+    });
+    test("recoil: a blow the guard stopped knocks the view back a little and it comes home", [] {
+        GameTrackingRig rig, baseline;
+        auto f = trackedFrame();
+        const Vec3 feet{0, 0, 0};
+        playFor(rig, f, feet, {0, 1, 0}, 1);
+        playFor(baseline, f, feet, {0, 1, 0}, 1);
+        rig.recoil({0, 0, 1}, .03f);
+        float peak = 0;
+        for (int i = 0; i < 90; ++i) {
+            ++f.predictedDisplayTime;
+            const auto moved = rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0});
+            const auto still = baseline.update(f, feet, {0, 0, -1}, true, {0, 1, 0});
+            // The head went exactly as far as the recoil says, only along the kick, and never toward him.
+            const Vec3 by = moved.headPose.position - still.headPose.position;
+            near(length(by - moved.recoil), 0, .00002f);
+            near(by.x, 0, .00002f);
+            near(by.y, 0, .00002f);
+            check(by.z > -.00002f, "the recoil went toward the enemy");
+            near(length(still.recoil), 0, 0);
+            peak = std::max(peak, by.z);
+            // The eyes, the hands and the webs' placement went with it; the feet's anchor did not.
+            for (unsigned e = 0; e < 2; ++e) {
+                const Vec3 eye{moved.eyes[e][12], moved.eyes[e][13], moved.eyes[e][14]};
+                const Vec3 eyeStill{still.eyes[e][12], still.eyes[e][13], still.eyes[e][14]};
+                near(length(eye - eyeStill - by), 0, .00002f);
+                near(length(moved.grips[e].position - still.grips[e].position - by), 0, .00002f);
+            }
+            near(length(moved.anchor - still.anchor), 0, 0);
+        }
+        check(peak > .029f && peak < .0301f, "the knock back is not as far as it was asked");
+        ++f.predictedDisplayTime;
+        const auto home = rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0});
+        const auto base = baseline.update(f, feet, {0, 0, -1}, true, {0, 1, 0});
+        near(length(home.headPose.position - base.headPose.position), 0, .00002f);
+        // No size, no way, or straight up: not a kick.
+        rig.recoil({0, 0, 1}, 0);
+        rig.recoil({0, 0, 0}, .03f);
+        rig.recoil({0, 1, 0}, .03f);
+        ++f.predictedDisplayTime;
+        near(length(rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0}).recoil), 0, 0);
+    });
+    test("recoil: a player a surface holds is not knocked about, and one already out eases home", [] {
+        GameTrackingRig rig, baseline;
+        auto f = trackedFrame();
+        const Vec3 feet{0, 0, .9f};
+        const SurfaceHold wall{{0, 0, 1}, {}, 0, false};
+        holdFor(rig, f, feet, wall, 1);
+        holdFor(baseline, f, feet, wall, 1);
+        rig.recoil({0, 0, 1}, .03f);
+        for (int i = 0; i < 20; ++i) {
+            ++f.predictedDisplayTime;
+            const auto moved = rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0}, true, wall);
+            const auto still = baseline.update(f, feet, {0, 0, -1}, true, {0, 1, 0}, true, wall);
+            near(length(moved.recoil), 0, 0);
+            near(length(moved.headPose.position - still.headPose.position), 0, .00002f);
+        }
+        // Out on the ground, then held: it stops going further and is home within a third of a second.
+        GameTrackingRig other;
+        auto g = trackedFrame();
+        playFor(other, g, feet, {0, 1, 0}, 1);
+        other.recoil({0, 0, 1}, .03f);
+        ++g.predictedDisplayTime;
+        float out = other.update(g, feet, {0, 0, -1}, true, {0, 1, 0}).recoil.z;
+        check(out > .01f, "the kick did not move the view");
+        for (int i = 0; i < 30; ++i) {
+            ++g.predictedDisplayTime;
+            const float now = other.update(g, feet, {0, 0, -1}, true, {0, 1, 0}, true, wall).recoil.z;
+            check(now <= out + 1e-6f, "a surface held the player and the recoil still grew");
+            out = now;
+        }
+        near(out, 0, .0003f);
+    });
+    test("recoil: a break in tracking ends it", [] {
+        GameTrackingRig rig;
+        auto f = trackedFrame();
+        const Vec3 feet{};
+        playFor(rig, f, feet, {0, 1, 0}, 1);
+        rig.recoil({0, 0, 1}, .03f);
+        ++f.predictedDisplayTime;
+        check(rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0}).recoil.z > .01f,
+              "the kick did not move the view");
+        f.focused = false;
+        ++f.predictedDisplayTime;
+        rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0});
+        f.focused = true;
+        ++f.predictedDisplayTime;
+        near(length(rig.update(f, feet, {0, 0, -1}, true, {0, 1, 0}).recoil), 0, 0);
     });
     test("ground dodge cannot acquire a prone vent camera from transient crawl flags", [] {
         CrawlCameraGate gate;
@@ -6635,12 +6999,72 @@ int main() {
             off=std::max(off,length((p-from)-way*dot(p-from,way)));
         check(off<.01f,"the eyes left the straight way to the wall");
     });
-    test("invalid controller cannot walk or attach a web", [] {
+    test("a controller the headset lost aims nothing, but its stick and buttons count (issue #81)", [] {
         auto f=trackedFrame();f.hands[0].valid=false;f.hands[0].stickY=1;
         f.hands[1].aim.position.x=std::numeric_limits<float>::quiet_NaN();
         const auto input=trackedSwingInput(f,{});
         check(input.focused&&!input.hands[0].tracked&&!input.hands[1].tracked,"invalid hand accepted");
-        near(length(input.move),0);
+        check(input.hands[0].lost&&input.hands[1].lost,"a lost hand's buttons were dropped");
+        near(input.hands[0].grip,1);near(input.hands[0].trigger,1);
+        check(length(input.move)>.99f,"a lost hand's stick walked nowhere");
+        // Its right stick turns the view as one in sight does (the snap turn test below).
+        GameTrackingRig rig;auto g=trackedFrame();g.hands[1].valid=false;g.head.position.x=.4f;
+        rig.update(g,{},{0,0,-1},true);
+        g.predictedDisplayTime=2;g.hands[1].stickX=1;
+        near(rig.update(g,{},{0,0,-1},true).head[8],.5f);
+        // Across to the game's swing: 2 is a lost hand, past it nothing.
+        game_swing::Command c;c.serial=1;c.hands[0].tracked=2;
+        check(game_swing::valid(c)&&game_swing::input(c).hands[0].lost&&!game_swing::input(c).hands[0].tracked,
+              "a lost hand did not reach the swing");
+        c.hands[0].tracked=3;check(!game_swing::valid(c),"a hand neither tracked nor lost accepted");
+        // As the webs are let go of (a long break, a recenter), a lost hand is no hand.
+        GameTrackingRig broken;broken.update(f,{},{0,0,-1},true);
+        broken.triggerWebs(true);f.predictedDisplayTime=2;
+        const auto out=broken.update(f,{},{0,0,-1},true);
+        check(out.releaseWebs&&!out.swing.hands[0].lost&&!out.swing.hands[0].tracked,"a let-go kept a lost hand");
+    });
+    test("a lost hand holds its web while its button is held, and shoots none (issue #81)", [] {
+        TestWorld world;
+        spidy::Swing solver(inert());
+        auto in = aimed();
+        in.hands[0].trigger = 0;
+        const Body body{{0, 0, 0}, {}, false};
+        const auto step = [&] {
+            solver.predictNativeStep(1.f / 90, in, world, body);
+            bool lost = false;
+            for (const auto& e : solver.events())
+                lost |= e.kind == EventKind::TrackingLost;
+            return lost;
+        };
+        step();
+        check(solver.webs()[0].attached, "no web to hold");
+        // The arm behind the head: no pose, the grip held.
+        in.hands[0].tracked = false;
+        in.hands[0].lost = true;
+        in.hands[0].aim = {};
+        in.hands[0].gripRelativeToHead = {};
+        for (int i = 0; i < 90; ++i)
+            check(!step() && solver.webs()[0].attached, "a lost hand let go of its web");
+        // Let go of while lost, it goes; pressed again while lost, nothing is shot.
+        in.hands[0].grip = 0;
+        step();
+        check(!solver.webs()[0].attached, "a lost hand's let-go kept the web");
+        in.hands[0].grip = 1;
+        step();
+        check(!solver.webs()[0].attached, "a lost hand shot a web");
+        // Seen again with that press still held: no shot until it is let go.
+        in = aimed();
+        in.hands[0].trigger = 0;
+        step();
+        check(!solver.webs()[0].attached, "a press made while lost shot once seen again");
+        in.hands[0].grip = 0;
+        step();
+        in.hands[0].grip = 1;
+        step();
+        check(solver.webs()[0].attached, "no web after a fresh press");
+        // Untracked and not lost (no controller, the webs let go of): it goes, as before.
+        in.hands[0].tracked = false;
+        check(step() && !solver.webs()[0].attached, "an untracked hand kept its web");
     });
     test("game rig snap turn pivots at head and waits for stick release", [] {
         GameTrackingRig rig;auto f=trackedFrame();f.head.position.x=.4f;
@@ -10001,7 +10425,7 @@ int main() {
         check(game_swing::valid(c) && !game_swing::input(c).fighting, "the web tie's click (bit 1) taken for a fight");
         c.asks = 7;
         check(game_swing::valid(c), "asks 7 refused");
-        c.asks = 64;
+        c.asks = 128;
         check(!game_swing::valid(c), "an unknown asks bit accepted");
         c.asks = 1;
         check(!game_swing::input(c).fighting, "bit 0 read as a fight");
@@ -10085,7 +10509,7 @@ int main() {
         c.asks = 8;
         check(game_swing::valid(c) && game_swing::input(c).runJump && !game_swing::input(c).fighting,
               "asks bit 3 refused or lost");
-        c.asks = 64;
+        c.asks = 128;
         check(!game_swing::valid(c), "an unknown asks bit accepted");
         vr_settings::Values values;
         check(values.spidyRunJump && vr_settings::defaultChoice(vr_settings::Item::spidyRunJump) == 1 &&
@@ -10231,7 +10655,7 @@ int main() {
         Swing fresh(inert());
         check(!fresh.webLandingSmoothEnabled() && !fresh.landCarrying(), "SMOOTH WEB LANDING on by default");
         game_swing::Settings packet;
-        check(packet.version == 40 && packet.bytes == 188 && !packet.webLandingSmooth &&
+        check(packet.version == 42 && packet.bytes == 196 && !packet.webLandingSmooth &&
                   packet.webLandingImpact == 24 &&
                   offsetof(game_swing::Settings, webLandingSmooth) == game_swing::settingsBytesV29,
               "SMOOTH WEB LANDING not appended, or on by default");
@@ -10385,7 +10809,7 @@ int main() {
         Swing fresh(inert());
         check(!fresh.groundRunEnabled() && !fresh.groundRunning(), "SPIDY RUN on by default");
         game_swing::Settings packet;
-        check(packet.version == 40 && packet.bytes == 188 && !packet.spidyRun &&
+        check(packet.version == 42 && packet.bytes == 196 && !packet.spidyRun &&
                   offsetof(game_swing::Settings, spidyRun) == game_swing::settingsBytesV27,
               "SPIDY RUN not appended, or on by default");
         packet.spidyRun = 2;
@@ -10585,7 +11009,7 @@ int main() {
             check(!sw.groundRunning(), "the air started a run from standing");
         }
         game_swing::Settings packet;
-        check(packet.version == 40 && packet.bytes == 188 && !packet.spidyRunStanding &&
+        check(packet.version == 42 && packet.bytes == 196 && !packet.spidyRunStanding &&
                   offsetof(game_swing::Settings, spidyRunStanding) == game_swing::settingsBytesV28,
               "SPIDY RUN FROM STANDING not appended, or on by default");
         packet.spidyRunStanding = 2;
@@ -10840,6 +11264,106 @@ int main() {
         WebStrike ground;ground.hangOn(true,1.6f);
         check(ground.phase()==WebStrike::Phase::Idle,"a hang on the ground");
     });
+    test("enemy types is the launcher's switch for the guards: off by default, kept, and settings version 32 "
+         "carries it",
+         [] {
+             using vr_settings::Item;
+             // Off by default, so that a spidy_vr.ini from before it (no enemy_types line) and a reset leave
+             // the game as it was.
+             vr_settings::Values v;
+             check(!v.enemyTypes, "enemy types must default off");
+             check(vr_settings::choice(Item::enemyTypes, v) == 0 &&
+                       vr_settings::defaultChoice(Item::enemyTypes) == 0,
+                   "default choice is not OFF");
+             check(!vr_settings::withTabOnly({}, "hand_climb=1\n").enemyTypes,
+                   "an old spidy_vr.ini turned the guards on");
+             // On is kept and read back, and any other line is left alone by it.
+             check(vr_settings::choose(Item::enemyTypes, 1, v) && v.enemyTypes, "ON failed");
+             check(!vr_settings::choose(Item::enemyTypes, 1, v), "ON twice said it changed something");
+             check(!vr_settings::choose(Item::enemyTypes, 2, v), "a third choice was taken");
+             const std::string text = vr_settings::tabOnlyText(v);
+             check(text.find("\nenemy_types=1\n") != std::string::npos, "the line is not written");
+             const auto back = vr_settings::withTabOnly({}, text);
+             check(back.enemyTypes && back == v, "ON not kept");
+             check(vr_settings::withTabOnly({}, "enemy_types=1\n").enemyTypes &&
+                       !vr_settings::withTabOnly({}, "enemy_types=0\n").enemyTypes,
+                   "the line is not read");
+             // The launcher's row alone, not the game's tab, and the game's RESET ALL leaves it as it is.
+             size_t found = 0;
+             for (const auto& row : vr_settings::rows())
+                 if (row.item == Item::enemyTypes) {
+                     ++found;
+                     check(row.place == vr_settings::Place::launcher &&
+                               std::string(row.title) == "ENEMY TYPES" && row.choices.empty(),
+                           "the row is not the launcher's switch");
+                 }
+             check(found == 1, "the row is not there once");
+             check(static_cast<unsigned>(Item::enemyTypes) + 4 == static_cast<unsigned>(Item::helpPage) &&
+                       vr_settings::lastItem == Item::helpPage,
+                   "enemy types is not the last setting (NA HELP's pages follow it)");
+             vr_settings::Values on;
+             on.enemyTypes = true;
+             for (size_t i = 0; i < vr_settings::categoryCount; ++i)
+                 check(vr_settings::resetCategory(static_cast<vr_settings::Category>(i), on).enemyTypes,
+                       "a reset of the game's menu turned the guards back off");
+             // Settings version 32 appends it upstream; this fork's version 41 appends it after the fork's v32-v40
+             // fields, off, and version 31 (148 bytes) and the fork's version 40 (188) are still taken, guards off.
+             game_swing::Settings s;
+             check(s.version == 42 && s.bytes == 196 && s.enemyTypes == 0 &&
+                       game_swing::settingsBytesV31 == 148 && game_swing::settingsBytesV40 == 188 &&
+                       offsetof(game_swing::Settings, enemyTypes) == game_swing::settingsBytesV40 &&
+                       offsetof(game_swing::Settings, webLines) == game_swing::settingsBytesV30,
+                   "settings moved old fields");
+             check(game_swing::validSettings(s), "the defaults are refused");
+             s.enemyTypes = 1;
+             check(game_swing::validSettings(s), "ON refused");
+             s.enemyTypes = 2;
+             check(!game_swing::validSettings(s), "invalid switch accepted");
+             game_swing::Settings old;
+             old.version = 31;
+             old.bytes = game_swing::settingsBytesV31;
+             check(game_swing::validSettings(old) && old.enemyTypes == 0,
+                   "version 31 refused, or it turns the guards on");
+             game_swing::Settings v40;
+             v40.version = 40;
+             v40.bytes = game_swing::settingsBytesV40;
+             check(game_swing::validSettings(v40), "the fork's version 40 refused");
+             game_swing::Settings wrong;
+             wrong.version = 41;
+             wrong.bytes = game_swing::settingsBytesV40;
+             check(!game_swing::validSettings(wrong), "version 41 at version 40's size accepted");
+             wrong.version = 32;
+             wrong.bytes = sizeof(game_swing::Settings);
+             check(!game_swing::validSettings(wrong), "upstream version 32 at version 41's size accepted");
+             // TARGET SCAN OUTSIDE FIGHTS (Nov 16): version 42 appends the scan interval out of a fight; a version
+             // 41 packet (192 bytes) is still taken and keeps 250 ms.
+             game_swing::Settings v41;
+             v41.version = 41;
+             v41.bytes = game_swing::settingsBytesV41;
+             check(game_swing::validSettings(v41) && game_swing::settingsBytesV41 == 192 &&
+                       offsetof(game_swing::Settings, targetScanIdleMs) == game_swing::settingsBytesV41,
+                   "version 41 refused, or the scan interval not after it");
+             game_swing::Settings scan;
+             check(scan.targetScanIdleMs == 500, "500 ms out of fights by default");
+             scan.targetScanIdleMs = 249;
+             check(!game_swing::validSettings(scan), "a scan under 250 ms accepted");
+             scan.targetScanIdleMs = 2001;
+             check(!game_swing::validSettings(scan), "a scan over 2 s accepted");
+             scan.targetScanIdleMs = 2000;
+             check(game_swing::validSettings(scan), "2 s refused");
+             check(game_targets::scanIntervalMs(true, 2000) == 250 && game_targets::scanIntervalMs(false, 500) == 500 &&
+                       game_targets::scanIntervalMs(false, 10) == 250 && game_targets::scanIntervalMs(false, 9000) == 2000,
+                   "the scan interval: 250 ms in a fight, the setting out of one, within 250..2000");
+             game_swing::Command c;
+             c.serial = 1;
+             c.asks = 64;
+             check(game_swing::valid(c) && !game_swing::input(c).fighting,
+                   "asks bit 6 (a fight, for the target scan) refused, or read as COMBAT RESPONSIVE");
+             check(vr_settings::Values{}.targetScanIdleMs == 500 &&
+                       vr_settings::withTabOnly({}, "target_scan_idle_ms=100\n").targetScanIdleMs == 250 &&
+                       vr_settings::withTabOnly({}, "target_scan_idle_ms=800\n").targetScanIdleMs == 800,
+                   "target_scan_idle_ms: 500 by default, read and clamped");
+         });
     test("called blows hit harder and throw him the way they went", [] {
         const Flow flow;
         const auto blow=[](Vec3 direction,float strength) {
@@ -12288,6 +12812,10 @@ int main() {
             const KnockoutView knockout{point, .3f};
             s ? appendKnockout(v, knockout, viewer, pixel, *s) : appendKnockout(v, knockout, viewer, pixel);
         });
+        three("a blocked blow", [&](std::vector<Vertex>& v, const UiStyle* s) {
+            const BlockView blocked{point, .5f, 2, 3, .3f};
+            s ? appendBlock(v, blocked, viewer, pixel, *s) : appendBlock(v, blocked, viewer, pixel);
+        });
         three("Spider-Sense", [&](std::vector<Vertex>& v, const UiStyle* s) {
             const SenseView sense{point, SenseAnswer::Dodge, .5f, true, .5f, -1};
             s ? appendSense(v, sense, viewer, pixel, *s) : appendSense(v, sense, viewer, pixel);
@@ -12450,6 +12978,172 @@ int main() {
         appendKnockout(none, {stood, .3f}, viewer, 0, UiStyle::tech);
         check(none.empty(), "a tech mark before its time, nowhere, with no time left or no pixel");
     });
+    test(
+        "a blocked blow's BLOCKED mark: printed on twos with a shield, lettering and a pip for each block "
+        "before his counter; in tech a shield and a tag",
+        [] {
+            const Vec3 viewer{0, 1.6f, 0}, at{0, 1.4f, -.7f};
+            constexpr float pixel = .0006f, pose = 1.f / 12;
+            const Vec3 facing = normalized(viewer - at);
+            const Vec3 ink{.0033f, .0030f, .0070f}, paper{.9301f, .9131f, .8550f}, cyan{.0060f, .6724f, 1},
+                yellow{1, .7529f, .0742f}, red{.7682f, .0194f, .0284f}, steel{.2307f, .3185f, .4508f};
+            const auto count = [](const std::vector<Vertex>& v, Vec3 colour) {
+                size_t n{};
+                for (const auto& x : v)
+                    n += length(x.color - colour) < .01f;
+                return n;
+            };
+            const auto widest = [&](const std::vector<Vertex>& v) {
+                float r{};
+                for (const auto& x : v)
+                    r = std::max(r, length(x.position - at));
+                return r;
+            };
+            const auto strongest = [](const std::vector<Vertex>& v) {
+                float a{};
+                for (const auto& x : v)
+                    a = std::max(a, x.alpha);
+                return a;
+            };
+            const auto flat = [&](const std::vector<Vertex>& v) {
+                for (const auto& x : v)
+                    if (!finite(x.position) || !(x.alpha >= 0 && x.alpha <= 1) ||
+                        std::abs(dot(x.position - at, facing)) > 1e-3f)
+                        return false;
+                return !v.empty() && v.size() % 3 == 0;
+            };
+            const auto same = [](const std::vector<Vertex>& a, const std::vector<Vertex>& b) {
+                if (a.size() != b.size())
+                    return false;
+                for (size_t i = 0; i < a.size(); ++i)
+                    if (length(a[i].position - b[i].position) > 0 || length(a[i].color - b[i].color) > 0 ||
+                        a[i].alpha != b[i].alpha)
+                        return false;
+                return true;
+            };
+            const auto draw = [&](UiStyle style, float age, int streak = 1, int counterAt = 3,
+                                  float strength = .5f) {
+                std::vector<Vertex> v;
+                appendBlock(v, {at, strength, streak, counterAt, age}, viewer, pixel, style);
+                return v;
+            };
+            const auto comic = [&](float age, int streak = 1, int counterAt = 3, float strength = .5f) {
+                return draw(UiStyle::comic, age, streak, counterAt, strength);
+            };
+            const auto tech = [&](float age, int streak = 1, int counterAt = 3, float strength = .5f) {
+                return draw(UiStyle::tech, age, streak, counterAt, strength);
+            };
+            // The comic's: a white flash round a cyan star and the shield, keyed in ink, in poses of a
+            // twelfth of a second.
+            const auto flash = comic(pose * .5f), held = comic(pose * 4.5f), counter = comic(pose * 4.5f, 3);
+            check(flat(flash) && flat(held) && flat(counter),
+                  "the block's vertices are off their plane, or not numbers");
+            check(count(flash, paper) > 0 && count(flash, cyan) > 0 && count(flash, ink) > 0,
+                  "the block's flash is not paper round cyan, keyed in ink");
+            check(count(held, steel) > 0 && count(held, red) > 0 && count(held, paper) > 0 &&
+                      count(held, ink) > 0 && count(held, cyan) == 0,
+                  "the shield is not steel, paper and a red chevron keyed in ink, with no flash");
+            check(widest(comic(pose * 1.5f)) > widest(flash), "the flash does not grow");
+            check(same(comic(.01f), comic(.07f)) && !same(comic(.07f), comic(.09f)),
+                  "a pose is not held a twelfth of a second");
+            check(same(comic(pose * 4.2f), comic(pose * 5.8f)) &&
+                      !same(comic(pose * 5.8f), comic(pose * 6.2f)),
+                  "the shield and its lettering are not held, then popped");
+            // Two poses of paper sparks thrown clear of the shield, each drawn anew, and none once it is
+            // held.
+            check(comic(pose * 2.5f).size() > held.size() && comic(pose * 3.5f).size() > held.size() &&
+                      count(comic(pose * 2.5f), paper) > count(held, paper) &&
+                      !same(comic(pose * 2.5f), comic(pose * 3.5f)) &&
+                      comic(pose * 4.5f).size() == held.size(),
+                  "the sparks are not thrown clear of the shield for two poses, or stay");
+            // Lettering in paper, yellow on the blow that sets off his counter, and a pip for each block he
+            // takes: red ones for those taken, paper for those to come, all red at the counter.
+            check(count(held, yellow) == 0 && count(counter, yellow) > 0,
+                  "the lettering is not yellow for the counter's blow only");
+            const auto first = comic(pose * 4.5f, 1), second = comic(pose * 4.5f, 2);
+            check(count(second, red) > count(first, red) && count(counter, red) > count(second, red),
+                  "a pip does not turn red for each block he takes");
+            const auto none = comic(pose * 4.5f, 0, 0);
+            check(count(first, red) > count(none, red) && count(first, paper) > count(none, paper),
+                  "no pips for each block before his counter");
+            check(count(comic(pose * 4.5f, 1, 7), red) == count(none, red) &&
+                      count(comic(pose * 4.5f, 1, 1), red) == count(none, red) &&
+                      count(comic(pose * 4.5f, 0, 3), red) == count(none, red),
+                  "pips for a count they cannot show (1, or over six) or for no block told");
+            check(count(comic(pose * 4.5f, 1, BlockView::maxPips), red) > count(none, red),
+                  "six pips are not drawn");
+            // A weak blow's shield is the smaller; the lettering keeps its size at a distance, as the count's
+            // does.
+            check(widest(comic(pose * 4.5f, 1, 3, .05f)) < widest(comic(pose * 4.5f, 1, 3, 1)),
+                  "a weak blow's mark is no smaller");
+            std::vector<Vertex> far;
+            appendBlock(far, {at + Vec3{0, 0, -5}, .5f, 1, 3, pose * 4.5f}, viewer, pixel, UiStyle::comic);
+            check(!far.empty() && length(far.front().position - (at + Vec3{0, 0, -5})) < 1.2f,
+                  "a distant mark is lost");
+            // The tech's: thin lines in the line white and a blue plate, an amber bar and diamonds; red for
+            // the counter's blow; and nothing holds a pose.
+            const auto techHeld = tech(.3f), techCounter = tech(.3f, 3);
+            check(flat(techHeld) && flat(techCounter),
+                  "the tech block's vertices are off their plane, or not numbers");
+            check(count(techHeld, ::spidy::tech::line) > 0 && count(techHeld, ::spidy::tech::amber) > 0 &&
+                      count(techHeld, ::spidy::tech::panel) > 0 && count(techHeld, ::spidy::tech::red) == 0,
+                  "the tech block is not the line white, amber and the menus' blue");
+            check(count(techCounter, ::spidy::tech::red) > 0 && count(techCounter, ::spidy::tech::amber) == 0,
+                  "the counter's blow is not red, not amber, in tech");
+            check(count(tech(.3f, 2), ::spidy::tech::amber) > count(tech(.3f, 1), ::spidy::tech::amber) &&
+                      count(tech(.3f, 1), ::spidy::tech::amber) >
+                          count(tech(.3f, 0, 0), ::spidy::tech::amber),
+                  "a diamond does not light for each block he takes in tech");
+            check(tech(.3f, 1, 0).size() < tech(.3f, 1, 3).size(), "the tech mark has a tag for no count");
+            // No lettering in the tech's (the comic style has the word): with no count to show it is the
+            // shield alone, 5 cm across at 70 cm; the tag holds only its diamonds (about 18 cm out for three,
+            // where "BLOCKED" on it would have taken it to 31).
+            const auto across = [&](const std::vector<Vertex>& v) {
+                float r{};
+                for (const auto& x : v)
+                    r = std::max(r, std::abs(x.position.x - at.x));
+                return r;
+            };
+            check(across(tech(.3f, 1, 0)) < .06f && across(tech(.3f, 0, 3)) < .06f,
+                  "the tech shield is wider than itself: lettering");
+            check(across(techHeld) > .12f && across(techHeld) < .22f,
+                  "the tech tag is no tag of three diamonds: lettering");
+            check(across(tech(.3f, 1, BlockView::maxPips)) < .3f, "the tech tag of six diamonds is lettered");
+            check(across(comic(pose * 4.5f)) > across(tech(.3f, 1, 0)) * 1.3f,
+                  "the comic's BLOCKED! is gone with the tech's");
+            // Nothing holds a pose while it moves (going out, then fading away), and it is not the printed
+            // mark.
+            check(!same(tech(.1f), tech(.105f)) && !same(tech(.55f), tech(.555f)) &&
+                      !same(comic(.3f), tech(.3f)),
+                  "the tech block holds a pose, or is the printed one");
+            check(widest(tech(.02f)) < widest(tech(.3f)), "the tech tag is not drawn out");
+            check(strongest(tech(.62f)) < strongest(tech(.3f)) && strongest(tech(.62f)) < .6f,
+                  "the tech mark does not fade out");
+            // Both are over by BlockView::seconds, and nothing is drawn before it, for no pixel, for the
+            // middle of the eyes or for a place that is no number.
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            for (const auto style : {UiStyle::comic, UiStyle::tech}) {
+                check(draw(style, BlockView::seconds - .01f).size() > 0 &&
+                          draw(style, BlockView::seconds).empty() &&
+                          draw(style, BlockView::seconds + 1).empty(),
+                      "a block mark does not end at its time");
+                check(draw(style, -.01f).empty() && draw(style, nan).empty(),
+                      "a block mark before its time or at no time");
+                std::vector<Vertex> lost;
+                appendBlock(lost, {at, .5f, 1, 3, .3f}, viewer, 0, style);
+                appendBlock(lost, {at, .5f, 1, 3, .3f}, viewer, nan, style);
+                appendBlock(lost, {viewer, .5f, 1, 3, .3f}, viewer, pixel, style);
+                appendBlock(lost, {{nan, 1, 0}, .5f, 1, 3, .3f}, viewer, pixel, style);
+                appendBlock(lost, {at, .5f, 1, 3, .3f}, {nan, 1, 0}, pixel, style);
+                check(lost.empty(), "a block mark with no pixel, on the eyes or nowhere");
+                // Hostile numbers in the rest: no crash, nothing off the plane.
+                check(flat(draw(style, .3f, -5, 99999, nan)) && flat(draw(style, .3f, 99999, -1, 7.f)),
+                      "a block mark with a count that is no sense is off the plane");
+                for (int p = 0; p < 8; ++p)
+                    check(flat(draw(style, pose * (static_cast<float>(p) + .5f))),
+                          "a pose of a block mark is empty or off the plane");
+            }
+        });
     test("tech Spider-Sense: wavy glowing lines in what to do, a ring of dashes closing, amber at its last notch", [] {
         const Vec3 viewer{0, 1.6f, 0}, headTop{0, 1.75f, -3};
         constexpr float pixel = .0005f;
@@ -13079,6 +13773,59 @@ int main() {
               "a pedestrian's talk marker");
         check(markerSubtype(poiInteract, poiLeftFace)==poiLeftFace,"a marker that is X already");
         check(markerSubtype(3, poiThrowable)==poiThrowable,"an objective's marker of the same number");
+    });
+    test("a marker the game offers names its button by its subtype, and X at it is the game's", [] {
+        using namespace prompt_buttons;
+        const Demand pair{padLeftShoulder|padRightShoulder,false,false,true};
+        check(markerDemand(poiInteract,poiThrowable)==pair,"a throwable's marker is not the game's LB + RB, held");
+        check(markerDemand(poiInteract,13)==Demand{padX},"the X marker");
+        // Y, B and A markers stay Spidy's: offered for many seconds, they would take its dodge and jump.
+        check(!markerDemand(poiInteract,12).any()&&!markerDemand(poiInteract,14).any()&&
+                  !markerDemand(poiInteract,15).any(),
+              "a Y, B or A marker took its button from Spidy");
+        check(!markerDemand(poiInteract,1).any()&&!markerDemand(poiInteract,17).any(),
+              "a talk marker or one of a subtype not known named a button");
+        check(!markerDemand(3,poiThrowable).any(),"an objective's marker of the same number named one");
+        // As klibo's mailbox came on November 11: AddPOI(38, 9, 7), POIInteractAvailable(38, 1, '').
+        LiveDemands live;
+        live.marker(1000,38,pack(markerDemand(poiInteract,poiThrowable)),false);
+        check(!live.demand(1000).any(),"a marker asked before the game offered it");
+        check(live.available(1100,38,true)==pack(pair),"the offer did not say what it asks");
+        check(live.demand(9000).buttons==pair.buttons,"an offered marker's ask went with liveMs");
+        live.available(9100,38,false);
+        check(!live.demand(9100).any(),"a withdrawn marker still asked");
+        live.available(9200,38,true);
+        live.marker(9300,38,0,true);
+        check(!live.demand(9300).any()&&!live.available(9400,38,false),"a cleared marker still asked");
+        // Offered before it was added; a marker never withdrawn ends at standMs; a load ends them all.
+        live.available(10000,40,true);
+        live.marker(10010,40,pack(Demand{padX}),false);
+        check(live.demand(10020)==Demand{padX},"an offer before its marker was lost");
+        check(!live.demand(10011+LiveDemands::standMs).any(),"a marker never withdrawn lived on");
+        live.marker(20000,41,pack(Demand{padX}),false);live.available(20000,41,true);
+        live.clearMarkers();
+        check(!live.demand(20000).any(),"a load left a marker asking");
+        // More markers than room: the oldest gives way, the newest asks.
+        for(uint32_t i=0;i<LiveDemands::markers+4;++i)live.marker(30000+i,100+i,pack(Demand{padB}),false);
+        check(live.available(31000,100+LiveDemands::markers+3,true)==pack(Demand{padB}),"the newest marker was lost");
+        // X at the offered mailbox is the game's LB + RB for as long as it is held, and no wheel's.
+        using namespace game_pad;
+        live.clearMarkers();
+        live.marker(40000,38,pack(markerDemand(poiInteract,poiThrowable)),false);live.available(40000,38,true);
+        NamedPress press;
+        NamedPress::Input in;
+        press.update(1.f/90,true,in,live.demand(40000));
+        in.buttons=buttonX;
+        check(press.update(1.f/90,true,in,live.demand(40010))==State{bumpers},"X at a mailbox sent no LB + RB");
+        check((press.claimed()&NamedPress::controlX)!=0,"X at a mailbox was left to the gadget wheel");
+        check(press.update(1.f/90,true,in,live.demand(41000))==State{bumpers},"the throw's hold let go");
+        // At a marker drawn with the left face button, the game's own X.
+        live.marker(42000,50,pack(markerDemand(poiInteract,13)),false);live.available(42000,50,true);
+        live.available(42000,38,false);
+        NamedPress square;
+        NamedPress::Input none;
+        square.update(1.f/90,true,none,live.demand(42000));
+        check(square.update(1.f/90,true,in,live.demand(42010))==State{x},"X at an X marker was not the game's X");
     });
     test("the game's action words say their buttons, and its LB + RB is put as X", [] {
         using namespace prompt_buttons;
@@ -22335,7 +23082,7 @@ int main() {
         check(r.headError<1e-3f&&r.handError[0]<1e-3f,"the scaled body missed its targets");
         check(r.grounded&&std::abs(b.at(pose,23).y-b.at(b.rest,23).y*1.1f)<1e-3f,"the scaled feet left the ground");
     });
-    test("body: a player's longer arms reach their controllers, each arm scaled about its shoulder", [] {
+    test("body: a player's longer arms reach their controllers, each arm lengthened along its bones", [] {
         auto b=testBody();
         body::Config c;c.hideHead=false;
         // Where the shoulders end up under these eyes, without controllers.
@@ -22363,7 +23110,7 @@ int main() {
             near(length(b.at(pose,arm.lower)-b.at(pose,arm.upper)),.26f*longer,1e-3f);
             near(length(b.at(pose,arm.hand)-b.at(pose,arm.lower)),.30f*longer,1e-3f);
         }
-        near(length(b.at(pose,13)-b.at(pose,12)),.09f*longer,1e-3f); // the hand grows with its arm
+        near(length(b.at(pose,13)-b.at(pose,12)),.09f,1e-3f); // SA1: the arm lengthens by its bones; the hand keeps its size
         check(length(b.at(pose,1)-b.at(free,1))<1e-3f,"the arms moved the hips");
     });
     test("calibration: the rig's proportions, and the body's and arms' scales within their ranges", [] {
@@ -23202,7 +23949,7 @@ int main() {
     test("free combat: settings default to called combat and preserve older packet layouts", [] {
         using namespace game_swing;
         Settings s;
-        check(s.version == 40 && s.bytes == 188 && s.combatVisuals == 1 &&
+        check(s.version == 42 && s.bytes == 196 && s.combatVisuals == 1 &&
                   offsetof(Settings, combatVisuals) == 56,
               "free combat broke the settings defaults or layout");
         s.combatVisuals = 0;
@@ -23249,7 +23996,7 @@ int main() {
         check(withTabOnly(Values{}, "single_hand_yank_percent=999\n").singleHandYankPercent == 300,
               "saved single-hand yank strength was not clamped");
         game_swing::Settings packet;
-        check(packet.version == 40 && packet.bytes == 188 && !packet.halfPunchDamage &&
+        check(packet.version == 42 && packet.bytes == 196 && !packet.halfPunchDamage &&
                   packet.singleHandYankPercent == 100 &&
                   offsetof(game_swing::Settings, halfPunchDamage) == 96 &&
                   offsetof(game_swing::Settings, singleHandYankPercent) == 100,
@@ -23430,26 +24177,242 @@ int main() {
             const auto s=samples(wave);
             near(static_cast<float>(s.size())/22050,impactSeconds(sound),.001f);
             float peak{},energy{},sum{};
-            for(const float v:s){peak=std::max(peak,std::abs(v));energy+=v*v;sum+=v;}
+            for(const float v:s){
+                peak = std::max(peak, std::abs(v));
+                energy += v * v;
+                sum += v;
+            }
             check(peak>.3f&&peak<.9f,"a blow's sound is too quiet or clipped");
             check(peak>lastPeak&&energy>lastEnergy&&s.size()>lastCount,"a harder blow was not louder and longer");
             check(std::abs(s.front())<.01f&&std::abs(s.back())<.01f,"the sound clicks at an end");
             check(std::abs(sum/s.size())<.02f,"the sound is off centre");
             // The smack comes first: the first 20 ms hold more than their share.
             float early{};
-            for(size_t i=0;i<441;++i)early+=s[i]*s[i];
+            for(size_t i=0;i<441;++i)
+                early += s[i] * s[i];
             check(early>energy*441/s.size(),"the blow has no attack");
-            lastPeak=peak;lastEnergy=energy;lastCount=s.size();
+            lastPeak=peak;
+            lastEnergy = energy;
+            lastCount = s.size();
         }
         const auto rush=samples(impactWave(ImpactSound::Rush));
         float peak{};
         size_t loudest{};
-        for(size_t i=0;i<rush.size();++i)if(std::abs(rush[i])>peak){peak=std::abs(rush[i]);loudest=i;}
+        for(size_t i=0;i<rush.size();++i)
+            if (std::abs(rush[i]) > peak) {
+                peak = std::abs(rush[i]);
+                loudest = i;
+            }
         check(peak>.05f&&peak<.45f,"the rush is too quiet or too loud");
         check(loudest>rush.size()/5&&loudest<rush.size()*4/5,"the rush does not swell and fade");
         check(impactWave(ImpactSound::Light)==impactWave(ImpactSound::Light),"the same sound came out differently");
         check(impactWave(ImpactSound::Firm,1).size()==44+2*static_cast<size_t>(std::lround(.16f*8000)),"an absurd rate was not limited");
+        // The blocked blow's sounds are recorded files (one for each kind of guard - a baton's, a
+        // swordsman's, a brute's, a shield's): each with a clear peak that is not too loud, a start that
+        // comes at once, no click at either end, a length of its own that is the same at any rate, and all
+        // four about as loud as one another (the loudest fifth of a second of each within 3.5 dB of the
+        // others'; the pressed-to-equal level is measured with a K-weighted filter in the tool that made
+        // them, this is the plain RMS check that no one is far off).
+        const ImpactSound blockSounds[] = {ImpactSound::BlockBaton, ImpactSound::BlockSword,
+                                           ImpactSound::BlockSlayer, ImpactSound::BlockShield};
+        float quietest = 1e9f, loudestBlock = 0;
+        float lengths[4]{};
+        for (int which = 0; which < 4; ++which) {
+            const ImpactSound sound = blockSounds[which];
+            check(isBlockSound(sound), "a block sound is not named as one");
+            const auto blocked = samples(impactWave(sound, blockWaveRate));
+            float blockedPeak{};
+            for (const float v : blocked)
+                blockedPeak = std::max(blockedPeak, std::abs(v));
+            // Played at blockLevel, 5 dB under the files' own: their peaks are .39 to .85 of full scale,
+            // played .22 to .48.
+            check(blockedPeak > .2f && blockedPeak < .55f, "a block sound is too quiet or too loud");
+            check(std::abs(blocked.front()) < .01f && std::abs(blocked.back()) < .01f,
+                  "a block sound clicks at an end");
+            size_t onset = 0;
+            while (onset < blocked.size() && std::abs(blocked[onset]) < .25f * blockedPeak)
+                ++onset;
+            check(static_cast<float>(onset) / static_cast<float>(blockWaveRate) < .06f,
+                  "a block sound starts late (silence before the blow)");
+            near(static_cast<float>(blocked.size()) / static_cast<float>(blockWaveRate), impactSeconds(sound),
+                 .001f);
+            lengths[which] = impactSeconds(sound);
+            check(lengths[which] > .25f && lengths[which] < 1.2f, "a block sound is the wrong length");
+            // The loudest fifth of a second, as RMS.
+            const size_t window = static_cast<size_t>(.2f * static_cast<float>(blockWaveRate));
+            float best{};
+            for (size_t at = 0; at + window <= blocked.size(); at += 441) {
+                double sum = 0;
+                for (size_t i = at; i < at + window; ++i)
+                    sum += static_cast<double>(blocked[i]) * blocked[i];
+                best = std::max(best, static_cast<float>(std::sqrt(sum / static_cast<double>(window))));
+            }
+            // The loudest fifth of a second sits near -25 to -23 dB of full scale (.055 to .071) played 5 dB
+            // under the files'.
+            check(best > .045f && best < .085f,
+                  "a block sound is not at its level (5 dB under the files' own)");
+            quietest = std::min(quietest, best);
+            loudestBlock = std::max(loudestBlock, best);
+            // At a lower rate the same sound, as long, no louder (the mean of the stretch each sample stands
+            // for).
+            const auto low = samples(impactWave(sound, 22050));
+            near(static_cast<float>(low.size()) / 22050, impactSeconds(sound), .001f);
+            float lowPeak{};
+            for (const float v : low)
+                lowPeak = std::max(lowPeak, std::abs(v));
+            check(lowPeak > .15f && lowPeak <= blockedPeak * 1.05f,
+                  "a block sound changes in level at a lower rate");
+        }
+        check(20 * std::log10(loudestBlock / quietest) < 3.5f,
+              "the four block sounds are not about as loud as one another");
+        check(lengths[0] != lengths[1] && lengths[1] != lengths[2] && lengths[2] != lengths[3],
+              "two block sounds are the same length: one file was used twice?");
     });
+    test("web-block sounds: the four of a refused web pull are recorded files (a swordsman's is his block "
+         "sound), at the loudness of the four of a blocked blow",
+         [] {
+             const auto samples = [](const std::vector<std::uint8_t>& wave) {
+                 std::vector<double> out;
+                 for (size_t i = 44; i + 1 < wave.size(); i += 2)
+                     out.push_back(static_cast<std::int16_t>(wave[i] | wave[i + 1] << 8) / 32768.0);
+                 return out;
+             };
+             // ITU-R BS.1770's K-weighting at 44100 Hz (a high shelf of +4 dB above about 1.7 kHz, then a 38
+             // Hz high-pass, both derived for the rate by the bilinear transform): the measure the sounds
+             // were set to equal loudness by, in a tool that is not in the tree. Here it keeps their numbers
+             // honest.
+             const auto kWeighted = [](const std::vector<double>& x) {
+                 const double pi = 3.14159265358979323846, rate = 44100;
+                 double f0 = 1681.974450955533, q = 0.7071752369554196;
+                 const double gain = 3.999843853973347;
+                 double k = std::tan(pi * f0 / rate);
+                 const double vh = std::pow(10.0, gain / 20), vb = std::pow(vh, 0.4996667741545416);
+                 double a0 = 1 + k / q + k * k;
+                 const double shelfB[3] = {(vh + vb * k / q + k * k) / a0, 2 * (k * k - vh) / a0,
+                                           (vh - vb * k / q + k * k) / a0};
+                 const double shelfA[3] = {1, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0};
+                 f0 = 38.13547087602444;
+                 q = 0.5003270373238773;
+                 k = std::tan(pi * f0 / rate);
+                 a0 = 1 + k / q + k * k;
+                 const double highB[3] = {1, -2, 1};
+                 const double highA[3] = {1, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0};
+                 const auto biquad = [](const std::vector<double>& in, const double* b, const double* a) {
+                     std::vector<double> out(in.size());
+                     double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+                     for (size_t i = 0; i < in.size(); ++i) {
+                         const double y = b[0] * in[i] + b[1] * x1 + b[2] * x2 - a[1] * y1 - a[2] * y2;
+                         x2 = x1;
+                         x1 = in[i];
+                         y2 = y1;
+                         y1 = y;
+                         out[i] = y;
+                     }
+                     return out;
+                 };
+                 return biquad(biquad(x, shelfB, shelfA), highB, highA);
+             };
+             // The loudest `seconds` of a K-weighted signal (windows 25 ms apart; a shorter sound is padded
+             // with silence), dB.
+             const auto loudest = [](const std::vector<double>& k, double seconds) {
+                 const size_t window = static_cast<size_t>(seconds * 44100), hop = 1102;
+                 std::vector<double> padded = k;
+                 if (padded.size() < window)
+                     padded.resize(window, 0.0);
+                 double best = -1e9;
+                 for (size_t at = 0; at + window <= padded.size(); at += hop) {
+                     double sum = 0;
+                     for (size_t i = at; i < at + window; ++i)
+                         sum += padded[i] * padded[i];
+                     best =
+                         std::max(best, -0.691 + 10 * std::log10(sum / static_cast<double>(window) + 1e-20));
+                 }
+                 return best;
+             };
+             const ImpactSound blocks[] = {ImpactSound::BlockBaton, ImpactSound::BlockSword,
+                                           ImpactSound::BlockSlayer, ImpactSound::BlockShield};
+             const ImpactSound webs[] = {ImpactSound::WebBlockBaton, ImpactSound::WebBlockSword,
+                                         ImpactSound::WebBlockSlayer, ImpactSound::WebBlockShield};
+             // Which are which: the eight are recorded sounds played the same way; only the last four are a
+             // refused pull's.
+             for (const auto sound : blocks)
+                 check(isBlockSound(sound) && !isWebBlockSound(sound),
+                       "a blocked blow's sound is named as a web pull's");
+             for (const auto sound : webs)
+                 check(isBlockSound(sound) && isWebBlockSound(sound),
+                       "a refused web pull's sound is not named as one");
+             for (const auto sound : {ImpactSound::Light, ImpactSound::Firm, ImpactSound::Heavy,
+                                      ImpactSound::Finisher, ImpactSound::Rush})
+                 check(!isBlockSound(sound) && !isWebBlockSound(sound),
+                       "a blow's own sound is named as a guard's");
+             // Each kind has its own file, in the order baton, sword, slayer, shield (the guard's sound +
+             // WebBlockBaton is what the headset plays): their lengths are the files' own (the sword's is his
+             // block sound's).
+             const float lengths[4] = {.946f, .708f, .277f, 1.703f};
+             double level[8]{};
+             float quietPeak = 1e9f;
+             for (int which = 0; which < 4; ++which) {
+                 const ImpactSound sound = webs[which];
+                 near(impactSeconds(sound), lengths[which], .006f);
+                 const auto wave = impactWave(sound, blockWaveRate);
+                 const auto played = samples(wave);
+                 near(static_cast<float>(played.size()) / static_cast<float>(blockWaveRate),
+                      impactSeconds(sound), .001f);
+                 check(played.size() > 44, "a web-block sound is empty");
+                 double peak = 0;
+                 for (const double v : played)
+                     peak = std::max(peak, std::abs(v));
+                 // At blockLevel (5 dB under the files' own): the files' peaks are .39 to .75 of full scale,
+                 // played .22 to .42.
+                 check(peak > .15 && peak < .55, "a web-block sound is too quiet or too loud");
+                 quietPeak = std::min(quietPeak, static_cast<float>(peak));
+                 check(std::abs(played.front()) < .01 && std::abs(played.back()) < .01,
+                       "a web-block sound clicks at an end");
+                 size_t onset = 0;
+                 while (onset < played.size() && std::abs(played[onset]) < .25 * peak)
+                     ++onset;
+                 // The files' bodies come within 75 ms of their start (the slayer's has a soft lead-in).
+                 check(static_cast<float>(onset) / static_cast<float>(blockWaveRate) < .1f,
+                       "a web-block sound starts late");
+                 const auto low = samples(impactWave(sound, 22050));
+                 near(static_cast<float>(low.size()) / 22050, impactSeconds(sound), .001f);
+                 const auto k = kWeighted(played);
+                 level[4 + which] = (loudest(k, .2) + loudest(k, .4)) / 2;
+                 const auto blockK = kWeighted(samples(impactWave(blocks[which], blockWaveRate)));
+                 level[which] = (loudest(blockK, .2) + loudest(blockK, .4)) / 2;
+                 // A swordsman's refused web pull plays his block sound (he has no web-block file of his own
+                 // yet), so those two are one sound; every other kind's web-block sound is a file of its own.
+                 const bool sameSound = std::equal(
+                     played.begin(),
+                     played.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(played.size(), 2000)),
+                     samples(impactWave(blocks[which], blockWaveRate)).begin());
+                 check(sameSound == (which == 1),
+                       "a web-block sound is the block sound of its kind (the sword's alone is)");
+             }
+             check(lengths[0] > lengths[1] && lengths[1] > lengths[2] && lengths[3] > lengths[0],
+                   "the web-block sounds are not in the order of the kinds");
+             // All eight are at one K-weighted loudness: the mean of the loudest 200 ms and the loudest 400
+             // ms, -20.96 dB in the files and 5 dB under that played (blockLevel): -25.96 dB. All but the
+             // brute's web-block sound (the seventh of the eight, level[6]); that one plays 3 dB under the
+             // rest, -28.96 dB.
+             double lowest = 1e9, highest = -1e9;
+             for (int i = 0; i < 8; ++i) {
+                 if (i == 6)
+                     continue;
+                 lowest = std::min(lowest, level[i]);
+                 highest = std::max(highest, level[i]);
+             }
+             check(highest - lowest < .1,
+                   "the seven guard sounds that were not turned down are not at one K-weighted loudness");
+             check(lowest > -26.15 && highest < -25.75,
+                   "the guard sounds are not at their level (5 dB under -20.96 dB)");
+             check(std::abs(level[6] - (lowest + highest) / 2 + 3.0) < .1,
+                   "the brute's web-block sound is not 3 dB under the other seven");
+             static_assert(static_cast<int>(ImpactSound::WebBlockSlayer) -
+                                   static_cast<int>(ImpactSound::BlockBaton) ==
+                               6,
+                           "level[6] is the brute's web-block sound");
+         });
     test("impact burst is printed on twos: a star small and then whole, its lines thrown clear, the flow's count lettered over it, then nothing", [] {
         const Vec3 viewer{0,1.6f,0},at{0,1.4f,-.7f};
         const float pose=1.f/12;
@@ -23928,7 +24891,8 @@ int main() {
                 continue;
             }
             const auto bit = static_cast<size_t>(row.item);
-            check(!seen.test(bit), "a setting twice");
+            // NA HELP's pages share one item (they hold no value).
+            check(!seen.test(bit) || row.item == Item::helpPage, "a setting twice");
             seen.set(bit);
             check(row.help && std::strlen(row.help) <= 80, "help missing, or too long for the game's column");
             check(row.choices.size() <= maxChoices, "more choices than the tab shows");
@@ -23971,8 +24935,21 @@ int main() {
         // SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB UP/DOWN, BOB SIDE and HEAD ANGLE.
         // November 11 (POINT JUMP): its six rows after HEAD ANGLE, before them too.
         // November 12: PUNCH VIEW EASE after POINT JUMP's.
-        constexpr size_t firstRealistic = 144;
-        check(all.size() == firstRealistic + std::size(realistic), "the realistic flips' rows are not the last");
+        // 0.8.7 (Ilya): the launcher's ENEMY TYPES, the row before the realistic flips' (as in 0.8.7).
+        check(all[144].item == Item::enemyTypes && all[144].place == Place::launcher,
+              "ENEMY TYPES is not the row before the realistic flips'");
+        constexpr size_t firstRealistic = 145;
+        // November 13: TORSO TWIST and ARM AIM FALLBACK (launcher rows), appended after them.
+        // November 14: STEADY's three rows, HORIZON LEVEL and VR STABILIZATION after them.
+        // November 14: the swing kick's two switches after those.
+        // November 14: WALL BRAKE and GRIP FLING (launcher rows) after those, then HAND GRAB and the handstand's eight,
+        // then (still November 14) HAND GRAB STRENGTH and HOLD COST, then AIR KICKS, AIM and SPIN.
+        // then (still November 14) WEB TETHERS, TETHER POINTS and TETHER STEPS, then GROUND KICKS, ENEMY JOINTS and ENEMY LIMB ZONES.
+        // Polish pass: HEADSET FIRST, ANIM HEAD RIDE and SHOULDER LIMIT (launcher rows) after those.
+        constexpr size_t rowsAfter = 79 + na_help::pageCount; // + HAND GRAB CLASS RULES, JUMP SOUNDS, WALL JUMP SOUND and NA HELP's pages (beta polish) // + the handoff tune's seven (Nov 18), + DIRECTIONAL FLIPS and MIDAIR POSES (Nov 18 1:09 PM)
+        // // (Nov 14: + AIR UPRIGHT TIME, POINT JUMP BULLET, FALL TO SPIDYVR, AIR LANDING BLEND, AIR LANDING RELEASE) + PUNCH AUTO-TARGET (4 rows), JUMP PULL (5 rows) and the handstand balance (4 rows), SHOWTIME (3 rows, then 8, Nov 14)
+        check(all.size() == firstRealistic + std::size(realistic) + rowsAfter,
+              "the realistic flips' rows are not the last but the appended ones");
         for (size_t i = 0; i < std::size(realistic); ++i)
             check(all[firstRealistic + i].item == realistic[i], "the realistic flips' rows out of order");
         check(std::strcmp(all[firstRealistic].title, "REALISTIC FLIPS") == 0 && all[firstRealistic].choices.empty(),
@@ -24135,18 +25112,18 @@ int main() {
             // a file that has seen them keeps the player's own choice.
             const std::string old = "run_curve=0\nearly_jump=0\n";
             const Values migrated = withMovementDefaults(withTabOnly({}, old), old);
-            check(migrated.runCurve && migrated.earlyJump == 1 && migrated.movementDefaults == 1,
+            check(migrated.runCurve && migrated.earlyJump == 1 && migrated.movementDefaults == vr_settings::movementDefaultsRevision,
                   "an old file did not get the movement defaults");
             const std::string running = "run_curve=0\nearly_jump=2\n";
             check(withMovementDefaults(withTabOnly({}, running), running).earlyJump == 2,
                   "the migration lowered EARLY JUMP RUNNING");
-            const std::string chosen = "run_curve=0\nearly_jump=0\nmovement_defaults=1\n";
+            const std::string chosen = "run_curve=0\nearly_jump=0\nmovement_defaults=2\n";
             const Values kept = withMovementDefaults(withTabOnly({}, chosen), chosen);
-            check(!kept.runCurve && kept.earlyJump == 0 && kept.movementDefaults == 1,
+            check(!kept.runCurve && kept.earlyJump == 0 && kept.movementDefaults == vr_settings::movementDefaultsRevision,
                   "the movement defaults overrode a choice made after them");
             check(withMovementDefaults(withTabOnly({}, ""), "").runCurve,
                   "no file: not the movement defaults");
-            check(tabOnlyText(migrated).find("movement_defaults=1\n") != std::string::npos,
+            check(tabOnlyText(migrated).find("movement_defaults=14\n") != std::string::npos,
                   "the migration is not remembered");
         }
         {
@@ -24226,7 +25203,7 @@ int main() {
               "the view above the game screen's rows: VR, or GAME SCREEN");
         // VR VIEW is on the pause menu's first page, beside RESUME, and no other row is; the realistic
         // flips' thresholds and how a spin builds and dies away are the launcher's alone (the user,
-        // October 25: "cleanup the redundant"). The other rows are the tab's.
+        // October 25: "cleanup the redundant"), and so is ENEMY TYPES. The other rows are the tab's.
         for (const auto& row : all) {
             const bool launcherOnly =
                 row.item == Item::automaticMinimumSpeed || row.item == Item::automaticResponse ||
@@ -24237,14 +25214,23 @@ int main() {
                 row.item == Item::palmShooters ||
                 // November 12 (hybrid movement): MOVEMENT MODE supersedes VIEW YAW SOURCE; TURN-IN-PLACE
                 // ANGLE is STABLE's only (the in-game camera tab holds 20).
-                row.item == Item::viewYawSource || row.item == Item::turnInPlace;
+                row.item == Item::viewYawSource || row.item == Item::turnInPlace ||
+                // November 13 (torso update on): launcher rows, no room in the in-game tabs.
+                (row.item >= Item::animatedTorsoTwist && row.item < Item::showtime) ||
+                // November 14 (air takeover): launcher rows; HANDOFF TIMING's seven (Nov 18), the game's own tab.
+                (row.item >= Item::airCorrect && !(row.item >= Item::landingBlend && row.item <= Item::airPoses) &&
+                 // Beta polish A4/A5: JUMP SOUNDS and WALL JUMP SOUND, NA · POINT JUMP's in-game rows.
+                 row.item != Item::pointJumpSound && row.item != Item::wallJumpSound);
             check(row.place == (row.item == Item::view ? Place::page
+                                : row.item == Item::helpPage ? Place::tab
+                                : naRetired(row.item)    ? Place::launcher
+                                : naInGame(row.item)     ? Place::tab
                                 : launcherOnly           ? Place::launcher
                                                          : Place::tab),
                   "a row in the wrong place");
         }
         check(std::count_if(all.begin(), all.end(), [](const Row& r) { return r.place == Place::tab; }) ==
-                  143, // November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE, +3 MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE, +2 JUMP TO SPIDYVR, AIR VIEW EASE, +2 ANIM YAW SWAY, TURN-IN-PLACE ANGLE, +4 PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD
+                  174 + na_help::pageCount, // (beta polish A4/A5: +2 JUMP SOUNDS, WALL JUMP SOUND) (beta polish M5: + NA HELP's pages) (beta polish M4: +9 NA rows players tune in the headset, -4 retired legacy rows hidden) (Nov 18 1:09 PM: +2 DIRECTIONAL FLIPS, MIDAIR POSES) (Nov 18: +7 HANDOFF TIMING) (Nov 14: +15 SHOWTIME) November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE, +3 MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE, +2 JUMP TO SPIDYVR, AIR VIEW EASE, +2 ANIM YAW SWAY, TURN-IN-PLACE ANGLE, +4 PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD
               "the tab's own rows");
         check(all[1].item == Item::webStyle && std::strcmp(all[1].title, "WEB STYLE") == 0 &&
                   all[1].choices.size() == 2 && std::strcmp(all[1].choices[0], "REALISTIC") == 0 &&
@@ -24316,7 +25302,7 @@ int main() {
               "spidy_vr.ini does not keep WEB LINES as web_lines");
         game_swing::Settings s;
         check(!s.webLines && offsetof(game_swing::Settings, webLines) == game_swing::settingsBytesV30 &&
-                  s.version == 40 && s.bytes == sizeof(game_swing::Settings),
+                  s.version == 42 && s.bytes == sizeof(game_swing::Settings),
               "web lines on in a new packet, or not appended");
         s.webLines = 1;
         check(game_swing::validSettings(s), "a packet with web lines refused");
@@ -24515,10 +25501,11 @@ int main() {
         const Values defaults;
         check(tabOnlyText(defaults) ==
                   "controlled_flips=0\nnear_clip_mm=20\nhand_climb=0\n"
-                  "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\n"
+                  "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\nenemy_types=0\n"
                   "realistic_flips=0\n"
                   "handstand=1\nhandstand_assist=1\nhandstand_push_gain=220\nhandstand_push_max=7\n"
-                  "handstand_fall_degrees=35\nhandstand_height_cm=95\nhandstand_gain_pct=300\nhandstand_eye_drop_cm=90\n"
+                  "handstand_fall_degrees=50\nhandstand_height_cm=95\nhandstand_gain_pct=500\nhandstand_eye_drop_cm=90\n"
+                  "handstand_leap=1\nhandstand_support_cm=18\nhandstand_grace_ms=500\nhandstand_damping_pct=250\n"
                   "rotation_strength=50\nrotation_speed=240\nflight_speed_min=3\n"
                   "swing_momentum=1\nrotation_response_ms=500\nhand_momentum=100\n"
                   "angular_drag_ms=3000\nhand_speed_min_cm=100\nair_rotation_brake=1\n"
@@ -24535,19 +25522,66 @@ int main() {
                   "camera_stabilization=0\ncamera_vertical_ms=0\ncamera_horizontal_ms=0\ncamera_angle_ms=0\n"
                   "camera_light_vertical_ms=75\ncamera_light_horizontal_ms=50\ncamera_light_angle_ms=75\n"
                   "camera_heavy_vertical_ms=200\ncamera_heavy_horizontal_ms=150\ncamera_heavy_angle_ms=200\n"
-                  "spherical_aim=1\nleg_control=0\nleg_stiffness_pct=100\nleg_damping_pct=100\nleg_coupling_pct=50\nleg_double_tap_ms=300\npunch_view_ease_ms=250\nmove_haptics_pct=100\nview_yaw_source=1\nsound_trace=1\njump_handoff_ms=500\nair_view_ease_ms=250\nanim_yaw_sway_pct=20\nturn_in_place_deg=35\npassive_legs_pct=60\npassive_coupling_pct=15\nmovement_mode=0\nrear_snap_turn_ms=200\nleg_air_crouch=1\nleg_reach_spread=1\nair_fists=1\n"
+                  "spherical_aim=1\nleg_control=0\nleg_stiffness_pct=100\nleg_damping_pct=100\nleg_coupling_pct=50\nleg_double_tap_ms=300\npunch_view_ease_ms=250\nmove_haptics_pct=100\nview_yaw_source=1\nsound_trace=0\njump_handoff_ms=250\nair_view_ease_ms=200\nanim_yaw_sway_pct=20\nturn_in_place_deg=35\npassive_legs_pct=60\npassive_coupling_pct=15\nmovement_mode=0\nrear_snap_turn_ms=200\nanimated_torso_twist=80\nanim_forearm_fallback_deg=60\ncamera_steady_vertical_ms=200\ncamera_steady_horizontal_ms=200\ncamera_steady_angle_ms=200\ncamera_horizon_level_pct=0\ncamera_vr_stabilization=1\nswing_kick_manual=1\nswing_kick_auto=1\nleg_hold_everywhere=0\nswing_kick_grunt=0\nwall_brake=1\ngrip_fling=1\ngrip_stop_pct=200\ngrip_fling_gain_pct=130\ngrip_fling_max=9\nhand_grab=1\nhand_grab_force=1200\nenemy_hold_cost=1\nhand_grab_class_rules=1\nkicks=1\nkick_gaze_cone_deg=40\nkick_spin_pct=30\nground_kicks=1\nenemy_joints=0\nenemy_limb_zones=0\nphysical_tethers=1\ntether_particles=24\ntether_substeps=8\nleg_air_crouch=1\nleg_reach_spread=1\nair_poses=1\ndirectional_flips=1\nair_fists=1\n"
                   "camera_pitch_pct=100\ncamera_roll_pct=100\ncamera_bob_vertical_pct=100\ncamera_bob_side_pct=100\n"
                   "camera_head_angle_deg=0\n"
                   "sidestep=1\nsidestep_distance_cm=200\nsidestep_ms=180\nsidestep_cooldown_ms=300\n"
                   "sidestep_chain=3\nsidestep_lockout_ms=800\nsidestep_iframes=1\nsidestep_flick_from=30\n"
                   "sidestep_flick_to=80\nsidestep_flick_ms=80\nsidestep_a_ms=120\nsidestep_forward=0\n"
-                  "point_jump=0\npoint_jump_trigger=0\npoint_jump_chord_ms=50\npoint_jump_tap_ms=150\n"
+                  "point_jump=1\npoint_jump_trigger=0\npoint_jump_chord_ms=50\npoint_jump_tap_ms=150\n"
                   "point_jump_full_ms=1000\npoint_jump_min_speed=9\npoint_jump_max_speed=22\npoint_jump_curve=0\n"
                   "point_jump_normal_bias=25\npoint_jump_min_out_degrees=10\npoint_jump_keep=25\n"
-                  "point_jump_coyote_ms=120\npoint_jump_buffer_ms=150\npoint_jump_cooldown_ms=250\n"
+                  "point_jump_coyote_ms=120\npoint_jump_buffer_ms=200\npoint_jump_cooldown_ms=250\n"
                   "point_jump_zip_guard_ms=400\npoint_jump_dodge_hold_ms=250\npoint_jump_in_combat=1\n"
-                  "anim_head_ride=1\nshoulder_limit=1\nsnap_realign=1\n"
-                  "movement_defaults=1\n",
+                  "headset_first=1\npunch_autotarget=1\npunch_track_cone_deg=120\npunch_track_range_m=10\npunch_view_snap=0\n"
+                  "jump_pull=1\njump_pull_gaze_deg=20\njump_pull_stick_deg=25\njump_pull_range_m=12\njump_pull_cap_dmps=15\n"
+                  "anim_head_ride=0\nshoulder_limit=0\nsnap_realign=1\n"
+                  "showtime=1\nshowtime_while=0\nshowtime_fade_ms=150\nshowtime_body=0\nshowtime_chord=0\nshowtime_auto_dodge=1\n"
+                  "showtime_auto_finish=1\nshowtime_distance_cm=250\nshowtime_height_cm=30\nshowtime_angle_deg=35\n"
+                  "showtime_turn=0\nshowtime_follow=1\nshowtime_vignette=1\nshowtime_slow_mo=1\nshowtime_latch=0\n"
+                  "air_correct_ms=1000\n"
+                  "point_jump_bullet=1\npoint_jump_sound=1\nwall_jump_sound=1\nattack_sound=0\n"
+                  "fall_handoff_ms=150\n"
+                  "air_landing_blend=1\n"
+                  "air_landing_release=1\n"
+                  "handstand_catch_hold_cm=35\n"
+                  "handstand_reach_cm=160\n"
+                  "takeover_view_ease=1\n"
+                  "head_height_fade_ms=275\n"
+                  "handoff_one_blend=1\n"
+                  "punch_camera_lock_ms=300\n"
+                  "view_relatch_fix=1\n"
+                  "snap_body_turn=1\n"
+                  "snap_tap_ms=250\n"
+                  "dodge_reface=1\n"
+                  "landing_body_to_view=1\n"
+                  "landing_body_ease_ms=500\n"
+                  "landing_rear_turn=1\n"
+                  "handoff_ease_curve=1\n"
+                  "handoff_glide_cm_s=350\n"
+                  "handoff_glide_max_ms=450\n"
+                  "handoff_head_leads=1\n"
+                  "handoff_angle_ms=200\n"
+                  "landing_blend_ms=200\n"
+                  "head_seat_glide_ms=165\n"
+                  "handstand_arms_over_head_cm=10\n"
+                  "turn_push_pct=55\n"
+                  "landing_body_hold_turn=1\n"
+                  "web_zip_instant=1\n"
+                  "point_jump_fire_full=1\n"
+                  "target_scan_idle_ms=500\n"
+                  "handoff_place_cm=125\n"
+                  "punch_track_by_look=0\n"
+                  "handstand_grace_before_ms=300\n"
+                  "handstand_grace_after_ms=400\n"
+                  "handstand_tip_in=1\n"
+                  "handstand_tip_in_deg=120\n"
+                  "handstand_tip_in_reach_cm=200\n"
+                  "marker_twist_steady=1\n"
+                  "marker_turn_rate_dps=360\n"
+                  "marker_switch_hold_ms=150\n"
+                  "log_level=1\n"
+                  "movement_defaults=14\n",
               "the defaults' text");
         Values changed = defaults;
         changed.recordingFov = 140;
@@ -24873,6 +25907,28 @@ int main() {
         }
         f.predictedDisplayTime += 10 * ms;
         check(rig.update(f, {}, {0, 0, 1}, true).head[10] < -.95f, "a menu turned the view");
+    });
+    test("ground flips: the swing's own report of the air releases the spin when the flips' airborne test misses it (F2)",
+         [] {
+        // The Nov 19 log: 3 of 3 front flips dropped at 500 ms with "owned 0" - the game's air carried him.
+        for (const bool off : {false, true}) {
+            GameTrackingRig rig;
+            RealisticFlipSettings settings;
+            settings.enabled = true;
+            rig.automaticFlips(settings);
+            rig.flips(true);
+            auto f = trackedFrame();
+            flipFrame(rig, f, false, false);
+            rig.groundFlip({6.f, 0, 0});
+            rig.groundFlipOff(off);
+            for (int i = 0; i < 10; ++i)
+                flipFrame(rig, f, false, false);
+            check(rig.groundFlipsReleased() == (off ? 1u : 0u),
+                  off ? "off by the swing's report: released" : "on the ground: not released yet");
+            for (int i = 0; i < 60; ++i)
+                flipFrame(rig, f, false, false);
+            check(rig.groundFlipsLapsed() == (off ? 0u : 1u), off ? "released: no lapse" : "never off: lapsed");
+        }
     });
     test("momentum mode supports manual left-stick rotation and an airborne A brake", [] {
         GameTrackingRig rig;
@@ -25206,7 +26262,7 @@ int main() {
             out = flipFrame(rig, frame, false);
         check(!levelTilt(out.flipTilt), "neutral then push did not start a flip");
     });
-    test("basic flips: losing right-hand tracking freezes tilt until neutral is seen again", [] {
+    test("basic flips: the right stick flips on with its hand out of the headset's sight (issue #81)", [] {
         GameTrackingRig rig;
         rig.flips(true);
         auto frame = trackedFrame();
@@ -25217,22 +26273,10 @@ int main() {
             out = flipFrame(rig, frame, false);
         const Quat held = out.flipTilt;
         frame.hands[1].valid = false;
-        for (int i = 0; i < 30; ++i) {
-            out = flipFrame(rig, frame, false);
-            near(length(out.flipTilt.rotate({0, 1, 0}) - held.rotate({0, 1, 0})), 0, .000001f);
-        }
-        frame.hands[1].valid = true;
-        for (int i = 0; i < 30; ++i) {
-            out = flipFrame(rig, frame, false);
-            near(length(out.flipTilt.rotate({0, 1, 0}) - held.rotate({0, 1, 0})), 0, .000001f);
-        }
-        frame.hands[1].stickY = 0;
-        flipFrame(rig, frame, false);
-        frame.hands[1].stickY = -1;
         for (int i = 0; i < 15; ++i)
             out = flipFrame(rig, frame, false);
         check(length(out.flipTilt.rotate({0, 1, 0}) - held.rotate({0, 1, 0})) > .1f,
-              "recovered controller could not rotate after a fresh neutral");
+              "a lost hand's stick stopped the flip");
     });
     test("basic flips: landing levels the view without turning a held roll into a snap", [] {
         for (float smooth : {0.f, 1.5f}) {
@@ -25568,7 +26612,7 @@ int main() {
             }
         }
     });
-    test("controlled flips: losing left-hand tracking freezes tilt until a new neutral", [] {
+    test("controlled flips: the left stick steers on with its hand out of the headset's sight (issue #81)", [] {
         GameTrackingRig rig; rig.controlledFlips(true);
         auto f = trackedFrame();
         flipFrame(rig, f, false); flipFrame(rig, f, true); flipFrame(rig, f, false);
@@ -25576,19 +26620,13 @@ int main() {
         GameMotionFrame out;
         for (int i = 0; i < 25; ++i) out = flipFrame(rig, f, false);
         const Quat held = out.flipTilt;
-        for (bool valid : {false, true}) {
-            f.hands[0].valid = valid;
-            for (int i = 0; i < 30; ++i) {
-                out = flipFrame(rig, f, false);
-                check(out.controlledFlipControls, "tracking loss changed the toggle state");
-                near(length(out.flipTilt.rotate({0, 1, 0}) - held.rotate({0, 1, 0})), 0, .000001f);
-            }
+        f.hands[0].valid = false;
+        for (int i = 0; i < 15; ++i) {
+            out = flipFrame(rig, f, false);
+            check(out.controlledFlipControls, "tracking loss changed the toggle state");
         }
-        f.hands[0].stickY = 0; flipFrame(rig, f, false);
-        f.hands[0].stickY = -1;
-        for (int i = 0; i < 15; ++i) out = flipFrame(rig, f, false);
         check(length(out.flipTilt.rotate({0, 1, 0}) - held.rotate({0, 1, 0})) > .1f,
-              "recovered hand could not resume rotation");
+              "a lost hand's stick stopped the flip");
     });
     test("controlled flips: landing exits and a later takeoff needs a new A press", [] {
         GameTrackingRig rig; rig.controlledFlips(true);
@@ -26939,12 +27977,12 @@ int main() {
         c.serial = 1;
         c.focused = 1;
         c.tilt = Quat{};
-        for (uint32_t asks = 0; asks < 64; ++asks) {
+        for (uint32_t asks = 0; asks < 128; ++asks) {
             c.asks = asks;
             check(game_swing::valid(c),
                   "a command with the tie's click, a zip or a dodge was refused (2001)");
         }
-        c.asks = 64;
+        c.asks = 128;
         check(!game_swing::valid(c), "an unknown ask was accepted");
     });
     // Web lines (web_line.hpp): both hands' webs on surfaces, hands together, the click.
@@ -27802,6 +28840,58 @@ int main() {
     });
 
 
+    test("TORSO UPDATE: the chest turns up to the TORSO TWIST to reach hands off to the side; legs and "
+         "pelvis stay",
+         [] {
+             auto b = testBody(true);
+             auto data = b.rest;
+             body::Pose base(data.data(), static_cast<int>(b.rig.parent.size()));
+             const Vec3 pelvis = base.position(b.rig.pelvis);
+             // Both hands where the animation's wrists would be after a 70 degree turn of the chest.
+             const float turn = 70.f * 3.14159265f / 180.f;
+             const Quat around = Quat::yaw(turn);
+             auto run = [&](float maxDegrees, float& error, float& yawDegrees, bool& legsStayed) {
+                 body::Targets t;
+                 t.armsOnly = t.viewMapped = t.viewSoftlock = t.torsoAssist = true;
+                 t.armWeight = {1, 1};
+                 t.up = {0, 1, 0};
+                 t.head = true;
+                 t.eyes = base.position(b.rig.head);
+                 t.facing = Quat::yaw(3.14159265f + turn);
+                 body::Config c;
+                 c.hideHead = false;
+                 c.overlayTorsoYawMax = maxDegrees * 3.14159265f / 180.f;
+                 for (unsigned i = 0; i < 2; ++i) {
+                     const Vec3 offset{i == 0 ? -c.wristFromGrip.x : c.wristFromGrip.x, c.wristFromGrip.y,
+                                       c.wristFromGrip.z};
+                     const Vec3 wrist = pelvis + around.rotate(base.position(b.rig.arms[i].hand) - pelvis);
+                     t.hands[i] = {true, wrist - offset, {}, 0, 0};
+                 }
+                 body::State st;
+                 error = 0;
+                 legsStayed = true;
+                 for (int frame = 0; frame < 90; ++frame) {
+                     auto fresh = b.rest;
+                     body::Pose pose(fresh.data(), static_cast<int>(b.rig.parent.size()));
+                     const auto solved = body::solve(pose, b.rig, t, c, st, true, 1.f / 90, 1.f, 1.f);
+                     error = std::max(solved.handError[0], solved.handError[1]);
+                     for (int joint :
+                          {b.rig.pelvis, b.rig.legs[0].upper, b.rig.legs[0].foot, b.rig.legs[1].foot})
+                         legsStayed =
+                             legsStayed && length(pose.position(joint) - base.position(joint)) < 1e-3f;
+                 }
+                 yawDegrees = std::abs(st.overlayTorsoYaw) * 180.f / 3.14159265f;
+             };
+             float wideError = 0, oldError = 0, wideYaw = 0, oldYaw = 0;
+             bool wideLegs = false, oldLegs = false;
+             run(80.f, wideError, wideYaw, wideLegs);
+             run(40.f, oldError, oldYaw, oldLegs);
+             check(wideLegs && oldLegs, "the pelvis and legs stay animated");
+             check(oldYaw <= 40.5f && wideYaw <= 80.5f, "the chest twist is bounded by the setting");
+             check(wideYaw > oldYaw + 10.f, "the 80 degree cap turns further than the old 40");
+             check(wideError < oldError, "the wider twist reaches the wrists better than the old cap");
+         });
+
     test("ANIMATED ARMS: soft floor, motion, intent, tracking loss, chest remap", [] {
         using namespace animated_arms;
         State st;
@@ -28145,11 +29235,11 @@ int main() {
         check(sanitized(wild).animatedAirSpin == 2, "AIR SPIN not clamped");
         const auto& all = rows();
         check(all[95].item == Item::animatedOnly && std::strcmp(all[95].title, "ONLY (ADVANCED)") == 0 &&
-                  all[95].choices.empty() && all[95].place == Place::tab,
+                  all[95].choices.empty() && all[95].place == Place::launcher, // retired: hidden in the game (D3)
               "ANIMATED ONLY row");
         check(all[97].item == Item::animatedAirSpin &&
                   std::strcmp(all[97].title, "AIR SPIN (ADVANCED)") == 0 && all[97].choices.size() == 3 &&
-                  std::strcmp(all[97].choices[2], "FLIPS + MOMENTUM") == 0 && all[97].place == Place::tab,
+                  std::strcmp(all[97].choices[2], "FLIPS + MOMENTUM") == 0 && all[97].place == Place::launcher,
               "ANIMATED AIR SPIN row");
         check(all[93].item == Item::animatedHybrid &&
                   std::strcmp(all[93].title, "HYBRID OWNER (ADVANCED)") == 0 && all[93].choices.empty() &&
@@ -28159,10 +29249,39 @@ int main() {
                   all[89].choices.size() == 9 && std::strcmp(all[89].choices[0], "OFF") == 0 &&
                   std::strcmp(all[89].choices[8], "500 MS") == 0 && all[89].place == Place::tab,
               "ANIMATED HYBRID SPEED row");
-        check(lastItem == Item::rearSnap && Item::legReachSpread < lastItem && Item::turnInPlace < lastItem && Item::airViewEase < lastItem && Item::soundTrace < lastItem && Item::punchViewEase < lastItem && Item::pointJumpPush < lastItem && Item::cameraHeadAngle < lastItem && Item::airFists < lastItem && Item::legCoupling < lastItem && Item::animatedHeadsetSmooth < lastItem &&
+        check(Item::rearSnap <= lastItem && Item::legReachSpread < lastItem && Item::turnInPlace < lastItem && Item::airViewEase < lastItem && Item::soundTrace < lastItem && Item::punchViewEase < lastItem && Item::pointJumpPush < lastItem && Item::cameraHeadAngle < lastItem && Item::airFists < lastItem && Item::legCoupling < lastItem && Item::animatedHeadsetSmooth < lastItem &&
                   Item::softLock < Item::cameraStabilization,
               "SMOOTHING not included in the last Item bound");
     });
+
+    test("TORSO TWIST and ARM AIM FALLBACK: 80 and 60 degrees by default, launcher rows, kept and sanitized",
+         [] {
+             using namespace vr_settings;
+             const Values defaults{};
+             check(defaults.animatedTorsoTwist == 80 && defaults.animForearmFallbackDeg == 60, "defaults");
+             const Row* twist = rowFor(Item::animatedTorsoTwist);
+             const Row* fallback = rowFor(Item::animForearmFallback);
+             check(twist && fallback && twist->place == Place::launcher && fallback->place == Place::launcher,
+                   "launcher rows");
+             check(twist && twist->choices.size() == 7 && std::strcmp(twist->choices[5], "80 DEG") == 0 &&
+                       std::strcmp(twist->choices[2], "40 DEG (OLD)") == 0,
+                   "twist choices keep the old 40 and the new 80");
+             check(fallback && fallback->choices.size() == 5 && std::strcmp(fallback->choices[0], "OFF") == 0,
+                   "fallback choices");
+             check(defaultChoice(Item::animatedTorsoTwist) == 5 &&
+                       defaultChoice(Item::animForearmFallback) == 2,
+                   "RESET puts back 80 and 60");
+             const Values kept =
+                 withTabOnly(Values{}, "animated_torso_twist=60\nanim_forearm_fallback_deg=0\n");
+             check(kept.animatedTorsoTwist == 60 && kept.animForearmFallbackDeg == 0, "read back");
+             const Values wild =
+                 withTabOnly(Values{}, "animated_torso_twist=400\nanim_forearm_fallback_deg=-5\n");
+             check(wild.animatedTorsoTwist == 90 && wild.animForearmFallbackDeg == 0, "sanitized");
+             const Values old = withTabOnly(Values{}, "animated_torso=1\n");
+             check(old.animatedTorsoTwist == 80, "an older file gets the new default");
+             const Values again = withTabOnly(Values{}, tabOnlyText(kept));
+             check(again.animatedTorsoTwist == 60 && again.animForearmFallbackDeg == 0, "round trip");
+         });
 
     test("ANIMATED ONLY: every gameplay state yields, no web interrupt, cutscene grace", [] {
         using namespace animated_moves;
@@ -28976,6 +30095,10 @@ int main() {
         f.cancelGrip = false;
         check(o.update(f, t += 11'000'000) == Domain::vr, "cancel did not stay in the air");
         f.state.grounded = true;
+        f.velY = -2.f; // falling (a rising touchdown is no landing: hybrid_owner.hpp RISING TOUCHDOWN)
+        // HANDOFF CHURN: a landing within landMinStintNs of the takeover waits for it.
+        check(o.update(f, t += 11'000'000) == Domain::vr && !o.enterAnim, "a landing 33 ms in handed back at once");
+        t = landMinStintNs + 11'000'000;
         check(o.update(f, t += 11'000'000) == Domain::anim && o.lastEnterAnim == EnterAnim::land,
               "a held cancel grip kept VR on the ground");
         // In a Y zip.
@@ -31079,6 +32202,120 @@ int main() {
             check(fresh.legControlWeight == 0.f, "the leg control posed legs off the air");
         }
     });
+    test("TORSO CHANNEL (J1): the midair poses curl and arch the spine in the air only, the head stays on the headset", [] {
+        const auto b = testBody();
+        const auto& rig = b.rig;
+        const int joints = static_cast<int>(rig.parent.size());
+        auto restCopy = b.rest;
+        const body::Pose snap(restCopy.data(), joints);
+        body::Targets t;
+        t.head = true;
+        t.up = {0, 1, 0};
+        t.facing = Quat::yaw(3.14159265f);
+        const Vec3 F = t.facing.rotate({0, 0, -1}), U = t.facing.rotate({0, 1, 0});
+        t.eyes = snap.position(rig.head) + F * rig.eyesFromHead.x + U * rig.eyesFromHead.y +
+                 cross(U, F) * rig.eyesFromHead.z + Vec3{0, .12f, 0};
+        for (int i = 0; i < 2; ++i) {
+            const Vec3 shoulder = snap.position(rig.arms[i].upper);
+            t.hands[i] = {true, shoulder + Vec3{0, -.15f, .35f}, gripFacing({0, 0, 1}), 0, 0};
+        }
+        const float dt = 1.f / 90;
+        body::Config c;
+        body::Targets air = t;
+        air.airborne = true;
+        // The pelvis from the head, after `frames` of a pose: a curl swings the hips forward of the chest line
+        // (the body hangs under the eyes), an arch swings them back.
+        const auto run = [&](body::Targets x, int frames, body::State& s) {
+            std::vector<float> data;
+            for (int k = 0; k < frames; ++k) {
+                data = b.rest;
+                body::Pose p(data.data(), joints);
+                body::solve(p, rig, x, c, s, true, dt);
+            }
+            body::Pose p(data.data(), joints);
+            struct Out {
+                Vec3 pelvisFromHead, headForward;
+                float headError;
+            } o{p.position(rig.pelvis) - p.position(rig.head), p.direction(rig.head, rig.headForward), 0};
+            return o;
+        };
+        body::State plainState;
+        body::seedFromPose(snap, rig, air, plainState);
+        const auto plain = run(air, 40, plainState);
+        body::Targets curl = air;
+        curl.torsoControl = true;
+        curl.torso = {.55f, 0, 0};
+        body::State curlState;
+        body::seedFromPose(snap, rig, curl, curlState);
+        float first = -1;
+        {
+            std::vector<float> data = b.rest;
+            body::Pose p(data.data(), joints);
+            body::solve(p, rig, curl, c, curlState, true, dt);
+            first = curlState.torsoWeight;
+        }
+        const auto curled = run(curl, 40, curlState);
+        check(first > 0 && first < .1f && curlState.torsoWeight >= 1 - 1e-4f, "the torso eased in over about 0.2 s");
+        // The chest leans forward over the hips; the body hangs under the fixed eyes, so the hips go back.
+        check(dot(curled.pelvisFromHead, F) < dot(plain.pelvisFromHead, F) - .05f,
+              "a curl (+pitch) leans the chest forward over the hips (the hips back under the eyes)");
+        check(dot(normalized(curled.headForward), normalized(plain.headForward)) > .99f,
+              "the head still faces the headset's way");
+        body::Targets arch = air;
+        arch.torsoControl = true;
+        arch.torso = {-.25f, 0, 0};
+        body::State archState;
+        body::seedFromPose(snap, rig, arch, archState);
+        const auto arched = run(arch, 40, archState);
+        check(dot(arched.pelvisFromHead, F) > dot(plain.pelvisFromHead, F) + .02f, "an arch (-pitch): the other way");
+        body::Targets side = air;
+        side.torsoControl = true;
+        side.torso = {0, .4f, 0};
+        body::State sideState;
+        body::seedFromPose(snap, rig, side, sideState);
+        const auto bent = run(side, 40, sideState);
+        const Vec3 L = cross(U, F);
+        check(dot(bent.pelvisFromHead, L) < dot(plain.pelvisFromHead, L) - .02f,
+              "a bend to the left (+roll) swings the hips out to the right under the head");
+        body::Targets wild = air;
+        wild.torsoControl = true;
+        wild.torso = {NAN, 9.f, -9.f};
+        body::State wildState;
+        body::seedFromPose(snap, rig, wild, wildState);
+        run(wild, 30, wildState);
+        check(wildState.torsoAngles.pitch == 0 && wildState.torsoAngles.roll == body::torsoMaxRadians &&
+                  wildState.torsoAngles.yaw == -body::torsoMaxRadians,
+              "not a number: none; past 0.7 rad: clamped");
+        // Landing: out over about 0.2 s; never on the ground, a wall run or with a kick.
+        body::Targets landed = curl;
+        landed.airborne = false;
+        landed.plant = true;
+        landed.floor = {0, 0, 0};
+        std::vector<float> w;
+        for (int k = 0; k < 30; ++k) {
+            std::vector<float> data = b.rest;
+            body::Pose p(data.data(), joints);
+            body::solve(p, rig, landed, c, curlState, true, dt);
+            w.push_back(curlState.torsoWeight);
+        }
+        check(w.back() == 0, "the torso left on landing");
+        for (auto change : {+[](body::Targets& x) { x.kick = true; }, +[](body::Targets& x) { x.airborne = false; },
+                            +[](body::Targets& x) {
+                                x.wallRun = true;
+                                x.runNormal = {1, 0, 0};
+                                x.runAhead = {0, 0, -1};
+                                x.floor = {-.5f, 0, 0};
+                                x.runPhase = .3f;
+                                x.runSpeed = 1;
+                            }}) {
+            body::Targets x = curl;
+            change(x);
+            body::State fresh;
+            body::seedFromPose(snap, rig, x, fresh);
+            run(x, 10, fresh);
+            check(fresh.torsoWeight == 0.f, "the torso posed off the air");
+        }
+    });
     test("LEG CONTROL settings: off by default, an advanced row under CONTROLLED FLIPS, ini keys", [] {
         using namespace vr_settings;
         Values v;
@@ -31204,7 +32441,7 @@ int main() {
         near(run(50) / base, .5f, .01f);
         near(run(1000) / base, 2.f, .01f);
         game_swing::Settings s;
-        check(s.version == 40 && s.runSpeedPercent == 100 && game_swing::validSettings(s), "v40 default");
+        check(s.version == 42 && s.runSpeedPercent == 100 && game_swing::validSettings(s), "v42 default (0.8.7 port, target scan)");
         s.runSpeedPercent = 201;
         check(!game_swing::validSettings(s), "run speed over 200% accepted");
         s = {};
@@ -31327,15 +32564,518 @@ int main() {
         s.softLockMetres = 41;
         check(!game_swing::validSettings(s), "soft lock over 40 m accepted");
     });
+    test("hand grab: setting, ini keys, ranges and the side channel's validation and layout", [] {
+        using namespace vr_settings;
+        const Row* row = rowFor(Item::handGrab);
+        check(row && row->choices.empty() && row->place == Place::launcher && row->help &&
+                  std::strlen(row->help) <= 80 && std::strstr(row->title, "HAND GRAB") &&
+                  std::strstr(row->title, "EXPERIMENTAL"),
+              "the hand grab row, labelled experimental");
+        Values defaults;
+        check(defaults.handGrab && defaults.handGrabForce == 1200 && defaults.enemyHoldCost == 1 &&
+                  choice(Item::handGrab, defaults) == 1 && defaultChoice(Item::handGrab) == 1,
+              "hand grab is on by default, 1200 N, hold cost 1");
+        Values v;
+        check(v.handGrab && choose(Item::handGrab, 0, v) && !v.handGrab && choose(Item::handGrab, 1, v) &&
+                  v.handGrab,
+              "the switch sets the value");
+        const auto read = withTabOnly({}, "hand_grab=1\nhand_grab_force=2400\nenemy_hold_cost=3\n");
+        check(read.handGrab && read.handGrabForce == 2400 && read.enemyHoldCost == 3, "the ini keys read");
+        Values on;
+        on.handGrab = true;
+        on.handGrabForce = 1800;
+        on.enemyHoldCost = 0;
+        const auto text = tabOnlyText(on);
+        check(text.find("hand_grab=1\nhand_grab_force=1800\nenemy_hold_cost=0\n") != std::string::npos,
+              "the ini keys write");
+        const auto wild = withTabOnly({}, "hand_grab_force=99999\nenemy_hold_cost=-4\n");
+        check(wild.handGrabForce == 4000 && wild.enemyHoldCost == 0, "the ini's range is clamped");
+        const auto low = withTabOnly({}, "hand_grab_force=3\nenemy_hold_cost=99\n");
+        check(low.handGrabForce == 400 && low.enemyHoldCost == 5, "and at the other end");
+        // The side channel: a valid ask passes, the wrong magic, version, size, flags or numbers do not.
+        game_swing::HandGrabAsk ask;
+        check(sizeof(ask) == 32 && sizeof(game_swing::HandGrabLive) == 68 && game_swing::validHandGrab(ask),
+              "a default ask is valid, its layout fixed");
+        auto bad = ask;
+        bad.magic ^= 1;
+        check(!game_swing::validHandGrab(bad), "wrong magic");
+        bad = ask;
+        bad.version = 2;
+        check(!game_swing::validHandGrab(bad), "wrong version");
+        bad = ask;
+        bad.bytes = 28;
+        check(!game_swing::validHandGrab(bad), "wrong size");
+        bad = ask;
+        bad.flags = 4;
+        check(!game_swing::validHandGrab(bad), "unknown flags");
+        bad = ask;
+        bad.flags = 3;
+        check(game_swing::validHandGrab(bad), "bit 1: the class rules off (G2b)");
+        for (const float force : {399.f, 4001.f, NAN, -1.f}) {
+            bad = ask;
+            bad.force = force;
+            check(!game_swing::validHandGrab(bad), "a force out of range");
+        }
+        for (const float cost : {-.1f, 5.1f, NAN}) {
+            bad = ask;
+            bad.holdCost = cost;
+            check(!game_swing::validHandGrab(bad), "a hold cost out of range");
+        }
+        bad = ask;
+        bad.flags = 1;
+        bad.force = 4000;
+        bad.holdCost = 5;
+        check(game_swing::validHandGrab(bad), "the ends of the range are valid");
+        // The settings struct is untouched: this is a side channel.
+        check(game_swing::Settings{}.version == 42 && sizeof(game_swing::Settings) == 196,
+              "Settings stays v41 (0.8.7's enemyTypes), 192 bytes");
+    });
+    test("air kicks settings: the switch, aim and spin rows on the legs page, steps, notes and ini keys", [] {
+        using namespace vr_settings;
+        const auto legsItems = screens()[static_cast<size_t>(Category::kicks)].items; // KICKS & COMBAT (M4)
+        const auto onLegs = [&](Item item) {
+            return std::find(legsItems.begin(), legsItems.end(), item) != legsItems.end();
+        };
+        const Row* row = rowFor(Item::kicks);
+        check(row && row->choices.empty() && row->place == Place::tab && row->help &&
+                  std::strlen(row->help) <= 80 && std::strstr(row->title, "AIR KICKS") &&
+                  std::strstr(row->title, "EXPERIMENTAL"),
+              "the air kicks row, labelled experimental");
+        Values defaults;
+        check(defaults.kicks && defaults.kickGazeConeDeg == 40 && defaults.kickSpinPct == 30 &&
+                  choice(Item::kicks, defaults) == 1 && defaultChoice(Item::kicks) == 1,
+              "air kicks are on by default, aim 40 degrees (25 until the 2 AM log), spin 30%");
+        Values v;
+        check(v.kicks && choose(Item::kicks, 0, v) && !v.kicks && choose(Item::kicks, 1, v) && v.kicks,
+              "the switch sets the value");
+        const auto read = withTabOnly({}, "kicks=1\nkick_gaze_cone_deg=40\nkick_spin_pct=60\n");
+        check(read.kicks && read.kickGazeConeDeg == 40 && read.kickSpinPct == 60, "the ini keys read");
+        const auto wild = withTabOnly({}, "kick_gaze_cone_deg=999\nkick_spin_pct=-5\n");
+        check(wild.kickGazeConeDeg == 50 && wild.kickSpinPct == 0, "the ini ranges clamp");
+        const auto low = withTabOnly({}, "kick_gaze_cone_deg=1\nkick_spin_pct=500\n");
+        check(low.kickGazeConeDeg == 10 && low.kickSpinPct == 100, "and clamp the other way");
+        Values on;
+        on.kicks = true;
+        on.kickGazeConeDeg = 40;
+        on.kickSpinPct = 0;
+        const std::string text = tabOnlyText(on);
+        check(text.find("kicks=1\nkick_gaze_cone_deg=40\nkick_spin_pct=0\n") != std::string::npos,
+              "the ini keys write");
+        struct Entry {
+            Item item;
+            const char* key;
+            int low, high, def;
+            int Values::* number;
+        };
+        const Entry numbers[] = {
+            {Item::kickGazeCone, "kick_gaze_cone_deg", 10, 50, 40, &Values::kickGazeConeDeg},
+            {Item::kickSpin, "kick_spin_pct", 0, 100, 30, &Values::kickSpinPct},
+        };
+        check(onLegs(Item::kicks), "the switch is on the legs page");
+        for (const Entry& e : numbers) {
+            check(onLegs(e.item), "an air kick row is on the legs page");
+            const Row* r = rowFor(e.item);
+            check(r && r->place == (naInGame(e.item) ? Place::tab : Place::launcher) && r->help &&
+                      std::strlen(r->help) <= 80 && std::strstr(r->title, "AIR KICK"),
+                  "an air kick row's text");
+            const auto list = steps(e.item);
+            check(!list.empty() && list.size() == r->choices.size() && list.size() <= maxChoices, "the choices");
+            check(list.front() == e.low && list.back() == e.high, "the list spans the ini's range");
+            check(std::is_sorted(list.begin(), list.end()) &&
+                      std::find(list.begin(), list.end(), e.def) != list.end(),
+                  "sorted, with the default on a step");
+            check(defaultChoice(e.item) ==
+                      static_cast<int>(std::find(list.begin(), list.end(), e.def) - list.begin()),
+                  "the default's choice");
+            for (size_t i = 0; i < list.size(); ++i) {
+                Values w;
+                const bool changed = choose(e.item, static_cast<int>(i), w);
+                check(changed == (list[i] != e.def) && w.*(e.number) == list[i], "choose sets the value");
+                check(choice(e.item, w) == static_cast<int>(i), "choice reads it back");
+                const auto back = withTabOnly({}, std::string(e.key) + "=" + std::to_string(list[i]) + "\n");
+                check(back.*(e.number) == list[i], "the ini key reads the step");
+                check(tabOnlyText(w).find(std::string(e.key) + "=" + std::to_string(list[i]) + "\n") !=
+                          std::string::npos,
+                      "the ini key writes the step");
+            }
+            Values past;
+            check(!choose(e.item, static_cast<int>(list.size()), past), "a choice past the end");
+            Values off;
+            off.groundKicks = false; // on by default since Nov 18; the aim is either switch's
+            off.kicks = false;      // on by default since Nov 19 (revision 14)
+            check(inactiveReason(e.item, off) && std::strstr(inactiveReason(e.item, off), "AIR KICKS") &&
+                      shownWhenInactive(e.item),
+                  "the tuning waits for the switch");
+            off.kicks = true;
+            check(inactiveReason(e.item, off) == nullptr, "available with the switch on");
+        }
+    });
+    test("ground kicks settings: the switch on the legs page, on by default (Nov 18), the ini key, the aim row waits for either", [] {
+        using namespace vr_settings;
+        const auto legsItems = screens()[static_cast<size_t>(Category::kicks)].items;
+        check(std::find(legsItems.begin(), legsItems.end(), Item::groundKicks) != legsItems.end(),
+              "the switch is on the legs page");
+        const Row* row = rowFor(Item::groundKicks);
+        check(row && row->choices.empty() && row->place == Place::tab && row->help &&
+                  std::strlen(row->help) <= 80 && std::strstr(row->title, "GROUND KICKS") &&
+                  !std::strstr(row->title, "EXPERIMENTAL"),
+              "the ground kicks row, no longer experimental (on by default)");
+        Values defaults;
+        check(defaults.groundKicks && choice(Item::groundKicks, defaults) == 1 &&
+                  defaultChoice(Item::groundKicks) == 1,
+              "ground kicks are on by default (the owner, Nov 18)");
+        Values v;
+        v.groundKicks = false;
+        check(choose(Item::groundKicks, 1, v) && v.groundKicks && choose(Item::groundKicks, 0, v) && !v.groundKicks,
+              "the switch turns on and off");
+        const auto read = withTabOnly({}, "ground_kicks=1\nkicks=0\n");
+        check(read.groundKicks && !read.kicks, "the ini key reads, and is not the air kicks'");
+        Values on;
+        on.groundKicks = true;
+        check(tabOnlyText(on).find("ground_kicks=1\n") != std::string::npos, "the ini key writes");
+        check(tabOnlyText(defaults).find("ground_kicks=1\n") != std::string::npos, "and writes 1 by default");
+        check(!withTabOnly({}, "ground_kicks=0\n").groundKicks, "an ini's 0 reads as off");
+        check(withMovementDefaults(withTabOnly({}, "ground_kicks=0\nmovement_defaults=8\n"),
+                                   "ground_kicks=0\nmovement_defaults=8\n")
+                      .groundKicks,
+              "revision 9: an old file's ground_kicks=0 (the old default) turns on");
+        check(!withMovementDefaults(withTabOnly({}, "ground_kicks=0\nmovement_defaults=9\n"),
+                                    "ground_kicks=0\nmovement_defaults=9\n")
+                       .groundKicks,
+              "off chosen after revision 9 stays off");
+        // Revision 10 (the 2 AM log): KICK GAZE CONE 25 -> 40; a tuned value stays.
+        check(withMovementDefaults(withTabOnly({}, "kick_gaze_cone_deg=25\nmovement_defaults=9\n"),
+                                   "kick_gaze_cone_deg=25\nmovement_defaults=9\n")
+                      .kickGazeConeDeg == 40,
+              "revision 10: the old 25 degrees become 40");
+        check(withMovementDefaults(withTabOnly({}, "kick_gaze_cone_deg=30\nmovement_defaults=9\n"),
+                                   "kick_gaze_cone_deg=30\nmovement_defaults=9\n")
+                      .kickGazeConeDeg == 30,
+              "a tuned cone stays");
+        Values aim;
+        aim.groundKicks = false;
+        aim.kicks = false; // on by default since Nov 19 (revision 14); the aim is either switch's
+        check(inactiveReason(Item::kickGazeCone, aim) && std::strstr(inactiveReason(Item::kickGazeCone, aim), "GROUND KICKS"),
+              "the aim waits for a kick switch");
+        aim.groundKicks = true;
+        check(inactiveReason(Item::kickGazeCone, aim) == nullptr, "the aim is available with ground kicks on");
+        check(inactiveReason(Item::kickSpin, aim) != nullptr, "the spin is the air's: still waiting");
+    });
+    test("enemy joints settings: two switches on the legs page, both off, the ini keys, the limb zones wait for the joints", [] {
+        using namespace vr_settings;
+        const auto legsItems = screens()[static_cast<size_t>(Category::kicks)].items;
+        for (const Item item : {Item::enemyJoints, Item::enemyLimbZones}) {
+            check(std::find(legsItems.begin(), legsItems.end(), item) != legsItems.end(), "on the legs page");
+            const Row* row = rowFor(item);
+            check(row && row->choices.empty() && row->place == Place::launcher && row->help &&
+                      std::strlen(row->help) <= 80 && std::strstr(row->title, "EXPERIMENTAL"),
+                  "a row, labelled experimental, with a help line that fits");
+        }
+        check(std::strstr(rowFor(Item::enemyJoints)->title, "ENEMY JOINTS") &&
+                  std::strstr(rowFor(Item::enemyLimbZones)->title, "ENEMY LIMB ZONES") &&
+                  std::strstr(rowFor(Item::enemyLimbZones)->help, "probe_c0_skeleton.py"),
+              "the titles, and the limb zones' help names the probe");
+        Values defaults;
+        check(!defaults.enemyJoints && !defaults.enemyLimbZones && choice(Item::enemyJoints, defaults) == 0 &&
+                  choice(Item::enemyLimbZones, defaults) == 0 && defaultChoice(Item::enemyJoints) == 0 &&
+                  defaultChoice(Item::enemyLimbZones) == 0,
+              "both are off by default");
+        Values v;
+        check(choose(Item::enemyJoints, 1, v) && v.enemyJoints && !v.enemyLimbZones, "the joints switch");
+        check(choose(Item::enemyLimbZones, 1, v) && v.enemyLimbZones && v.enemyJoints, "the limb switch");
+        const auto read = withTabOnly({}, "enemy_joints=1\nenemy_limb_zones=1\nkicks=0\n");
+        check(read.enemyJoints && read.enemyLimbZones && !read.kicks && read.groundKicks == Values{}.groundKicks, "the ini keys read");
+        Values on;
+        on.enemyJoints = on.enemyLimbZones = true;
+        check(tabOnlyText(on).find("enemy_joints=1\nenemy_limb_zones=1\n") != std::string::npos, "and write");
+        check(tabOnlyText(defaults).find("enemy_joints=0\nenemy_limb_zones=0\n") != std::string::npos,
+              "0 by default");
+        Values wait;
+        check(inactiveReason(Item::enemyLimbZones, wait) &&
+                  std::strstr(inactiveReason(Item::enemyLimbZones, wait), "ENEMY JOINTS") &&
+                  shownWhenInactive(Item::enemyLimbZones),
+              "the limb zones wait for the joints and stay shown");
+        wait.enemyJoints = true;
+        check(inactiveReason(Item::enemyLimbZones, wait) == nullptr, "available with the joints on");
+        check(inactiveReason(Item::enemyJoints, defaults) == nullptr, "the joints switch has no precondition");
+    });
+    test("web tether settings: the switch, points and steps rows on the movement page, steps, notes and ini keys", [] {
+        using namespace vr_settings;
+        const auto movementItems = screens()[static_cast<size_t>(Category::legs)].items; // BODY & LEGS (M4)
+        const auto onMovement = [&](Item item) {
+            return std::find(movementItems.begin(), movementItems.end(), item) != movementItems.end();
+        };
+        const Row* row = rowFor(Item::physicalTethers);
+        check(row && row->choices.empty() && row->place == Place::launcher && row->help &&
+                  std::strlen(row->help) <= 80 && std::strstr(row->title, "WEB TETHERS") &&
+                  std::strstr(row->title, "EXPERIMENTAL"),
+              "the web tethers row, labelled experimental");
+        Values defaults;
+        check(defaults.physicalTethers && defaults.tetherParticles == 24 && defaults.tetherSubsteps == 8 &&
+                  choice(Item::physicalTethers, defaults) == 1 && defaultChoice(Item::physicalTethers) == 1,
+              "tethers are on by default, 24 points, 8 steps");
+        Values v;
+        check(v.physicalTethers && choose(Item::physicalTethers, 0, v) && !v.physicalTethers &&
+                  choose(Item::physicalTethers, 1, v) && v.physicalTethers,
+              "the switch sets the value");
+        const auto read = withTabOnly({}, "physical_tethers=1\ntether_particles=16\ntether_substeps=12\n");
+        check(read.physicalTethers && read.tetherParticles == 16 && read.tetherSubsteps == 12, "the ini keys read");
+        const auto wild = withTabOnly({}, "tether_particles=999\ntether_substeps=-5\n");
+        check(wild.tetherParticles == 32 && wild.tetherSubsteps == 2, "the ini ranges clamp");
+        const auto low = withTabOnly({}, "tether_particles=1\ntether_substeps=500\n");
+        check(low.tetherParticles == 8 && low.tetherSubsteps == 16, "and clamp the other way");
+        Values on;
+        on.physicalTethers = true;
+        on.tetherParticles = 32;
+        on.tetherSubsteps = 4;
+        check(tabOnlyText(on).find("physical_tethers=1\ntether_particles=32\ntether_substeps=4\n") !=
+                  std::string::npos,
+              "the ini keys write");
+        struct Entry {
+            Item item;
+            const char* key;
+            int low, high, def;
+            int Values::* number;
+        };
+        const Entry numbers[] = {
+            {Item::tetherParticles, "tether_particles", 12, 32, 24, &Values::tetherParticles},
+            {Item::tetherSubsteps, "tether_substeps", 4, 16, 8, &Values::tetherSubsteps},
+        };
+        check(onMovement(Item::physicalTethers), "the switch is on the movement page");
+        for (const Entry& e : numbers) {
+            check(onMovement(e.item), "a tether row is on the movement page");
+            const Row* r = rowFor(e.item);
+            check(r && r->place == Place::launcher && r->help && std::strlen(r->help) <= 80 &&
+                      std::strstr(r->title, "TETHER"),
+                  "a tether row's text");
+            const auto list = steps(e.item);
+            check(!list.empty() && list.size() == r->choices.size() && list.size() <= maxChoices, "the choices");
+            check(list.front() == e.low && list.back() == e.high, "the list spans the steps");
+            check(std::is_sorted(list.begin(), list.end()) &&
+                      std::find(list.begin(), list.end(), e.def) != list.end(),
+                  "sorted, with the default on a step");
+            check(defaultChoice(e.item) ==
+                      static_cast<int>(std::find(list.begin(), list.end(), e.def) - list.begin()),
+                  "the default's choice");
+            for (size_t i = 0; i < list.size(); ++i) {
+                Values w;
+                const bool changed = choose(e.item, static_cast<int>(i), w);
+                check(changed == (list[i] != e.def) && w.*(e.number) == list[i], "choose sets the value");
+                check(choice(e.item, w) == static_cast<int>(i), "choice reads it back");
+                const auto back = withTabOnly({}, std::string(e.key) + "=" + std::to_string(list[i]) + "\n");
+                check(back.*(e.number) == list[i], "the ini key reads the step");
+                check(tabOnlyText(w).find(std::string(e.key) + "=" + std::to_string(list[i]) + "\n") !=
+                          std::string::npos,
+                      "the ini key writes the step");
+            }
+            Values past;
+            check(!choose(e.item, static_cast<int>(list.size()), past), "a choice past the end");
+            Values off;
+            off.physicalTethers = false; // on by default since Nov 19 (revision 14)
+            check(inactiveReason(e.item, off) && std::strstr(inactiveReason(e.item, off), "WEB TETHERS") &&
+                      shownWhenInactive(e.item),
+                  "the tuning waits for the switch");
+            off.physicalTethers = true;
+            check(inactiveReason(e.item, off) == nullptr, "available with the switch on");
+        }
+        // The side channel: valid asks, and the settings struct is untouched.
+        game_swing::TetherAsk ask;
+        check(game_swing::validTether(ask) && ask.particles == 24 && ask.substeps == 8 && ask.flags == 0,
+              "the default ask is valid and off");
+        ask.flags = 1;
+        check(game_swing::validTether(ask), "on is valid");
+        auto bad = ask;
+        bad.flags = 2;
+        check(!game_swing::validTether(bad), "an unknown flag is refused");
+        bad = ask;
+        bad.particles = 7;
+        check(!game_swing::validTether(bad), "too few points are refused");
+        bad.particles = 33;
+        check(!game_swing::validTether(bad), "too many points are refused");
+        bad = ask;
+        bad.substeps = 1;
+        check(!game_swing::validTether(bad), "too few steps are refused");
+        bad.substeps = 17;
+        check(!game_swing::validTether(bad), "too many steps are refused");
+        bad = ask;
+        bad.bytes = 31;
+        check(!game_swing::validTether(bad), "a wrong size is refused");
+        bad = ask;
+        bad.magic = 0;
+        check(!game_swing::validTether(bad), "a wrong magic is refused");
+        check(game_swing::TetherLive{}.version == 1 && sizeof(game_swing::TetherLive) == 240 &&
+                  game_swing::Settings{}.version == 42 && sizeof(game_swing::Settings) == 196,
+              "TetherLive v1; Settings stays v41, 192 bytes");
+    });
+    test("hand grab settings: strength and hold cost rows, steps, notes and ini keys", [] {
+        using namespace vr_settings;
+        const auto movementItems = screens()[static_cast<size_t>(Category::kicks)].items; // KICKS & COMBAT (M4)
+        const auto onMovement = [&](Item item) {
+            return std::find(movementItems.begin(), movementItems.end(), item) != movementItems.end();
+        };
+        struct Entry {
+            Item item;
+            const char* key;
+            int low, high, def;
+            int Values::* number;
+        };
+        const Entry numbers[] = {
+            {Item::handGrabForce, "hand_grab_force", 400, 4000, 1200, &Values::handGrabForce},
+            {Item::enemyHoldCost, "enemy_hold_cost", 0, 5, 1, &Values::enemyHoldCost},
+        };
+        check(onMovement(Item::handGrab), "the hand grab switch is on the movement page");
+        for (const Entry& e : numbers) {
+            check(onMovement(e.item), "a hand grab row is on the movement page");
+            const Row* row = rowFor(e.item);
+            check(row && row->place == Place::launcher && row->help && std::strlen(row->help) <= 80 &&
+                      std::strstr(row->title, "HAND GRAB"),
+                  "a hand grab row's text");
+            const auto list = steps(e.item);
+            check(!list.empty() && list.size() == row->choices.size() && list.size() <= maxChoices,
+                  "the choices");
+            check(list.front() == e.low && list.back() == e.high, "the list spans the ini's range");
+            check(std::is_sorted(list.begin(), list.end()) &&
+                      std::find(list.begin(), list.end(), e.def) != list.end(),
+                  "sorted, with the default on a step");
+            check(defaultChoice(e.item) ==
+                      static_cast<int>(std::find(list.begin(), list.end(), e.def) - list.begin()),
+                  "the default's choice");
+            for (size_t i = 0; i < list.size(); ++i) {
+                Values v;
+                const bool changed = choose(e.item, static_cast<int>(i), v);
+                check(changed == (list[i] != e.def) && v.*(e.number) == list[i], "choose sets the value");
+                check(choice(e.item, v) == static_cast<int>(i), "choice reads it back");
+                const auto read = withTabOnly({}, std::string(e.key) + "=" + std::to_string(list[i]) + "\n");
+                check(read.*(e.number) == list[i], "the ini key reads the step");
+                check(tabOnlyText(v).find(std::string(e.key) + "=" + std::to_string(list[i]) + "\n") !=
+                          std::string::npos,
+                      "the ini key writes the step");
+            }
+            Values past;
+            check(!choose(e.item, static_cast<int>(list.size()), past), "a choice past the end");
+            // They wait for the switch, and the row stays shown.
+            Values v;
+            v.handGrab = false; // on by default since Nov 19 (revision 14)
+            check(inactiveReason(e.item, v) && std::strstr(inactiveReason(e.item, v), "HAND GRAB") &&
+                      shownWhenInactive(e.item),
+                  "the tuning waits for the switch");
+            v.handGrab = true;
+            check(inactiveReason(e.item, v) == nullptr, "available with the switch on");
+        }
+    });
+    test("handstand settings: launcher rows on the legs page, ranges, notes and ini keys", [] {
+        using namespace vr_settings;
+        struct Entry {
+            Item item;
+            const char* key;
+            int low, high, def;
+            int Values::* number;
+        };
+        const Entry numbers[] = {
+            {Item::handstandFall, "handstand_fall_degrees", 15, 60, 50, &Values::handstandFallDegrees},
+            {Item::handstandPushGain, "handstand_push_gain", 100, 400, 220, &Values::handstandPushGain},
+            {Item::handstandPushMax, "handstand_push_max", 2, 12, 7, &Values::handstandPushMax},
+            {Item::handstandHeight, "handstand_height_cm", 60, 140, 95, &Values::handstandHeightCm},
+            {Item::handstandGain, "handstand_gain_pct", 50, 600, 500, &Values::handstandGainPct},
+            {Item::handstandSupport, "handstand_support_cm", 10, 30, 18, &Values::handstandSupportCm},
+            {Item::handstandGrace, "handstand_grace_ms", 100, 1500, 500, &Values::handstandGraceMs},
+            {Item::handstandDamping, "handstand_damping_pct", 0, 600, 250, &Values::handstandDampingPct},
+            {Item::handstandEyeDrop, "handstand_eye_drop_cm", 0, 120, 90, &Values::handstandEyeDropCm},
+        };
+        const auto legsItems = screens()[static_cast<size_t>(Category::legs)].items;
+        const auto onLegs = [&](Item item) {
+            return std::find(legsItems.begin(), legsItems.end(), item) != legsItems.end();
+        };
+        check(onLegs(Item::handstand) && onLegs(Item::handstandAssist) && onLegs(Item::handstandLeap),
+              "the switches are not on the legs page");
+        for (const Item item : {Item::handstand, Item::handstandAssist, Item::handstandLeap}) {
+            const Row* row = rowFor(item);
+            check(row && row->choices.empty() && row->place == (naInGame(item) ? Place::tab : Place::launcher) &&
+                      row->help && std::strlen(row->help) <= 80 && std::strstr(row->title, "HANDSTAND"),
+                  "a handstand switch's row");
+        }
+        check(std::strstr(rowFor(Item::handstand)->title, "EXPERIMENTAL"),
+              "handstand is labelled experimental");
+        Values defaults;
+        check(choice(Item::handstand, defaults) == 1 && choice(Item::handstandAssist, defaults) == 1 &&
+                  defaultChoice(Item::handstand) == 1,
+              "handstand and the assist are on by default");
+        for (const Entry& e : numbers) {
+            check(onLegs(e.item), "a handstand row is not on the legs page");
+            const Row* row = rowFor(e.item);
+            check(row && row->place == (naInGame(e.item) ? Place::tab : Place::launcher) && row->help &&
+                      std::strlen(row->help) <= 80 && std::strstr(row->title, "HANDSTAND"),
+                  "a handstand row's text");
+            const auto list = steps(e.item);
+            check(!list.empty() && list.size() == row->choices.size() && list.size() <= maxChoices,
+                  "the choices");
+            check(list.front() == e.low && list.back() == e.high, "the list spans the ini's range");
+            check(std::is_sorted(list.begin(), list.end()) &&
+                      std::find(list.begin(), list.end(), e.def) != list.end(),
+                  "sorted, with the default on a step");
+            check(defaultChoice(e.item) ==
+                      static_cast<int>(std::find(list.begin(), list.end(), e.def) - list.begin()),
+                  "the default's choice");
+            // Every step round-trips through the values and the ini text, and none is out of the sanitizer's
+            // range.
+            for (size_t i = 0; i < list.size(); ++i) {
+                Values v;
+                const bool changed = choose(e.item, static_cast<int>(i), v);
+                check(changed == (list[i] != e.def) && v.*(e.number) == list[i], "choose sets the value");
+                check(choice(e.item, v) == static_cast<int>(i), "choice reads it back");
+                const auto read = withTabOnly({}, std::string(e.key) + "=" + std::to_string(list[i]) + "\n");
+                check(read.*(e.number) == list[i], "the ini key reads the step");
+                check(tabOnlyText(v).find(std::string(e.key) + "=" + std::to_string(list[i]) + "\n") !=
+                          std::string::npos,
+                      "the ini key writes the step");
+            }
+            check(!choose(e.item, static_cast<int>(list.size()), defaults), "a choice past the end");
+            // An ini value between two steps shows the nearer one.
+            if (list[1] - list[0] > 1) {
+                Values between;
+                between.*(e.number) = e.low + 1;
+                check(choice(e.item, between) == 0, "an ini value between steps shows the nearer");
+            }
+        }
+        // They need REALISTIC FLIPS (the note says so, the row stays shown), then HANDSTAND on.
+        Values v;
+        v.realisticFlips = false;
+        for (const Item item :
+             {Item::handstand, Item::handstandAssist, Item::handstandFall, Item::handstandPushGain,
+              Item::handstandPushMax, Item::handstandHeight, Item::handstandGain, Item::handstandEyeDrop,
+              Item::handstandSupport, Item::handstandGrace, Item::handstandDamping, Item::handstandLeap}) {
+            const char* why = inactiveReason(item, v);
+            check(why && std::strstr(why, "REALISTIC FLIPS") && shownWhenInactive(item),
+                  "needs realistic flips");
+        }
+        v.realisticFlips = true;
+        check(inactiveReason(Item::handstand, v) == nullptr &&
+                  inactiveReason(Item::handstandFall, v) == nullptr,
+              "available with realistic flips");
+        v.handstand = false;
+        check(inactiveReason(Item::handstand, v) == nullptr && inactiveReason(Item::handstandFall, v) &&
+                  std::strstr(inactiveReason(Item::handstandFall, v), "HANDSTAND"),
+              "the tuning waits for the switch");
+        // The switches and the ini.
+        Values on, off;
+        off.handstand = off.handstandAssist = false;
+        check(choose(Item::handstand, 0, on) && !on.handstand && choose(Item::handstandAssist, 0, on) &&
+                  !on.handstandAssist && choose(Item::handstand, 1, on) && on.handstand,
+              "the switches set the values");
+        const auto read = withTabOnly({}, "handstand=0\nhandstand_assist=0\n");
+        check(!read.handstand && !read.handstandAssist &&
+                  tabOnlyText(off).find("handstand=0\nhandstand_assist=0\n") != std::string::npos,
+              "handstand and its assist in the ini");
+    });
     test("Native Animation: combined menu inventory and upstream-compatible v39 settings packet", [] {
         using namespace vr_settings;
         const auto& all = rows();
-        check(all.size() == 155 && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
+        check(all.size() == 235 + na_help::pageCount && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
         std::array<unsigned, 256> seen{};
         size_t start = all.size();
         for (size_t i = 0; i < all.size(); ++i) {
             check(all[i].choices.size() <= maxChoices, "headset choice overflow");
-            if (all[i].item != Item::none)
+            if (all[i].item != Item::none && all[i].item != Item::helpPage) // NA HELP's pages share one item
                 check(++seen[static_cast<size_t>(all[i].item)] == 1, "duplicate item row");
             if (all[i].item == Item::nativeAnimation)
                 start = i;
@@ -31350,9 +33090,9 @@ int main() {
                 all[start + 8].item == Item::spidyRun && seen[static_cast<size_t>(Item::webLines)] == 1,
             "Native Animation block or WEB LINES missing");
         for (unsigned i = 1; i <= static_cast<unsigned>(lastItem); ++i)
-            check(seen[i] == 1, "Item has no menu row");
+            check(seen[i] == 1 || i == static_cast<unsigned>(Item::helpPage), "Item has no menu row");
         game_swing::Settings s;
-        check(s.version == 40 && s.bytes == 188 && offsetof(game_swing::Settings, webLines) == 144 &&
+        check(s.version == 42 && s.bytes == 196 && offsetof(game_swing::Settings, webLines) == 144 &&
                   offsetof(game_swing::Settings, headProbe) == 148 &&
                   offsetof(game_swing::Settings, animatedModelYaw) == 176 && game_swing::validSettings(s),
               "v39 layout or validation");
@@ -31375,6 +33115,214 @@ int main() {
             s.bytes = 148 + (version - 31) * 4;
             check(!game_swing::validSettings(s), "ambiguous old community wire packet accepted");
         }
+    });
+    // WEBS SURVIVE HITCHES (hitch_guard.hpp): the 22:24 session's 268 m/s read off one long frame.
+    test("hitch: one over-limit speed read does not let go of the webs", [&] {
+        Sling f;
+        const uint32_t before = f.solver.hitchIgnored();
+        f.body.velocity = {0, 0, -300};
+        f.tick();
+        check(f.solver.webs()[0].attached && f.solver.webs()[1].attached,
+              "one 300 m/s read let go of the webs");
+        check(f.solver.hitchIgnored() == before + 1, "the ignored read was not counted");
+        f.body.velocity = {};
+        for (int i = 0; i < 4; ++i)
+            f.tick();
+        f.body.velocity = {0, 0, -300};
+        f.tick();
+        f.body.velocity = {};
+        f.tick();
+        f.body.velocity = {0, 0, -300};
+        f.tick();
+        check(f.solver.webs()[0].attached && f.solver.webs()[1].attached,
+              "over-limit reads with a good one between them let go of the webs");
+    });
+    test("hitch: a sustained over-limit speed still lets go, after three valid frames", [&] {
+        Sling f;
+        f.body.velocity = {0, 0, -300};
+        f.tick();
+        f.tick();
+        check(f.solver.webs()[0].attached, "two reads were already enough to let go");
+        f.last = f.solver.predictNativeStep(.01f, f.in, f.world, f.body, .01f);
+        check(!f.last.valid && !f.solver.webs()[0].attached && !f.solver.webs()[1].attached,
+              "three valid over-limit frames did not let go of the webs");
+    });
+    test("hitch: a long frame's speed is never counted toward the let-go", [&] {
+        Sling f;
+        f.body.velocity = {0, 0, -300};
+        for (int i = 0; i < 6; ++i) {
+            f.last = f.solver.predictNativeStep(.08f, f.in, f.world, f.body, .01f);
+            check(f.last.valid, "a long step was refused");
+        }
+        check(f.solver.webs()[0].attached && f.solver.webs()[1].attached,
+              "long frames' speeds let go of the webs");
+        f.body.velocity = {};
+        f.tick();
+        check(f.solver.webs()[0].attached, "a normal speed after the hitch let go");
+    });
+    test("hitch: the measured velocity is held through a long or stale step", [&] {
+        using hitch_guard::VelocityGuard;
+        using hitch_guard::Why;
+        VelocityGuard g;
+        auto r = g.sample(1, {0, 0, -12}, .016f, .004f, 130);
+        check(!r.rejected && std::abs(r.velocity.z + 12) < .001f, "a normal step was refused");
+        r = g.sample(2, {0, 0, -268}, .016f, .004f, 130);
+        check(r.rejected && r.why == Why::tooFast && std::abs(r.velocity.z + 12) < .001f,
+              "a 268 m/s step was believed");
+        r = g.sample(3, {0, 0, -40}, .231f, .004f, 130);
+        check(r.rejected && r.why == Why::longStep && std::abs(r.velocity.z + 12) < .001f,
+              "a 231 ms step was believed");
+        r = g.sample(4, {0, 0, -40}, .016f, .08f, 130);
+        check(r.rejected && r.why == Why::stale, "a stale sample was believed");
+        r = g.sample(4, {0, 0, -99}, .016f, .004f, 130);
+        check(r.rejected, "the same step gave a new answer");
+        r = g.sample(5, {0, 0, -13}, .016f, .004f, 130);
+        check(!r.rejected && std::abs(r.velocity.z + 13) < .001f, "the next normal step was not believed");
+        r = g.sample(6, {0, 0, std::nanf("")}, .016f, .004f, 130);
+        check(r.rejected && std::abs(r.velocity.z + 13) < .001f, "a NaN velocity was believed");
+        // A slow game: every step is a long one. The hold ends and the game's word stands.
+        VelocityGuard slow;
+        slow.sample(1, {0, 0, -10}, .016f, .004f, 130);
+        bool believed = false;
+        for (uint64_t i = 2; i < 40 && !believed; ++i)
+            believed = !slow.sample(i, {0, 0, -30}, .06f, .004f, 130).rejected;
+        check(believed, "a game under 17 fps was held at its first velocity forever");
+    });
+    test("hitch: game frame lines log each spike with its length", [&] {
+        hitch_guard::GameFrameClock clock;
+        hitch_guard::GameFrameClock::Lines lines;
+        const int64_t hz = 10'000'000;
+        uint64_t t = 1'000'000'000;
+        unsigned spikes = 0, summaries = 0;
+        for (int i = 0; i < 700; ++i) {
+            t += i == 300 ? hz * 231 / 1000 : hz / 36;
+            clock.update(t, hz, .0139f, lines);
+            for (unsigned k = 0; k < lines.count; ++k) {
+                const std::string line = lines.text[k];
+                if (line.find("spike 231 ms") != std::string::npos)
+                    ++spikes;
+                if (line.find("game steps") != std::string::npos)
+                    ++summaries;
+            }
+        }
+        check(spikes == 1 && clock.spikesTotal() == 1, "the 231 ms step was not logged once");
+        check(summaries >= 1, "no game frame summary was written");
+        clock.update(t + hz * 10, hz, .0139f, lines);
+        check(lines.count == 0 || std::string(lines.text[0]).find("spike") == std::string::npos,
+              "a pause was logged as a spike");
+    });
+    test("hitch: a 70 ms step is counted in the summary but gets no line of its own", [&] {
+        hitch_guard::GameFrameClock clock;
+        hitch_guard::GameFrameClock::Lines lines;
+        const int64_t hz = 10'000'000;
+        uint64_t t = 1'000'000'000;
+        unsigned spikeLines = 0;
+        std::string summary;
+        for (int i = 0; i < 900; ++i) {
+            t += (i % 100 == 50) ? hz * 70 / 1000 : hz / 36;
+            clock.update(t, hz, .0139f, lines);
+            for (unsigned k = 0; k < lines.count; ++k) {
+                const std::string line = lines.text[k];
+                if (line.find("spike") != std::string::npos)
+                    ++spikeLines;
+                if (line.find("game steps") != std::string::npos && summary.empty())
+                    summary = line;
+            }
+        }
+        check(spikeLines == 0, "a 70 ms step wrote a line of its own");
+        check(clock.spikesTotal() == 9, "the 70 ms steps were not all counted");
+        check(summary.find("over 50 ms") != std::string::npos, "the summary lost its over 50 ms count");
+    });
+    test("hitch: the punch scan's parts keep its longest visit, and the scan line fits the diag", [&] {
+        hitch_guard::PunchScanWindow w;
+        w.add({100., 10., 5., 20., 1., 2.});
+        w.add({39000., 50., 5., 20., 1., 2.});
+        w.add({300., NAN, -4., 20., 1., 2.});
+        const auto a = w.take();
+        check(a.visits == 3 && std::abs(a.worstUs - 39078.f) < .5f && a.worst[0] == 39000.f, "the longest visit's parts");
+        check(w.take().visits == 0, "take starts a fresh window");
+        hitch_guard::ScanCost s;
+        s.scans = 40;
+        s.classWaits = 12;
+        s.meanMs = 3.3f;
+        s.maxMs = 41.5f;
+        s.classWaitMaxUs = 38000.f;
+        hitch_guard::PunchScanWindow::Account big = a;
+        for (auto& v : big.worst)
+            v = 999999.f;
+        big.worstUs = 9999999.f;
+        char line[320];
+        hitch_guard::scanCostLine(big, s, line, sizeof line);
+        check(std::string(line).rfind("punch scan: longest", 0) == 0 && std::strlen(line) <= 228,
+              "the punch scan line fits the diag's text");
+        hitch_guard::scanCostLine(a, s, line, sizeof line);
+        check(std::string(line).find("targets 39000,") != std::string::npos &&
+                  std::string(line).find("target scans 40, mean 3.3 ms, longest 41.5 ms") != std::string::npos &&
+                  std::string(line).find("class lock waits 12, longest 38000 us") != std::string::npos,
+              "the punch scan line names the parts, the scans and the class lock's waits");
+    });
+    test("hitch: cost window reports the mod's share and the guards' fire counts", [&] {
+        hitch_guard::CostWindow cost;
+        const int64_t hz = 10'000'000;
+        uint64_t t = 5'000'000'000;
+        bool closed = false;
+        unsigned windows = 0;
+        for (int i = 0; i < 1500; ++i) { // 25 s of 60 Hz steps
+            t += hz / 60;
+            // 200 us steps, one of 7 ms; the guards fire 4 times then once more
+            const double us = i == 300 ? 7000. : 200.;
+            closed = cost.add(t, hz, us, us / 2, i % 2 ? 30. : 10., 100 + (i > 200) * 4 + (i > 900), 7 + (i > 900) * 2);
+            if (closed) {
+                ++windows;
+                if (windows == 1) {
+                    const auto& w = cost.done();
+                    check(w.seconds >= 10. && w.seconds < 10.1, "the window was not 10 s");
+                    check(w.visits >= 599 && w.visits <= 603, "the window's visit count is wrong");
+                    check(w.maxUs == 7000.f && w.over5ms == 1 && w.over1ms == 1, "the 7 ms step was not counted");
+                    check(std::abs(w.solverMaxUs - 3500.f) < 1.f && w.kickMaxUs == 30.f, "the shares are wrong");
+                    check(w.rejected == 4 && w.ignored == 0, "the guards' first window counts are wrong");
+                    char line[320];
+                    hitch_guard::costLine(w, line, sizeof line);
+                    check(std::string(line).find("4 velocity samples held") != std::string::npos &&
+                              std::string(line).find("longest 7000 us") != std::string::npos,
+                          "the cost line lost a field");
+                } else if (windows == 2) {
+                    check(cost.done().rejected == 1 && cost.done().ignored == 2, "the second window's guard counts");
+                }
+            }
+        }
+        check(windows == 2, "25 s should close two 10 s windows");
+        // A guard that was reset (its counter went down) counts the new value whole.
+        hitch_guard::CostWindow reset;
+        reset.add(t, hz, 100., 50., 5., 9, 9);
+        check(reset.add(t + hz * 11, hz, 100., 50., 5., 2, 3) && reset.done().rejected == 2 && reset.done().ignored == 3,
+              "a reset counter was not counted whole");
+        check(!hitch_guard::CostWindow().add(0, hz, 1., 1., 1., 0, 0), "a zero stamp was taken");
+    });
+    test("hitch: swing sample stays live through a stall up to 350 ms, then goes stale", [&] {
+        hitch_guard::FreshHold hold;
+        const int64_t hz = 10'000'000;
+        const uint64_t stamp = 9'000'000'000ull;
+        const auto at = [&](double ageSeconds, uint32_t status = 1) {
+            return hold.update(stamp, status != 0, static_cast<int64_t>(stamp) + static_cast<int64_t>(ageSeconds * hz), hz);
+        };
+        check(!at(.12), "not live yet: a sample over 100 ms old must not enter live");
+        check(at(.05) && !hold.holding(), "a 50 ms sample is live");
+        check(at(.2) && hold.holding(), "a 200 ms stall was not carried");
+        check(at(.34), "a 340 ms stall was not carried");
+        check(!at(.36) && !hold.live(), "a 360 ms stall was still live");
+        check(!at(.2), "after going stale a 200 ms sample must not re-enter live");
+        check(at(.02), "a fresh sample did not come back live");
+        const auto a = hold.take();
+        check(a.held == 0 && a.expired == 1 && a.longest > .33f, "the expired stall was not accounted");
+        check(at(.01) && at(.15) && at(.02), "a stall that ended inside the hold");
+        const auto b = hold.take();
+        check(b.held == 1 && b.expired == 0 && std::abs(b.longest - .15f) < .01f, "the carried stall was not accounted");
+        check(!at(.01, 0) && !hold.holding(), "a stopped swing module is not live");
+        check(at(.01) && !hold.take().expired, "stopping the module is not an expired stall");
+        check(!hold.update(0, true, 1, hz) && !hold.update(stamp, true, stamp, 0), "no stamp or no clock is not live");
+        // The raw rule it replaces: a 231 ms stall (the G1 playtest's worst) is carried whole.
+        check(at(.01) && at(.231) && at(.01) && hold.take().held == 1, "the 231 ms stall was not carried");
     });
     std::cout << total - failed << '/' << total << " tests passed\n";
     return failed ? 1 : 0;

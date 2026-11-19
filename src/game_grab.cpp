@@ -7,6 +7,7 @@
 // out of walls and the ground.
 #include "spidy/game_grab.hpp"
 #include "spidy/game_focus.hpp"
+#include "spidy/game_guard.hpp"
 #include "spidy/game_punch.hpp"
 #include "spidy/game_shooter.hpp"
 #include "spidy/native_bodies.hpp"
@@ -123,6 +124,9 @@ struct Tracked {
     float tieAsked = -1;
     // Webbed on his way, out of his cocoon's state (hold).
     bool tiePrewebbed{};
+    // HAND GRAB (carry()): a hand holds him now; seconds he has been down in its hold.
+    bool handHeld{};
+    float downFor{};
     // What it struck. `expected`: the velocity it was given for this step (by
     // the web, or its flight under gravity). The web's velocity reaches the
     // game a frame later, and the game draws a bot a frame late or early now
@@ -197,8 +201,11 @@ bool offers(Kind kind) {
 // in the fight. On October 8, 15:36, pulls took civilians: every bot was
 // offered; until October 12 they took the knocked out and the thugs of waves
 // to come.
-bool takes(const Candidate& c) {
-    return offers(c.kind) && (c.kind != Kind::bot || game_targets::fighting(base, c));
+// (game_guard) No enemy whose guard stands - a baton's, a swordsman's, a brute's, a shield's - is dragged by
+// a web until his guard is open. ignoreGuard: the pick that finds out whether one was refused.
+bool takes(const Candidate& c, bool ignoreGuard = false) {
+    return offers(c.kind) && (c.kind != Kind::bot ||
+                              (game_targets::fighting(base, c) && (ignoreGuard || !game_guard::holds(c))));
 }
 Tracked* track(uint64_t record) {
     for (auto& t : tracked)
@@ -240,14 +247,15 @@ Tracked* follow(const Candidate& c, Vec3 centre) {
     return &tracked.back();
 }
 // The candidate a web along the ray takes (TargetQueries::pick), and its centre.
-const Candidate* nearest(Vec3 origin, Vec3 direction, float distance, float cone, Vec3& centre) {
+const Candidate* nearest(Vec3 origin, Vec3 direction, float distance, float cone, Vec3& centre,
+                         bool ignoreGuard = false) {
     const Candidate* best{};
     float bestMiss = cone, bestDistance = 1e9f;
     // SOFT LOCK's wider pick (WebGrab::preview): angle and distance both count.
     const bool soft = cone > .1f;
     float bestScore = 1e9f;
     for (const auto& c : candidates) {
-        if (!takes(c))
+        if (!takes(c, ignoreGuard))
             continue;
         Vec3 at{};
         if (!game_targets::position(c, at))
@@ -272,6 +280,20 @@ const Candidate* nearest(Vec3 origin, Vec3 direction, float distance, float cone
     }
     return best && game_targets::live(base, *best) ? best : nullptr;
 }
+// HAND GRAB's enemy class rules (G2b, hand_grab::classify): what game_targets already reads of him - a boss
+// (BossHealth), a brute's or a shield's guard, his capsule's mass - and whether he is open for a finisher:
+// stunned (isStunned) or webbed up (cocooned). No new class name and no address: the proxies are flagged in
+// docs/GRIP.md until the game's own finisher state is verified.
+void foeOf(const Candidate& c, GrabTarget& t) {
+    if (c.kind != Kind::bot)
+        return;
+    const auto guard = game_targets::guardKind(c.traits);
+    const float mass = hand_grab::enemyMass(c.size.low, c.size.high, c.size.radius);
+    t.foe = static_cast<std::uint8_t>(hand_grab::classify(mass, guard == guards::Kind::Shield,
+                                                          (c.traits & game_targets::boss) != 0,
+                                                          guard == guards::Kind::Brawler));
+    t.open = game_targets::isStunned(base, c) || game_targets::cocooned(base, c);
+}
 GrabTarget described(const Candidate& c, Vec3 centre, Vec3 velocity) {
     const auto s = shape(c);
     return GrabTarget{c.record, s.core, centre, velocity, s.mass, s.radius};
@@ -281,8 +303,17 @@ class Targets final : public TargetQueries {
     std::optional<GrabTarget> pick(Vec3 origin, Vec3 direction, float distance, float cone) const override {
         Vec3 centre{};
         const auto* best = nearest(origin, direction, distance, cone, centre);
-        if (!best)
+        if (!best) {
+            // Nothing to take: but one whose guard stands under the aim is a pull refused, and the headset
+            // says so (with the guards on: off, nobody guards and nothing is looked for again).
+            if (game_guard::running())
+                if (const auto* guarded = nearest(origin, direction, distance, cone, centre, true))
+                    if (game_guard::holds(*guarded))
+                        game_guard::refused(*guarded);
             return {};
+        }
+        // The log says why the guard of an enemy with one let this pull take him (nothing for the others).
+        game_guard::taken(*best);
         const auto* t = follow(*best, centre);
         return described(*best, t->position, t->velocity);
     }
@@ -302,7 +333,10 @@ class Targets final : public TargetQueries {
         if (!t || t->gone || !t->seen)
             return {};
         const auto s = shape(t->who);
-        return GrabTarget{id, s.core, t->position, t->velocity, s.mass, s.radius};
+        GrabTarget out{id, s.core, t->position, t->velocity, s.mass, s.radius};
+        if (s.core == TargetKind::Character)
+            foeOf(t->who, out);
+        return out;
     }
     // Body userData (+0x98) carries its actor's handle in the low 32 bits.
     std::optional<std::uint64_t> owner(std::uint64_t surface) const override {
@@ -322,12 +356,48 @@ class Targets final : public TargetQueries {
                 return c.record;
         return {};
     }
-    // The enemies a throw may be aimed at.
+    // HAND GRAB: what a palm at `point` reaches. The same targets a web takes (takes: offered, an enemy
+    // who is up and free to fight - never one the game holds in a car or a scene - movable, live), so
+    // every hand grab passes the filter the webs do.
+    void within(Vec3 point, float reach, std::vector<GrabTarget>& out) const override {
+        for (const auto& c : candidates) {
+            Vec3 at{};
+            if (!takes(c) || !movable(c) || !game_targets::position(c, at) || !game_targets::live(base, c))
+                continue;
+            const auto s = shape(c);
+            GrabTarget t = described(c, at + Vec3{0, s.lift, 0}, {});
+            if (const auto* tracked = track(c.record); tracked && tracked->seen && !tracked->gone) {
+                t.position = tracked->position;
+                t.velocity = tracked->velocity;
+            }
+            if (s.core == TargetKind::Character) {
+                // His capsule, as the strikes take it: feet to head, a street thug's carried over to his
+                // size.
+                const float bottom = c.size.height(0), top = c.size.height(1.8f);
+                const float radius = c.size.width(.35f);
+                const Vec3 a = at + Vec3{0, bottom + radius, 0},
+                           b = at + Vec3{0, std::max(bottom + radius, top - radius), 0};
+                const Vec3 axis = b - a;
+                const float along =
+                    std::clamp(dot(point - a, axis) / std::max(dot(axis, axis), 1e-6f), 0.f, 1.f);
+                t.away = std::max(0.f, length(point - (a + axis * along)) - radius);
+                t.mass = hand_grab::enemyMass(c.size.low, c.size.high, c.size.radius);
+                t.radius = radius;
+                foeOf(c, t);
+            } else {
+                t.away = hand_grab::surfaceReach(point, t.position, t.radius);
+            }
+            if (t.away <= reach)
+                out.push_back(t);
+        }
+    }
+    // The enemies a throw may be aimed at: a guarding one too, since a thing thrown at him is one of the ways
+    // to open his guard (game_guard).
     void characters(std::vector<GrabTarget>& out) const override {
         for (const auto& c : candidates) {
             const auto s = shape(c);
             Vec3 at{};
-            if (s.core == TargetKind::Character && takes(c) && game_targets::position(c, at))
+            if (s.core == TargetKind::Character && takes(c, true) && game_targets::position(c, at))
                 out.push_back({c.record, s.core, at + Vec3{0, s.lift, 0}, {}, s.mass, s.radius});
         }
     }
@@ -880,6 +950,70 @@ void hold(Tracked& t, const TargetCommand& c, const Tie& tie, float dt, const Wo
     t.steering = true;
 }
 void release(Tracked& t, bool thrown, Vec3 velocity, bool flung);
+// HAND GRAB (hand_grab.hpp): an enemy a hand holds by its palm, carried as the web tie carries one but to a
+// point ahead of the hand, with no cocoon and no surface. A kinetic blow of handConfig.knockDamage (0.25,
+// the tie's) knocks him into the game's flight, whose velocity the hold's Follow law then writes every
+// step; once the game ends the flight (it does, now and then) he is knocked again handConfig.reknock
+// (0.8 s) after the last blow, a punch's included (struck()). One the game will not fling (a heavy, a
+// scripted scene) is steered on his mover. Down in the hand's hold (a flop, knocked out), nothing steers him
+// and the hand lets go of him after handDownSeconds.
+hand_grab::Config handConfig{};
+// PHYSICAL WEB TETHERS' settings as last accepted (tetherSettings).
+tether::Config tetherConfig{};
+uint64_t handKnocks{};
+constexpr float handDownSeconds = 1.5f;
+void carry(Tracked& t, const TargetCommand& c, float dt, const WorldQueries& world, bool flung, bool down,
+           Vec3 gravity) {
+    t.free = -1;
+    t.snatched = false;
+    t.falling = false;
+    if (down) {
+        t.downFor += dt;
+        if (t.steering)
+            steer(t, false, {});
+        t.steering = t.flying = t.launching = false;
+        return;
+    }
+    t.downFor = 0;
+    if (flung) {
+        if (t.steering) {
+            steer(t, false, {});
+            t.steering = false;
+        }
+        // The flight's first step takes the launch; then the hold's law from the velocity it gave him.
+        const Vec3 from = t.launching ? t.launch : t.flying ? t.expected : t.paced;
+        fly(t, advance(c, t.position, from, dt, gravity), t.launching);
+        t.launching = false;
+        t.flying = t.flew = true;
+        return;
+    }
+    t.flying = false;
+    if (t.knocked < 0 || t.knocked > handConfig.reknock) {
+        if (t.steering) {
+            steer(t, false, {});
+            t.steering = false;
+        }
+        t.launch = limited(c.velocity, maxDriveSpeed);
+        knock(t, t.launch, handConfig.knockDamage);
+        t.launching = true;
+        t.launchAge = 0;
+        t.flingAsked = false;
+        ++handKnocks;
+        return;
+    }
+    // The blow lands within a step or two.
+    if (t.knocked < knockWait)
+        return;
+    // Not flung (a heavy, a scripted scene): his mover.
+    if (!t.flingAsked) {
+        native_bodies::fling(t.who.machine, t.who.record, limited(c.velocity, maxDriveSpeed));
+        t.flingAsked = true;
+    }
+    Vec3 v = advance(c, t.position, t.velocity, dt, gravity);
+    t.grounded = guard(t, v, dt, world);
+    steer(t, true, v);
+    t.steering = true;
+}
 // An enemy yanked by a player in the air comes to the player, wherever the
 // player goes meanwhile and whether or not the grip still holds, stops an
 // arm's length before him at chest height and floats there, to be hit:
@@ -1207,13 +1341,17 @@ void game_grab::cancel() {
     ReleaseSRWLockExclusive(&output);
 }
 void game_grab::struck(uint64_t record) {
-    for (auto& t : tracked)
+    for (auto& t : tracked) {
+        // A punch lands on an enemy a hand holds: his next knock waits the re-knock after it.
+        if (t.handHeld && t.who.record == record)
+            t.knocked = 0;
         if (t.snatched && t.who.record == record) {
             t.snatched = false;
             t.flying = false;
             t.launching = false;
             t.free = 0;
         }
+    }
 }
 bool game_grab::offering() {
     return offered != 0;
@@ -1223,6 +1361,72 @@ void game_grab::allow(bool on) {
 }
 void game_grab::softLock(float metres) {
     core.softLock(metres);
+}
+void game_grab::handGrab(bool on, float force, float holdCost, bool classRules) {
+    hand_grab::Config c = handConfig;
+    c.enabled = on;
+    c.classRules = classRules;
+    if (std::isfinite(force))
+        c.force = std::clamp(force, 400.f, 4000.f);
+    if (std::isfinite(holdCost))
+        c.holdCost = std::clamp(holdCost, 0.f, 5.f);
+    if (core.handGrab(c))
+        handConfig = c;
+}
+void game_grab::tetherSettings(bool on, unsigned particles, unsigned substeps) {
+    tether::Config c = tetherConfig;
+    c.enabled = on;
+    c.particles = static_cast<int>(std::min(particles, 32u));
+    c.substeps = static_cast<int>(std::min(substeps, 16u));
+    if (core.tether(c))
+        tetherConfig = c;
+}
+game_grab::TetherData game_grab::tetherData() {
+    const auto& r = core.tetherReport();
+    TetherData d;
+    d.whips = r.whips;
+    d.spins = r.spins;
+    d.slings = r.slings;
+    d.throws = r.throws;
+    d.cuts = r.cuts;
+    d.lastAction = r.lastAction;
+    d.serial = r.serial;
+    d.lastSpeed = r.lastSpeed;
+    for (int i = 0; i < 2; ++i) {
+        const auto& v = core.tetherView(i);
+        auto& l = d.lines[i];
+        l.count = std::min<uint32_t>(v.count, 6);
+        l.flags = (v.active ? 1u : 0u) | (v.spinning ? 2u : 0u) | (v.kept ? 4u : 0u);
+        l.tension = v.tension;
+        l.end = v.end;
+        for (uint32_t k = 0; k < l.count; ++k)
+            l.points[k] = v.points[k];
+    }
+    return d;
+}
+bool game_grab::handClaims(unsigned hand, const Input& in) {
+    return offered && allowed && hand < 2 && core.handClaims(static_cast<int>(hand), in.hands[hand], targets);
+}
+HandData game_grab::handData() {
+    const auto& r = core.handReport();
+    HandData d;
+    d.grabs = r.grabs;
+    d.enemies = r.enemies;
+    d.props = r.props;
+    d.throws = r.throws;
+    d.slams = r.slams;
+    d.drops = r.drops;
+    d.lost = r.lost;
+    d.lastAction = r.lastAction;
+    d.lastKind = r.lastKind;
+    d.serial = r.serial;
+    d.lastMass = r.lastMass;
+    d.lastSpeed = r.lastSpeed;
+    d.knocks = static_cast<uint32_t>(handKnocks);
+    for (unsigned i = 0; i < 2; ++i)
+        if (core.grabs()[i].hand)
+            d.holding |= 1u << i;
+    return d;
 }
 void game_grab::allowTies(bool on) {
     tiesAllowed = on;
@@ -1478,9 +1682,13 @@ void game_grab::step(float dt, const WorldQueries& world, uint64_t player) {
             t.paced = {};
         t.cruise = std::max({t.speeds[0], t.speeds[1], t.speeds[2]});
         const bool tiedNow = ties.tied(t.who.record);
+        t.handHeld = command && command->carried && !command->thrown;
+        if (!t.handHeld)
+            t.downFor = 0;
         // What it struck since the step before, under what it was given then
-        // (a tied enemy is brought onto his surface, not struck against it).
-        if (!tiedNow)
+        // (a tied enemy is brought onto his surface, not struck against it, and
+        // a hand-held one is not struck against what the hand holds him by).
+        if (!tiedNow && !t.handHeld)
             strike(t, dt, flung, gravity);
         t.speeds[2] = t.speeds[1];
         t.speeds[1] = t.speeds[0];
@@ -1498,6 +1706,10 @@ void game_grab::step(float dt, const WorldQueries& world, uint64_t player) {
                 hold(t, *command, *tie, dt, world, flung, !game_targets::up(base, t.who), gravity);
                 continue;
             }
+        }
+        if (t.handHeld) {
+            carry(t, *command, dt, world, flung, !game_targets::up(base, t.who), gravity);
+            continue;
         }
         if (t.snatched) {
             snatch(t, dt, flung);
@@ -1550,6 +1762,11 @@ void game_grab::step(float dt, const WorldQueries& world, uint64_t player) {
         if (!flung)
             t.flingAsked = false;
     }
+    // A hand lets go of an enemy who stays down in its hold (knocked out): he is the game's again.
+    for (int i = 0; i < 2; ++i)
+        if (core.grabs()[i].hand)
+            if (const auto* t = track(core.grabs()[i].target); t && t->downFor >= handDownSeconds)
+                core.handOver(i);
     // Forget targets nothing acts on any longer, nor a web trails, nor flies
     // where it may strike something.
     tracked.erase(std::remove_if(tracked.begin(), tracked.end(),
@@ -1598,6 +1815,7 @@ void game_grab::step(float dt, const WorldQueries& world, uint64_t player) {
             const auto* t = track(g.target);
             hand = {static_cast<uint32_t>(g.phase), t ? static_cast<uint32_t>(t->who.kind) : 0u,
                     g.target, t ? t->position : g.end, g.length, g.taut, g.tension};
+            hand.reserved = g.hand ? 1u : 0u; // held by the palm: no web to draw
             continue;
         }
         // Let go of: the web trails its target while it is there to trail.

@@ -108,6 +108,19 @@ inline float runDirection(float a, float gaze) {
     return std::clamp(a, -freeAngle, freeAngle);
 }
 
+// HEADSET FIRST: the run direction (basis-relative, radians, + right) for a stick at `a`, with the basis
+// already the view: straight on within 15 degrees (the cone), a blend to the stick's own angle by 25, then
+// the stick's angle all the way round - the rear half runs BACKWARD (the body turns round, the view stays;
+// there is no rear snap).
+inline float viewRunDirection(float a) {
+    const float abs = std::abs(a);
+    if (abs <= coneAngle)
+        return 0.f;
+    if (abs < blendAngle)
+        return a * ((abs - coneAngle) / (blendAngle - coneAngle));
+    return wrap(a);
+}
+
 struct Gate {
     bool armed = true, holding = false, settling = false;
     float settle = 0, lastAngle = 0;
@@ -206,6 +219,28 @@ struct Gate {
         }
         return out;
     }
+    // HEADSET FIRST: every direction of the stick runs him (no rear snap, no dead band), basis-relative.
+    Out updateView(float x, float y) {
+        Out out;
+        if (!std::isfinite(x) || !std::isfinite(y))
+            x = y = 0;
+        const float tilt = std::min(std::hypot(x, y), 1.f);
+        armed = true;
+        holding = settling = false;
+        if (tilt < deadzone)
+            return out;
+        const float a = stickAngle(x, y);
+        const float abs = std::abs(a);
+        out.y = tilt;
+        out.dir = viewRunDirection(a);
+        out.drives = true;
+        out.zone = abs <= coneAngle  ? Zone::cone
+                   : abs < blendAngle ? Zone::blend
+                   : abs <= freeAngle ? Zone::free
+                   : abs <= snapAngle ? Zone::edge
+                                      : Zone::rear;
+        return out;
+    }
     void reset() {
         armed = true;
         holding = settling = false;
@@ -239,6 +274,13 @@ struct Heading {
         float hero = 0;
         bool driving = false; // the left stick runs him along it
         bool steerable = false; // the walk stick can turn him (grounded, the animation's)
+        // HEADSET FIRST: where the player looks (shown + hmd). When finite, a hold arrives when the hero
+        // faces THIS (within arriveAngle), not the heading's own yaw: the hero comes round to the view.
+        float view = NAN;
+        // HEADSET FIRST, the view is the player's: the heading never follows the hero's facing and the
+        // head's yaw sway is never shown (sway weight 0); only the player's turns, a realign, a handoff's
+        // continuity write and the punch snap move it.
+        bool viewOwn = false;
     };
     struct Out {
         bool heroTurn = false; // TURN-IN-PLACE forced to `yaw` (standing)
@@ -296,10 +338,10 @@ struct Heading {
             yaw = wrap(snapFrom + wrap(snapTo - snapFrom) * s);
         }
         if (!in.heroOk || !std::isfinite(in.hero)) {
-            swayWeight = hold == Hold::none ? std::min(1.f, swayWeight + dt / swayInSeconds) : 0.f;
+            swayWeight = hold == Hold::none && !in.viewOwn ? std::min(1.f, swayWeight + dt / swayInSeconds) : 0.f;
             return out;
         }
-        const float gap = wrap(yaw - in.hero);
+        const float gap = wrap((std::isfinite(in.view) ? in.view : yaw) - in.hero);
         if (hold != Hold::none) {
             age += dt;
             if (std::abs(gap) < arriveAngle && snapT >= 1) {
@@ -322,7 +364,13 @@ struct Heading {
                 }
             }
         }
-        if (hold == Hold::none) {
+        if (hold == Hold::none && in.viewOwn) {
+            // The view is the player's: the heading stays where the player has it.
+            following = false;
+            drivingOff = 0;
+            rest = 0;
+            swayWeight = 0;
+        } else if (hold == Hold::none) {
             if (in.driving && in.steerable) {
                 // He runs where the stick says, the heading stays the player's.
                 anchored = true;
@@ -346,7 +394,7 @@ struct Heading {
                 // What was left when that began fades (0.12 s); his own turns are followed
                 // at once, never lagged.
                 if (!following) {
-                    rest = gap;
+                    rest = wrap(yaw - in.hero);
                     following = true;
                 }
                 rest *= std::exp(-dt / followTau);

@@ -15,7 +15,7 @@ from run_game_vr import (snapshot as xr_snapshot, accepted as accepted_xr, timin
                          appearance_snapshot, stream_snapshot, pace_snapshot, blur_snapshot, reproject_snapshot,
                          eye_snapshot, save_eye_snapshot, hud_capture_snapshot, save_hud_capture,
                          rgb_rows, crop_origin,
-                         game_memory, keep_game_log, body_snapshot,
+                         game_memory, keep_game_log, body_snapshot, commit_trend, commit_line,
                          punch_snapshot, strike_snapshot, focus_snapshot, sound_snapshot, dodge_snapshot,
                          shooter_snapshot,
                          rope_snapshot,
@@ -57,8 +57,8 @@ class ProtocolTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[1]
         header = (root / 'include/spidy/game_swing.hpp').read_text(encoding='utf-8')
         settings = header.split('struct Settings {', 1)[1].split('\n};', 1)[0]
-        self.assertRegex(settings, r'version = 40, bytes = sizeof\(Settings\)')
-        self.assertIn('sizeof(Settings) == 188', header)
+        self.assertRegex(settings, r'version = 42, bytes = sizeof\(Settings\)')
+        self.assertIn('sizeof(Settings) == 196', header)
         self.assertLess(settings.index('uint32_t webLines'), settings.index('uint32_t headProbe'))
         fields = ['headProbe', 'animatedMoves', 'animatedHead', 'animatedAir',
                   'animatedSteering', 'animatedArms', 'animatedTorso', 'animatedModelYaw']
@@ -70,7 +70,11 @@ class ProtocolTests(unittest.TestCase):
             self.assertRegex(producer, r's\.' + field + r' = (?:static_cast<uint32_t>\()?values\.' + field)
         self.assertIn('(s.version == 31 && s.bytes == settingsBytesV31)', header)
         self.assertIn('(s.version == 39 && s.bytes == settingsBytesV39)', header)
-        self.assertIn('(s.version == 40 && s.bytes == sizeof(Settings))', header)
+        # The 0.8.7 port: v41 appends Ilya's enemyTypes after the fork's v40; v42 the target scan interval.
+        self.assertIn('(s.version == 40 && s.bytes == settingsBytesV40)', header)
+        self.assertIn('(s.version == 41 && s.bytes == settingsBytesV41)', header)
+        self.assertIn('(s.version == 42 && s.bytes == sizeof(Settings))', header)
+        self.assertLess(settings.index('uint32_t enemyTypes'), settings.index('uint32_t targetScanIdleMs'))
 
     def test_wall_roll_flag_uses_version_5_and_does_not_change_legacy_commands(self):
         old = swing_command(1, (0, 0, 0))
@@ -832,6 +836,15 @@ class ProtocolTests(unittest.TestCase):
         struct.pack_into('<q', torn, 16, 7)
         self.assertIsNone(sound_snapshot(Reader(*([torn, struct.pack('<q', 7)]*8)), 0))
 
+    def test_sound_version_2_adds_blows_by_intensity_and_the_hero_cues(self):
+        raw = bytearray(104)
+        struct.pack_into('<4Iq', raw, 0, 0x53534e44, 2, 104, 2, 6)
+        struct.pack_into('<4Q4I', raw, 24, 4, 4, 0, 0, 0, 1, 1, 5)
+        struct.pack_into('<7I', raw, 72, 0, 2, 1, 1, 9, 2, 0)
+        result = sound_snapshot(Reader(raw, struct.pack('<q', 6)), 0)
+        self.assertEqual(result['by_intensity'], dict(light=0, medium=2, heavy=1, extreme=1))
+        self.assertEqual((result['cues'], result['cues_guarded'], result['cues_dropped']), (9, 2, 0))
+
     def test_dodge_decodes_the_dodges_on_a_web_the_game_took_and_what_they_answered(self):
         raw = bytearray(128)
         struct.pack_into('<4Iq', raw, 0, 0x53444744, 1, 128, 1, 6)
@@ -1169,6 +1182,25 @@ class ProtocolTests(unittest.TestCase):
             self.assertIsNone(save_eye_snapshot(Reader(), 0, shot, folder, '0003'))
             write.assert_not_called()
 
+    def test_commit_trend_tells_a_flat_game_from_a_growing_one(self):
+        # The Nov 19 session's shape: up in the first minutes, flat after.
+        flat = [dict(time='06:52:18', commit_mb=11760), dict(time='07:00:18', commit_mb=12039),
+                dict(time='07:12:18', commit_mb=12204), dict(time='07:24:18', commit_mb=12156),
+                dict(time='07:36:18', commit_mb=12176)]
+        trend = commit_trend(flat, dict(start=1683, lowest=247, end=2355))
+        self.assertEqual(trend['verdict'], 'flat')
+        self.assertEqual((trend['first_mb'], trend['last_mb'], trend['peak_mb']), (11760, 12176, 12204))
+        self.assertLess(trend['second_half_mb_per_min'], 5)
+        self.assertIn('lowest 247 MB', commit_line(trend))
+        self.assertIn('(flat)', commit_line(trend))
+        growing = [dict(time='23:%02d:00' % m, commit_mb=10000 + 20*m) for m in range(50, 60)] + \
+                  [dict(time='00:%02d:00' % m, commit_mb=11200 + 20*m) for m in range(0, 10)]
+        trend = commit_trend(growing)
+        self.assertEqual(trend['verdict'], 'growing')
+        self.assertAlmostEqual(trend['second_half_mb_per_min'], 20, delta=1)
+        self.assertIsNone(commit_trend(flat[:3]))
+        self.assertIn('not enough', commit_line(None))
+
     def test_game_log_is_kept_beside_the_report_with_its_memory_lines(self):
         line = ('13:33:01:870 (00009916) > [Render] Working set: 3170MB Page file: 10144MB Video Budget: 31418MB '
                 'Video Usage: 3296MB Sys Budget: 45929MB Sys Usage: 379MB Tex Usage: 974MB Tex Budget: 3874MB '
@@ -1293,6 +1325,41 @@ class ProtocolTests(unittest.TestCase):
                          "Rendering 3072 x 3264 pixels per eye (100% of the headset's 3072 x 3264), without "
                          'anti-aliasing.')
 
+    def test_the_scene_is_rendered_at_half_by_default(self):
+        import run_game_vr
+        self.assertEqual(run_game_vr.DEFAULT_UPSCALE, 50)
+
+    def test_low_fps_is_said_once_after_a_minute_and_again_when_it_clears(self):
+        import run_game_vr
+        watch, said = {}, []
+
+        def run(seconds, fps, start):
+            frames = 0
+            for t in range(0, seconds + 1):
+                frames = int(fps * t)
+                result = run_game_vr.low_fps_watch(watch, dict(seconds=start + t, frames=frames))
+                if result:
+                    said.append((result, start + t))
+            return start + seconds
+        # a 36 fps game says nothing; the counter restarting (a new session) is not a rate
+        end = run(30, 36, 0)
+        self.assertEqual(said, [])
+        # 9 fps: said once, not before 60 s of it
+        end = run(50, 9, end)
+        self.assertEqual(said, [])
+        end = run(40, 9, end)
+        self.assertEqual([s[0] for s in said], ['slow'])
+        end = run(30, 9, end)
+        self.assertEqual([s[0] for s in said], ['slow'])
+        # back to 40 fps: said once, after two good windows
+        end = run(30, 40, end)
+        self.assertEqual([s[0] for s in said], ['slow', 'over'])
+        self.assertIn('close the game', run_game_vr.low_fps_advice(9, 60))
+        # a game that stopped (0 fps) is the freeze watch's
+        stopped = {}
+        for t in range(0, 200):
+            self.assertIsNone(run_game_vr.low_fps_watch(stopped, dict(seconds=t, frames=100)))
+
     def test_the_upscale_is_checked_before_anything_starts(self):
         import run_game_vr
         for argv in (['--upscale', '49'], ['--upscale', '101']):
@@ -1332,6 +1399,19 @@ class ProtocolTests(unittest.TestCase):
              patch.object(run_game_vr.time, 'sleep'):
             self.assertEqual(run_game_vr.wait_for_renderer(game, 5, 0x3000), 0x1234)
         self.assertEqual((memory.call_count, queue.call_count), (4, 2))
+        # A module that never counts (an Intel Arc A750, October 24) is waited for module_patience seconds,
+        # then the queue is looked for without it, and the report says so.
+        clock, problems = iter(range(0, 1000)), []
+        with patch.object(run_game_vr, 'alive', return_value=True), \
+             patch.object(run_game_vr, 'render_memory_snapshot', return_value=dict(frames=0, ring='game')) as memory, \
+             patch.object(run_game_vr, 'discover_queue', return_value=0x77) as queue, \
+             patch.object(run_game_vr.time, 'monotonic', side_effect=lambda: next(clock)), \
+             patch.object(run_game_vr.time, 'sleep'), patch('builtins.print'):
+            self.assertEqual(run_game_vr.wait_for_renderer(game, 5, 0x3000, problems=problems, module_patience=10), 0x77)
+        queue.assert_called_once()
+        self.assertLess(memory.call_count, 12)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('counted 0 game frames in 10 s', problems[0])
         # Without the render memory module (an attached game), the queue alone decides.
         with patch.object(run_game_vr, 'alive', return_value=True), \
              patch.object(run_game_vr, 'discover_queue', return_value=0x99) as queue:
@@ -1606,10 +1686,16 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(other_mods(game), ([], ['version.dll']))
             (game/'dinput8.dll').write_bytes(b'')
             self.assertEqual(other_mods(game), ([], ['dinput8.dll', 'version.dll']))
+            # Plugin loaders (the sky mod's winmm.dll, November 18): Spidy runs beside them.
             warning = other_mods_warning(game, ['dinput8.dll', 'version.dll'])
+            self.assertTrue(warning.startswith('Another mod loads into the game'))
+            self.assertIn('runs beside it', warning)
+            self.assertIn('move them out of', warning)
+            self.assertIn('move it out of', other_mods_warning(game, ['winmm.dll']))
+            # A graphics stand-in is still the warning.
+            warning = other_mods_warning(game, ['d3d12.dll', 'winmm.dll'])
             self.assertTrue(warning.startswith('WARNING: another mod or tool'))
             self.assertIn('move them out of', warning)
-            self.assertIn('move it out of', other_mods_warning(game, ['version.dll']))
         self.assertIn('Your setting returns', ASPECT_RATIO_AUTO)
 
     def test_a_lost_graphics_device_is_named_from_the_game_log(self):

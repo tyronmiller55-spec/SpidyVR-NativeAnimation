@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(Spidy VERSION 0.8.6 LANGUAGES C CXX)
+project(Spidy VERSION 0.8.7 LANGUAGES C CXX)
+# The version players see (the launcher, the log's build line, the modules' version strings): the NA beta of
+# 0.8.7 (beta polish D8). The numbers stay 0.8.7 for the update check and the version resource.
+set(SPIDY_VERSION_LABEL "${PROJECT_VERSION}-na-beta1")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -26,7 +29,8 @@ function(spidy_stamp_version target description)
   endif()
   target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/apps/spidy_module.rc")
   target_compile_definitions(${target} PRIVATE
-                             SPIDY_VERSION="${PROJECT_VERSION}"
+                             SPIDY_VERSION="${SPIDY_VERSION_LABEL}"
+                             SPIDY_FILE_VERSION="${PROJECT_VERSION}"
                              SPIDY_VERSION_NUMBERS=${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0
                              SPIDY_MODULE_DESC="${description}"
                              SPIDY_MODULE_FILE="$<TARGET_FILE_NAME:${target}>"
@@ -52,6 +56,15 @@ add_test(NAME realistic_flips COMMAND spidy_realistic_flip_tests)
 add_executable(spidy_action_frame_tests tests/action_frame_tests.cpp)
 target_link_libraries(spidy_action_frame_tests PRIVATE spidy_core)
 add_test(NAME action_frame COMMAND spidy_action_frame_tests)
+add_executable(spidy_web_fire_tests tests/web_fire_tests.cpp)
+target_include_directories(spidy_web_fire_tests PRIVATE include)
+add_test(NAME web_fire COMMAND spidy_web_fire_tests)
+add_executable(spidy_showtime_tests tests/showtime_tests.cpp)
+target_include_directories(spidy_showtime_tests PRIVATE include)
+add_test(NAME showtime COMMAND spidy_showtime_tests)
+add_executable(spidy_showtime_rig_tests tests/showtime_rig_tests.cpp)
+target_include_directories(spidy_showtime_rig_tests PRIVATE include)
+add_test(NAME showtime_rig COMMAND spidy_showtime_rig_tests)
 add_executable(spidy_solved_hand_frame_tests tests/solved_hand_frame_tests.cpp)
 target_link_libraries(spidy_solved_hand_frame_tests PRIVATE spidy_core)
 add_test(NAME solved_hand_frame COMMAND spidy_solved_hand_frame_tests)
@@ -70,21 +83,114 @@ target_link_libraries(spidy_point_jump_tests PRIVATE spidy_core)
 target_compile_definitions(spidy_point_jump_tests PRIVATE SPIDY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME point_jump COMMAND spidy_point_jump_tests)
 
+# VR STABILIZATION (vr_stabilize.hpp), STEADY and HORIZON LEVEL (portable).
+add_executable(spidy_vr_stabilize_tests tests/vr_stabilize_tests.cpp)
+target_link_libraries(spidy_vr_stabilize_tests PRIVATE spidy_core)
+add_test(NAME vr_stabilize COMMAND spidy_vr_stabilize_tests)
+
+# AIR KICKS (air_kick.hpp): gestures, zone and gaze, the foot's bend, strength, timeline, leg poses and the kick
+# against enemies (portable).
+add_executable(spidy_air_kick_tests tests/air_kick_tests.cpp)
+target_link_libraries(spidy_air_kick_tests PRIVATE spidy_core)
+add_test(NAME air_kick COMMAND spidy_air_kick_tests)
+
+# GROUND KICKS (ground_kick.hpp): the stick's flicks and half circle, the kick standing (portable).
+add_executable(spidy_ground_kick_tests tests/ground_kick_tests.cpp)
+target_link_libraries(spidy_ground_kick_tests PRIVATE spidy_core)
+add_test(NAME ground_kick COMMAND spidy_ground_kick_tests)
+
+# ENEMY JOINTS (enemy_joints.hpp): the name hash, the roles in a joint table, a joint in the world, the zones from
+# joints with the bands as the fallback and the limb zones gated (portable).
+add_executable(spidy_enemy_joints_tests tests/enemy_joints_tests.cpp)
+target_link_libraries(spidy_enemy_joints_tests PRIVATE spidy_core)
+add_test(NAME enemy_joints COMMAND spidy_enemy_joints_tests)
+
+# PHYSICAL WEB TETHERS (tether.hpp): the XPBD rope, whip, spin, payout and the web grab's use of them (portable).
+add_executable(spidy_tether_tests tests/tether_tests.cpp)
+target_link_libraries(spidy_tether_tests PRIVATE spidy_core)
+add_test(NAME tether COMMAND spidy_tether_tests)
+# MANUAL SWING KICK (swing_kick.hpp): the arm gate, cone, flick, assist clamps, foot sweep (portable).
+add_executable(spidy_swing_kick_tests tests/swing_kick_tests.cpp)
+target_link_libraries(spidy_swing_kick_tests PRIVATE spidy_core)
+add_test(NAME swing_kick COMMAND spidy_swing_kick_tests)
+
+# GRIP ACROSS THE GAME (grip.hpp): the brake, the fling's math, history and grip states (portable).
+add_executable(spidy_grip_tests tests/grip_tests.cpp)
+target_link_libraries(spidy_grip_tests PRIVATE spidy_core)
+add_test(NAME grip COMMAND spidy_grip_tests)
+
+# HAND GRAB (hand_grab.hpp): the reach, hold, cost, release and slam math, and WebGrab holding bodies by hand.
+add_executable(spidy_hand_grab_tests tests/hand_grab_tests.cpp)
+target_link_libraries(spidy_hand_grab_tests PRIVATE spidy_core)
+add_test(NAME hand_grab COMMAND spidy_hand_grab_tests)
+
 add_executable(spidy_handstand_tests tests/handstand_tests.cpp)
 target_link_libraries(spidy_handstand_tests PRIVATE spidy_core)
 add_test(NAME handstand COMMAND spidy_handstand_tests)
+# POINT JUMP BULLET (point_bullet.hpp): the body takes the raw look, eased, and lets go.
+add_executable(spidy_point_bullet_tests tests/point_bullet_tests.cpp)
+target_link_libraries(spidy_point_bullet_tests PRIVATE spidy_core)
+add_test(NAME point_bullet COMMAND spidy_point_bullet_tests)
+# LANDING BLEND-IN (landing_blend.hpp): time to impact, the upright ramp, the release point, the touchdown report.
+add_executable(spidy_landing_blend_tests tests/landing_blend_tests.cpp)
+target_link_libraries(spidy_landing_blend_tests PRIVATE spidy_core)
+add_test(NAME landing_blend COMMAND spidy_landing_blend_tests)
 # LEG HOLD (leg_hold.hpp): Y+X chord, suppression, stick persistence, neutral cancel, easing (portable).
 add_executable(spidy_leg_hold_tests tests/leg_hold_tests.cpp)
 target_link_libraries(spidy_leg_hold_tests PRIVATE spidy_core)
 add_test(NAME leg_hold COMMAND spidy_leg_hold_tests)
+add_executable(spidy_hook_chain_tests tests/hook_chain_tests.cpp)
+target_link_libraries(spidy_hook_chain_tests PRIVATE spidy_core)
+add_test(NAME hook_chain COMMAND spidy_hook_chain_tests)
 
 add_executable(spidy_sidestep_tests tests/sidestep_tests.cpp)
 target_link_libraries(spidy_sidestep_tests PRIVATE spidy_core)
 add_test(NAME sidestep COMMAND spidy_sidestep_tests)
+add_executable(spidy_ground_moves_tests tests/ground_moves_tests.cpp)
+target_link_libraries(spidy_ground_moves_tests PRIVATE spidy_core)
+add_test(NAME ground_moves COMMAND spidy_ground_moves_tests)
+# DIRECTION REPORT (direction_report.hpp) and the QUIET LOG (diag_log.hpp Throttle): rates, imposed view turn, skew,
+# momentum, the dedupe (portable).
+add_executable(spidy_direction_report_tests tests/direction_report_tests.cpp)
+target_link_libraries(spidy_direction_report_tests PRIVATE spidy_core)
+add_test(NAME direction_report COMMAND spidy_direction_report_tests)
+# POLISH PASS, slice 6: the longest visit's sections, the LOW FPS watch, the quiet log's new kinds, the new defaults.
+add_executable(spidy_polish_runtime_tests tests/polish_runtime_tests.cpp)
+target_link_libraries(spidy_polish_runtime_tests PRIVATE spidy_core)
+add_test(NAME polish_runtime COMMAND spidy_polish_runtime_tests)
+# BETA POLISH PASS (Nov 19): eye stall watch, kick miss reasons, minimum stints, landings, sound cues, settings checks.
+add_executable(spidy_beta_polish_tests tests/beta_polish_tests.cpp)
+target_link_libraries(spidy_beta_polish_tests PRIVATE spidy_core)
+target_compile_definitions(spidy_beta_polish_tests PRIVATE SPIDY_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME beta_polish COMMAND spidy_beta_polish_tests)
+add_executable(spidy_body_ik_tests tests/body_ik_tests.cpp)
+target_link_libraries(spidy_body_ik_tests PRIVATE spidy_core)
+add_test(NAME body_ik COMMAND spidy_body_ik_tests)
+add_executable(spidy_hybrid_owner_table_tests tests/hybrid_owner_table_tests.cpp)
+target_link_libraries(spidy_hybrid_owner_table_tests PRIVATE spidy_core)
+add_test(NAME hybrid_owner_table COMMAND spidy_hybrid_owner_table_tests)
+# PUNCH AUTO-TARGET (punch_track.hpp, polish pass slice 7): the throw, the verdict, the cone, the range, the settings.
+add_executable(spidy_punch_track_tests tests/punch_track_tests.cpp)
+target_link_libraries(spidy_punch_track_tests PRIVATE spidy_core)
+add_test(NAME punch_track COMMAND spidy_punch_track_tests)
+add_executable(spidy_jump_pull_tests tests/jump_pull_tests.cpp)
+target_link_libraries(spidy_jump_pull_tests PRIVATE spidy_core)
+add_test(NAME jump_pull COMMAND spidy_jump_pull_tests)
+
+# HEADSET FIRST (hybrid_steer::Basis, hybrid_movement::viewRunDirection, Gate::updateView): the stick's basis, the whole circle runs him,
+# the setting (portable).
+add_executable(spidy_headset_first_tests tests/headset_first_tests.cpp)
+target_link_libraries(spidy_headset_first_tests PRIVATE spidy_core)
+add_test(NAME headset_first COMMAND spidy_headset_first_tests)
+
 # PUNCH VIEW EASE (view_ease.hpp): hold and ease at a punch's switch, cancels, rig offset, setting (portable).
 add_executable(spidy_view_ease_tests tests/view_ease_tests.cpp)
 target_link_libraries(spidy_view_ease_tests PRIVATE spidy_core)
 add_test(NAME view_ease COMMAND spidy_view_ease_tests)
+# NEXT PASS (Nov 15): handoff smoothing, body yaw, snap realign, dodge re-face, handstand catch (portable).
+add_executable(spidy_next_pass_tests tests/next_pass_tests.cpp)
+target_link_libraries(spidy_next_pass_tests PRIVATE spidy_core)
+add_test(NAME next_pass COMMAND spidy_next_pass_tests)
 # MOVE HAPTICS (move_haptics.hpp): takeoffs, landings, the point jump's double thump, the scale (portable).
 add_executable(spidy_move_haptics_tests tests/move_haptics_tests.cpp)
 target_link_libraries(spidy_move_haptics_tests PRIVATE spidy_core)
@@ -132,6 +238,10 @@ if(WIN32)
   target_sources(spidy_tests PRIVATE src/game_targets.cpp)
 endif()
 add_test(NAME core COMMAND spidy_tests)
+# The guards (guard.hpp): which classes give a guard, the rules file, and each enemy's guard book.
+add_executable(spidy_guard_tests tests/guard_tests.cpp)
+target_include_directories(spidy_guard_tests PRIVATE include)
+add_test(NAME guards COMMAND spidy_guard_tests)
 # Settings profiles (launcher_profile.hpp) hold the SPIDY VR tab's settings: the launcher's programs build
 # vr_settings themselves, as the launcher has the static runtime and spidy_core the DLL one.
 add_executable(spidy_launcher_tests tests/launcher_tests.cpp src/vr_settings.cpp)
@@ -195,7 +305,7 @@ if(SPIDY_BUILD_OBSERVER)
   add_library(spidy_ray_bridge SHARED src/native_rays.cpp src/game_swing.cpp src/game_targets.cpp
               src/game_grab.cpp src/native_bodies.cpp src/game_punch.cpp src/game_shooter.cpp
               src/game_warp.cpp src/game_offers.cpp src/game_sense.cpp src/game_focus.cpp
-              src/game_sound.cpp src/game_throw.cpp src/game_dodge.cpp)
+              src/game_sound.cpp src/game_throw.cpp src/game_dodge.cpp src/game_guard.cpp src/game_joints.cpp)
   target_include_directories(spidy_ray_bridge PRIVATE include)
   target_compile_definitions(spidy_ray_bridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
   target_compile_options(spidy_ray_bridge PRIVATE /W4 /permissive-)
@@ -293,7 +403,7 @@ if(SPIDY_BUILD_XR)
   if(SPIDY_BUILD_OBSERVER)
     target_sources(spidy_stereo_probe PRIVATE src/game_xr.cpp src/game_player.cpp src/game_pad.cpp
                    src/game_menu.cpp src/game_time.cpp src/game_prompts.cpp src/game_steam.cpp
-                   src/phone_music.cpp src/phone_pc_media.cpp src/diag_log.cpp)
+                   src/phone_music.cpp src/phone_pc_media.cpp src/diag_log.cpp src/voice_pool.cpp)
     # The build's id in the session's diagnostics (diag_log.hpp): the commit where git knows it, and
     # always when it was configured, so two builds of one version can be told apart.
     find_package(Git QUIET)
@@ -337,7 +447,8 @@ if(SPIDY_BUILD_LAUNCHER)
                  ${SPIDY_IMGUI}/backends/imgui_impl_dx11.cpp)
   target_include_directories(spidy_launcher PRIVATE include ${SPIDY_IMGUI} ${SPIDY_IMGUI}/backends)
   target_compile_definitions(spidy_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
-                             SPIDY_VERSION="${PROJECT_VERSION}"
+                             SPIDY_VERSION="${SPIDY_VERSION_LABEL}"
+                             SPIDY_FILE_VERSION="${PROJECT_VERSION}"
                              SPIDY_VERSION_NUMBERS=${PROJECT_VERSION_MAJOR},${PROJECT_VERSION_MINOR},${PROJECT_VERSION_PATCH},0)
   set_source_files_properties(apps/launcher/main.cpp apps/launcher/ui.cpp apps/launcher/system.cpp
                               apps/launcher/update.cpp PROPERTIES COMPILE_OPTIONS "/W4;/permissive-")

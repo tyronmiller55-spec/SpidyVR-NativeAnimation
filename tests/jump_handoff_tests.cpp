@@ -294,6 +294,17 @@ int main() {
         check(viewEaseMs(EnterVr::web, 250, 300) == 0 && viewEaseMs(EnterVr::wallRun, 250, 300) == 0 &&
                   viewEaseMs(EnterVr::pointJump, 250, 300) == 0,
               "web, wall run, point jump: as before (snap)");
+        // TAKEOVER VIEW EASE (the owner, Nov 15): every takeover gets AIR VIEW EASE; the punch keeps its own; off: as before.
+        check(viewEaseMs(EnterVr::web, 250, 300, true) == 300 && viewEaseMs(EnterVr::wallRun, 250, 300, true) == 300 &&
+                  viewEaseMs(EnterVr::pointJump, 250, 300, true) == 300 &&
+                  viewEaseMs(EnterVr::handstand, 250, 300, true) == 300 &&
+                  viewEaseMs(EnterVr::sidestep, 250, 300, true) == 300 &&
+                  viewEaseMs(EnterVr::swing, 250, 300, true) == 300 && viewEaseMs(EnterVr::animEnd, 250, 300, true) == 300,
+              "every takeover: AIR VIEW EASE");
+        check(viewEaseMs(EnterVr::punch, 250, 300, true) == 250 && viewEaseMs(EnterVr::none, 250, 300, true) == 0 &&
+                  viewEaseMs(EnterVr::web, 250, 0, true) == 0,
+              "the punch keeps PUNCH VIEW EASE, no switch none, AIR VIEW EASE OFF the snap");
+        check(vr_settings::Values{}.takeoverViewEase, "on by default");
         // A flip break's median 0.50 m jump (03:49 session): held, then eased.
         view_ease::Ease e;
         check(e.begin({0, 0, .5f}, .25f), "0.50 m: an ease");
@@ -303,15 +314,253 @@ int main() {
                   std::strcmp(view_ease::endName(view_ease::End::landed), "cancelled (landed)") == 0,
               "landing cancels it (named)");
     }
+    // AIR TAKEOVER (Nov 14): the air is SpidyVR's 0.3 s after the feet leave the ground, sooner for a slow rise or a plain fall.
+    {
+        auto air = [&](int64_t timer, bool ask, float up, int64_t after, bool earlyRules) {
+            Sim s(timer);
+            if (earlyRules) {
+                s.f.takeoffDoneVel = takeoffDoneVel;
+                s.f.takeoffMinNs = takeoffMinNs;
+                s.f.fallHandoffNs = 150 * ms;
+            }
+            s.ground();
+            s.takeoff(ask, up);
+            const int64_t off = s.now;
+            s.run(after);
+            return std::make_pair(s.owner.domain == Domain::vr, s.vrAt >= 0 ? (s.vrAt - off) / ms : int64_t{-1});
+        };
+        // A full jump (up 7 m/s, the velocity left constant for the test) is still the animation's inside the 300 ms and
+        // the timer's after it.
+        auto jump = air(300 * ms, true, 7.f, 280 * ms, true);
+        check(!jump.first, "a full jump keeps the takeoff animation for the first 0.28 s");
+        jump = air(300 * ms, true, 7.f, 340 * ms, true);
+        check(jump.first && jump.second >= 300 && jump.second < 330, "a full jump hands over at 0.3 s");
+        // A hop whose vertical speed is under 4 m/s: after the quarter second's dwell, not before, not at the timer.
+        auto hop = air(300 * ms, true, 3.f, 240 * ms, true);
+        check(!hop.first, "a slow hop still plays 0.24 s of takeoff (the minimum dwell)");
+        hop = air(300 * ms, true, 3.f, 275 * ms, true);
+        check(hop.first && hop.second >= 250 && hop.second < 275, "a slow rise hands over at 0.25 s, ahead of the timer");
+        // Off (the early rules unset), a slow hop waits for the timer as before.
+        hop = air(300 * ms, true, 3.f, 275 * ms, false);
+        check(!hop.first, "without the early rules the timer rules");
+        // A plain fall (no jump press, no rise): 0.15 s, no dwell.
+        auto fall = air(300 * ms, false, -2.f, 140 * ms, true);
+        check(!fall.first, "a plain fall plays 0.14 s of the game's fall");
+        fall = air(300 * ms, false, -2.f, 175 * ms, true);
+        check(fall.first && fall.second >= 150 && fall.second < 175, "a plain fall hands over at 0.15 s");
+        // A fight, a dodge or a zip never hands over early; STAY TO LANDING (0) never does.
+        {
+            Sim s(300 * ms);
+            s.f.takeoffDoneVel = takeoffDoneVel;
+            s.f.takeoffMinNs = takeoffMinNs;
+            s.f.fallHandoffNs = 150 * ms;
+            s.ground();
+            s.takeoff(false, -2.f);
+            s.f.state.zipping = true;
+            s.run(400 * ms);
+            check(s.owner.domain == Domain::anim && s.lastVr == EnterVr::none, "a zip's air is not handed over early");
+        }
+        {
+            Sim s(0);
+            s.f.takeoffDoneVel = takeoffDoneVel;
+            s.f.takeoffMinNs = takeoffMinNs;
+            s.f.fallHandoffNs = 150 * ms;
+            s.ground();
+            s.takeoff(false, -2.f);
+            s.run(1'000 * ms);
+            check(s.owner.domain == Domain::anim, "STAY TO LANDING ignores the early rules");
+        }
+        // Landing is the animation's: VR's air returns to the animation on touchdown, as before.
+        {
+            Sim s(300 * ms);
+            s.f.takeoffDoneVel = takeoffDoneVel;
+            s.f.takeoffMinNs = takeoffMinNs;
+            s.f.fallHandoffNs = 150 * ms;
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            check(s.owner.domain == Domain::vr && s.owner.lastTimedWhy == TimedWhy::timer, "VR by the timer");
+            s.f.velY = -9;
+            s.run(300 * ms);
+            s.ground();
+            check(s.owner.domain == Domain::anim && s.lastAnim == EnterAnim::land, "and the landing is the animation's");
+        }
+        check(std::strcmp(timedWhyName(TimedWhy::slowRise), "vertical speed low") == 0 &&
+                  std::strcmp(timedWhyName(TimedWhy::fall), "plain fall") == 0,
+              "the rules are named for the log");
+    }
+    // LANDING BLEND-IN's release (air_landing_release, unverified, off by default): the body goes to the animation before the
+    // touchdown, stays there to the landing, comes back to VR if no landing came; the touchdown handoff is unchanged without it.
+    {
+        auto flight = [&](bool release, float etaAt, int64_t& handAt, int64_t& off) {
+            Sim s(300 * ms);
+            s.ground();
+            s.takeoff(true, 7.f);
+            off = s.now;
+            s.run(340 * ms); // VR by the timer
+            s.run(300 * ms);
+            s.f.velY = -9;
+            s.f.state.grounded = false;
+            for (int i = 0; i < 100; ++i) {
+                s.f.landEta = etaAt - i * .02f;
+                s.f.landHandBack = release && s.f.landEta <= .2f && s.f.landEta >= 0;
+                s.run(20 * ms);
+                if (s.animEdges && handAt < 0)
+                    handAt = s.now;
+                if (s.f.landEta < 0)
+                    break;
+            }
+            return s.animEdges ? s.lastAnim : EnterAnim::none;
+        };
+        int64_t handAt = -1, off = 0;
+        check(flight(false, 1.f, handAt, off) == EnterAnim::none && handAt < 0, "without the release the air stays VR's to the touchdown");
+        handAt = -1;
+        check(flight(true, 1.f, handAt, off) == EnterAnim::predicted && handAt > 0, "with the release the animation has the body before the touchdown");
+        check(std::strcmp(enterAnimName(EnterAnim::predicted), "predicted-landing") == 0, "named for the log");
+        // It lands from there: the touchdown makes no second switch, and the next jump starts afresh.
+        {
+            Sim s(300 * ms);
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            s.run(300 * ms);
+            s.f.velY = -9;
+            s.f.landEta = .19f;
+            s.f.landHandBack = true;
+            s.run(40 * ms);
+            check(s.owner.domain == Domain::anim && s.lastAnim == EnterAnim::predicted, "handed back at 0.19 s to impact");
+            const int edges = s.animEdges;
+            s.f.landHandBack = false;
+            s.f.landEta = .1f;
+            s.run(150 * ms);
+            check(s.owner.domain == Domain::anim && s.vrEdges == 1, "kept to the landing");
+            s.ground();
+            check(s.owner.domain == Domain::anim && s.animEdges == edges, "no second switch at the touchdown");
+            s.f.landEta = NAN;
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            check(s.owner.domain == Domain::vr, "the next jump is VR's again by its timer");
+        }
+        // Nothing to land on (a ledge's ray lost, a web took him up): back to VR.
+        {
+            Sim s(300 * ms);
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            s.run(300 * ms);
+            s.f.velY = -9;
+            s.f.landEta = .19f;
+            s.f.landHandBack = true;
+            s.run(40 * ms);
+            check(s.owner.domain == Domain::anim, "handed back");
+            s.f.landHandBack = false;
+            s.f.landEta = NAN;
+            s.run(500 * ms);
+            check(s.owner.domain == Domain::vr && s.owner.lastTimedWhy == TimedWhy::noLanding, "no landing came: VR's again");
+            check(std::strcmp(timedWhyName(TimedWhy::noLanding), "no landing came") == 0, "named for the log");
+        }
+        // Never in a fight, a zip or a handstand, and not before the owner's 0.25 s.
+        {
+            Sim s(300 * ms);
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            s.run(300 * ms);
+            s.f.state.fighting = true;
+            s.f.landEta = .15f;
+            s.f.landHandBack = true;
+            s.run(60 * ms);
+            check(s.owner.domain == Domain::vr, "no release in a fight");
+            s.f.state.fighting = false;
+            s.f.handSupport = true;
+            s.run(60 * ms);
+            check(s.owner.domain == Domain::vr, "no release while the hands hold him");
+        }
+        {
+            Sim s(300 * ms);
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(310 * ms);
+            check(s.owner.domain == Domain::vr, "VR by the timer");
+            s.f.landEta = .1f;
+            s.f.landHandBack = true;
+            s.run(100 * ms);
+            check(s.owner.domain == Domain::vr, "the owner's minimum dwell: 0.25 s before it goes back");
+            s.run(200 * ms);
+            check(s.owner.domain == Domain::anim, "and then it does");
+        }
+    }
+    // AIR TAKEOVER, slice 9: airborne moves the player asks the game for (web strike, finisher, a prompt's button) are animation
+    // handoffs by request: the game takes him, plays it, and the air is SpidyVR's again unless a landing is near.
+    {
+        auto vrAir = [&](Sim& s) {
+            s.f.takeoffDoneVel = takeoffDoneVel;
+            s.f.takeoffMinNs = takeoffMinNs;
+            s.f.fallHandoffNs = 150 * ms;
+            s.ground();
+            s.takeoff(true, 7.f);
+            s.run(340 * ms);
+            s.f.state.owned = true; // the swing has him in VR's air
+            s.run(300 * ms);
+            s.f.velY = 0;
+        };
+        {
+            Sim s(300 * ms);
+            vrAir(s);
+            check(s.owner.domain == Domain::vr, "VR's air");
+            s.f.zipPress = true; // the request
+            s.run(frameNs);
+            s.f.state.owned = false; // the game takes him: the swing yields
+            s.run(40 * ms);
+            check(s.owner.domain == Domain::anim && s.lastAnim == EnterAnim::zip, "the game took the request: the animation has the body");
+            s.run(700 * ms);
+            check(s.owner.domain == Domain::anim, "and plays it");
+            s.f.state.owned = true; // its move ended: the swing has him back
+            s.run(60 * ms);
+            check(s.owner.domain == Domain::vr, "SpidyVR's air again after the move, no landing near");
+        }
+        {
+            Sim s(300 * ms);
+            vrAir(s);
+            s.f.zipPress = true;
+            s.run(600 * ms); // the game never takes it: owned stays true
+            check(s.owner.domain == Domain::vr && s.animEdges == 0, "a request the game does not take changes nothing");
+        }
+        {
+            // After a fall's start, the air stays the animation's when the ground is near, and goes to VR when it is not.
+            for (bool near : {true, false}) {
+                Sim s(300 * ms);
+                s.f.takeoffDoneVel = takeoffDoneVel;
+                s.f.takeoffMinNs = takeoffMinNs;
+                s.f.fallHandoffNs = 150 * ms;
+                s.ground();
+                s.takeoff(false, -2.f);
+                s.f.landEta = near ? .3f : .9f;
+                s.run(400 * ms);
+                check(near ? (s.owner.domain == Domain::anim && s.vrEdges == 0)
+                           : (s.owner.domain == Domain::vr && s.lastVr == EnterVr::timed),
+                      near ? "a short drop with the ground near is the animation's to the landing"
+                           : "a long drop hands over at 0.15 s");
+            }
+        }
+    }
     // The settings.
     {
         using namespace vr_settings;
         Values v;
-        check(v.jumpHandoffMs == 500, "JUMP TO SPIDYVR: 500 ms by default");
+        check(v.jumpHandoffMs == 250, "JUMP TO SPIDYVR: 250 ms by default (the handoff tune, Nov 18)");
+        check(v.fallHandoffMs == 150, "FALL TO SPIDYVR: 150 ms by default");
+        const Row* fallRow = rowFor(Item::fallHandoff);
+        check(fallRow && fallRow->choices.size() == 11 && choose(Item::fallHandoff, 0, v) && v.fallHandoffMs == 0 &&
+                  choose(Item::fallHandoff, 8, v) && v.fallHandoffMs == 250 && choice(Item::fallHandoff, Values{}) == 5,
+              "FALL TO SPIDYVR choices: with the timer, then 50 to 400 ms in 25-50 ms steps, 150 the default");
+        check(withTabOnly(Values{}, "fall_handoff_ms=400\n").fallHandoffMs == 400, "fall_handoff_ms read back");
+        v.fallHandoffMs = 150;
         const Row* row = rowFor(Item::jumpHandoff);
-        check(row && row->choices.size() == 6 && std::strcmp(row->choices[0], "STAY TO LANDING") == 0 &&
-                  std::strcmp(row->choices[3], "500 MS") == 0 && std::strcmp(row->choices[5], "1000 MS") == 0,
-              "choices STAY TO LANDING / 300 / 400 / 500 / 700 / 1000");
+        check(row && row->choices.size() == 11 && std::strcmp(row->choices[0], "STAY TO LANDING") == 0 &&
+                  std::strcmp(row->choices[3], "250 MS (DEFAULT)") == 0 && std::strcmp(row->choices[10], "1000 MS") == 0 &&
+                  choice(Item::jumpHandoff, Values{}) == 3,
+              "choices STAY TO LANDING, then 150 to 1000 ms, 50 ms steps near the 300 ms default");
         check(choose(Item::jumpHandoff, 0, v) && v.jumpHandoffMs == 0, "STAY TO LANDING is 0");
         check(tabOnlyText(v).find("jump_handoff_ms=0") != std::string::npos, "saved as jump_handoff_ms");
         check(withTabOnly(Values{}, "jump_handoff_ms=700\n").jumpHandoffMs == 700, "read back");
@@ -319,7 +568,7 @@ int main() {
         for (Item item : screens()[static_cast<size_t>(Category::nativeAnimation)].items)
             listed = listed || item == Item::jumpHandoff;
         check(listed, "on NATIVE ANIMATION");
-        check(v.airViewEaseMs == 250, "AIR VIEW EASE: 250 ms by default");
+        check(v.airViewEaseMs == 200, "AIR VIEW EASE: 200 ms by default (Nov 18)");
         const Row* ease = rowFor(Item::airViewEase);
         check(ease && std::strcmp(ease->choices[0], "OFF (SNAP)") == 0, "OFF (SNAP) keeps the old snap");
         check(choose(Item::airViewEase, 0, v) && v.airViewEaseMs == 0, "OFF is 0");

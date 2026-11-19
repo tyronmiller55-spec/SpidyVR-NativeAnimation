@@ -300,6 +300,11 @@ void setYieldTilt(Quat body, Quat hands);
 // Midair softlock / headbone view: remap grips in the character view frame
 // (chest-forward eyes) instead of raw HMD tracking. Side channel like setYieldTilt.
 void setViewSoftlock(bool on);
+// TORSO UPDATE (vr_settings animated_torso_twist): the most the ARMS overlay turns the chest toward
+// the player, radians (0 to pi/2); the largest yaw within it that keeps both wrists reachable is
+// used. Not called: the default of body::Config (~80 degrees). Side channel: no Command layout or
+// version change.
+void setTorsoTwist(float maxRadians);
 // Midair swing / adopted-leap look: the hero's world velocity (metres per
 // second, same space as Command grips) so the next bodyOn pose job can trail
 // the air pose's legs. A non-finite or near-zero vector clears it. Side
@@ -311,12 +316,25 @@ void setAirMomentum(const Vec3& worldVelocity);
 void setTuck(bool held);
 // Eased visual tuck 0..1 from the last pose job (0 if none).
 float tuckWeight();
+// TORSO CHANNEL (J1; body::Targets::torso): the midair poses' curl / arch, side bend and twist, radians (clamped to
+// body::torsoMaxRadians), shown at `amount`; only in the air. Off eases it out.
+void setTorsoControl(bool on, const body::Targets::TorsoAngles& torso, float amount = 1.f);
+// The torso channel's eased share, 0..1 (the solve's).
+float torsoWeight();
 // LEG CONTROL (leg_control.hpp): each leg's hip angles and knee bend for the
 // next bodyOn pose job (body::Targets::legAngles), used only while the body
 // may move its legs in the air (body::airLegsAllowed). on false: none, and the
 // legs blend back over body::airLegBlendSeconds. Side channel: no Command
 // layout or version change.
 void setLegControl(bool on, const std::array<body::Targets::LegAngles, 2>& legs, float amount = 1.f);
+// GROUND KICKS (ground_kick.hpp, K3; ground_kicks, EXPERIMENTAL): a standing kick's leg for the pose jobs
+// while the animation owns the body (the armsOnly path; the VR-owned body has no ground leg). `leg` 0 left,
+// 1 right; `foot` the kick's foot from the player's feet in the world's axes (metres); `weight` 0..1.
+// on false: the leg blends back to the game's pose. Side channel: no Command layout or version change.
+void setGroundKick(bool on, int leg, Vec3 foot, float weight);
+// SHOWTIME ARMS (beta polish D4/SA1): 0..1, how far the arms ease to the hero's own length for the camera outside
+// (body::Targets::heroArms; 0 in the headset). Side channel: no Command layout or version change.
+void setHeroArms(float weight);
 // Slice C tracking-lock diag (side channel; no Command / Forearms layout change).
 // Latest armsOnly chest vs player yaw and overlay weights after a pose job.
 struct OverlayTracking {
@@ -344,6 +362,15 @@ struct OverlayTracking {
     float playerYaw{}; // rad, player/softlock look
     uint32_t remapped{}; // 1 when armsOnly chest remap ran
     uint32_t softlock{}; // 1 when remap used softlock/headbone player frame
+    // TORSO UPDATE: the chest's yaw toward the player the solve applied (rad, eased), the
+    // yaw it needed before the cap, the cap, the share of the capped yaw that kept both
+    // wrists reachable, and the scale each overlay arm took.
+    float chestTwist{}, twistWanted{}, twistCap{}, twistShare{1.f};
+    float armScale[2]{1.f, 1.f};
+    // SHOWTIME ARMS diag (beta polish SA1-SA3; any body, published after every solve): each arm's length factor,
+    // elbow inside angle (degrees, 180 straight), bend-side flips and flips held off (running counts).
+    float armFactor[2]{1.f, 1.f}, elbowDeg[2]{180.f, 180.f};
+    uint32_t elbowFlips[2]{}, elbowHeld[2]{};
 };
 // Gameplay only: 1 fresh original calibrated eye anchor in current world transform,
 // 0 not managed by player torso, -1 managed but missing/expired (never read
@@ -367,6 +394,11 @@ float crawlOutwardWeight();
 // his latest pose job; false (and `out` untouched) before one was read.
 bool proportions(body_calibration::Proportions& out);
 uint32_t stop();
+// (guard_pose.hpp) A guarding enemy is to be seen to guard. `move` is a guard_pose::Move (a
+// blocked punch, a refused web pull, his counter, his guard opening) for the enemy with this actor record;
+// the pose job then puts his arms up / swings his arm on his skeleton for as long as the move shows. Needs
+// the body hook (the BODY setting) to be running; any thread.
+void guardPose(uint64_t enemyRecord, uint32_t move, float strength = 1.f);
 
 // MODEL FOREARM web aim (vr_settings::Values::webAimSource; web_aim::
 // ForearmAim): each arm as the latest hero pose job's solve left it, world

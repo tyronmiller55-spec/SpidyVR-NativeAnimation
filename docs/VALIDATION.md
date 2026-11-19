@@ -1,5 +1,45 @@
 # Validation — 2026-10-27
 
+## November 19: 0.8.7-na-beta1 becomes CURRENT (feat/087-beta1, session game-vr-20261119-130907)
+
+The owner's session of about 26 minutes from 1:09 PM PT on build `81fc830` (Quest 3S, Meta Quest Link,
+Manhattan Skies also loaded). He reported the game had never felt better, Showtime working, and handoffs
+solid; this build is the testers' CURRENT. Log: `/workspace/playtest-na-beta1/`. Features on in the
+session that were off by default (now revision 14): Showtime, AUTO: FINISHERS, AUTO: DODGES PERFECT ONLY,
+air kicks, hand grab, web tethers, wall brake, grip fling, point jump, air landing release. Left off, and
+still off by default: enemy joints, enemy limb zones, sound trace / head probe / run logs as shipping
+defaults (the session had the last three on for capture). Wall jump sound unchanged (SOUND A).
+
+Headset checklist from this log:
+
+- Landings: 172 scored; every 0% upright (35, 20%) was "kept tilted (a handstand or a hold)". The other
+  137 were upright (time-to-impact 90, clock because the prediction was late 47). The Nov 19 51% zero
+  share is gone once holds are set aside.
+- Inverted touchdowns: 2 upright, 3 roll, 1 handstand (arms up). Matches the arms-up rule.
+- Direction audit: 483 windows, imposed view turn in only 2 (8 deg and 96 deg, one frame each).
+- Handoffs: 216 anim→VR (jump-timer 51, point-jump 47, punch 44, grip-cancel 19, flip-break 19, web 13,
+  swing 12, wallrun 10, handstand 1); the 120 ms minimum stint held 15 landings; 2 rising touchdowns ignored.
+- Showtime used; arms eased to 1.00x; camera `collide=stock`. 13 finisher candidates, all "not entered,
+  AUTO: FINISHERS is log only".
+- Hand grab: 4 enemy takes, 1 throw, 1 let go. Air kicks: 2 starts, both miss (no enemy in reach). One
+  swing kick refused (not swinging). Point jump heavily used (97 jump-sound lines, no doubles).
+- Jump sounds: 97 point jump (1 of 1), 11 wall jump SOUND A, 3 ground flips (4 of 4).
+- Memory (console): game 11,819 → 12,067 MB, second half −1.7 MB/min (flat); system free commit lowest
+  120 MB. Module starts: native swinging 486 ms, the others under 120 ms. Known 0xC0000409 at exit.
+
+## November 14: air takeover (branch feat/air-takeover, on 331a70b; local, unreleased)
+
+Evidence for every claim is in [CHANGELOG.md](CHANGELOG.md) and [AIR_TAKEOVER.md](AIR_TAKEOVER.md); game facts in [REFERENCE.md](REFERENCE.md). Source session: `game-vr-20261114-164317` (b9b2196, 34 min).
+
+- Core suite on the final commit: 940/940. Per-feature executables: handstand (302+ checks, arms-up and fresh-push leap), direction_report (47 new), facing_check (46), grip, realistic_flip (smooth upright profile), point_bullet (new), landing_blend (new), jump_handoff (94), hybrid_movement, launcher (43). ctest on every portable target passes.
+- Handstand: the touchdown reach 1.6 -> 1.0 m, both palms 0.2 m below the head held 0.12 s; refused catches log the head gap.
+- Grip stop: 25 m/s stops in 1.28 s / 16 m (one hand, light press), 0.83 s / 10 m (hard press), 0.78 s (two hands); before, 2.8 s / 35 m. Still a slide (per-hand cap 30 m/s^2, both hands 32).
+- A in the air: a 2.2 rad flip rights in 0.70 s (the half-turn time is `air_correct_ms`, 1 s), first-frame step under 0.004 rad, worst step under 2.1x the mean.
+- Point jump bullet: body axis within 0.5 deg of the raw look for pitches +70 to -89 deg, straight down a half turn about the heading's right, 120 ms ease, lets go on landing/web/A/hands/slow/timeout. Not exercised in a headset.
+- Air handoff: a full jump hands over at 0.3 s, a slow rise (under 4 m/s) at 0.25 s, a plain fall at 0.15 s; with the ground within 0.45 s the animation keeps the body to its landing.
+- Landing blend: time to impact within 40 ms of the simulated touchdown over an 8 m fall, upright ramp 0 above 0.3 s to 1 at 0.1 s, never backing off. The ground ray (native tag 8) and the in-air release are NOT verified in the game: the release is off by default.
+- No game or headset session was run on this branch, and nothing was changed in the game folder; the numbers above are from the tests and the b9b2196 log analysis (`/workspace/playtest-b9b2196/ANALYSIS.md`).
+
 ## November 8: gameplay presets and Play selector (local, unreleased)
 
 - Added opt-in Arcade, Balanced and Pro built-ins, each explicitly covering
@@ -7288,6 +7328,26 @@ Spider-Man OpenXR session. Native headset stereo, head movement, and visible han
 now have user confirmation. Detailed stereo quality, tracked web targeting,
 full-speed/two-hand swinging, point launches, skeletal animation, and lifecycle
 tests remain open. The bounded native single-web sequence above has passed.
+
+## Game jump sound set (sound trace, Nov 12-19)
+
+- SOUND TRACE (`sound_trace=1`, the hook on 16d5e80) over 434 game jumps, 669 landings, 871 wall jumps and
+  823 point jumps; share of events with each hash within -150 to +200 ms (beta polish plan, section 4.2):
+  - **dab33491**: 91% of jumps at -9 ms, 3% of landings, 0% of wall jumps. The jump **grunt** (confirmed by ear Nov 12).
+  - **cba7688f / 2903bc21 / eedb2021**: 84 / 73 / 58% of jumps at about -30 ms; at most 5% of landings and 2% of
+    wall jumps. Jump-only; what each one is (launch, whoosh, cloth) is not known.
+  - Point jumps: the set in only 20-27% of them, late (+155 to +173 ms), most likely a game jump that follows.
+  - SpidyVR's own wall jumps: no hash above 28%; the game's wall-jump sounds are **not captured yet**.
+- Nov 19 06:51 session (966a812, `sound_trace=1`, 878 tagged events; `/workspace/plans/log-1119b-findings.md` 2.4):
+  - Game jump: dab33491 on 75% within 80 ms at -7 ms; 2903bc21 75% at -29 ms; cba7688f 67% at -28 ms.
+  - Point jump (214): dab33491 within 80 ms on **2 (0%)**: the grunt is not played there. **a442c255** 23% and
+    **050553e7** 20% within 80 ms at **+39 ms**, almost absent from game and wall jumps: the game's own
+    point-jump accompaniment.
+  - Wall jump (197): no exclusive hash. **d321a6f9** 14% at -7 ms (nearest to the jump 23 times), **110d202b** 12%
+    at 0 ms (19 times); 700c7633 14% but on 51% of landings (a landing sound). dab33491 never.
+- Used by `sound_guard.hpp` (0.8.7-na-beta1): the grunt alone at a point jump (the game adds a442c255/050553e7),
+  the grunt and the rest of the set at a ground flip or handstand leap, each skipped while the game's grunt played
+  on the hero within 300 ms; WALL JUMP SOUND plays d321a6f9 (default) or 110d202b for a headset A/B.
 
 ## Seamless launch build — local checks
 
