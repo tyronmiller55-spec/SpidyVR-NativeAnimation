@@ -2,17 +2,23 @@
 // target watch, blows as the game's own damage; and fighting across the
 // room, the web strike and the flow (game_punch.hpp).
 #include "spidy/game_punch.hpp"
+#include "spidy/hit_sound.hpp"
+#include "spidy/game_dodge.hpp"
 #include "spidy/game_focus.hpp"
 #include "spidy/game_grab.hpp"
+#include "spidy/game_guard.hpp"
 #include "spidy/game_sense.hpp"
 #include "spidy/game_sound.hpp"
 #include "spidy/game_targets.hpp"
 #include "spidy/game_time.hpp"
+#include "spidy/guard_pose.hpp"
 #include "spidy/native_bodies.hpp"
+#include "spidy/punch_track.hpp"
 #include "spidy/spider_sense.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include <windows.h>
@@ -21,6 +27,8 @@ using namespace spidy::game_punch;
 extern "C" {
 __declspec(dllexport) Data SpidyPunchData;
 __declspec(dllexport) Strikes SpidyStrikeData;
+// PUNCH AUTO-TARGET's account (TrackLive), for XR.
+__declspec(dllexport) TrackLive SpidyPunchTrackLive;
 }
 namespace {
 // A street thug from the feet up (other bots by their size, as
@@ -62,6 +70,10 @@ Flow flow{FlowConfig{}};
 // sample (which way he sees the one he hits).
 Cues cues{CueConfig{}};
 Vec3 headAt{};
+// PUNCH AUTO-TARGET (punch_track.hpp): XR's settings, and each hand's throws.
+SRWLOCK trackLock = SRWLOCK_INIT;
+TrackAsk trackAsk{};
+punch_track::Throws trackThrows[2];
 // The enemy his next punch goes to: the one a blow locked him onto, else the
 // one he looks at within a strike's reach (web_strike.hpp's Lock).
 Lock lock{LockConfig{}};
@@ -73,6 +85,21 @@ struct Struck {
     float age{};
 };
 std::vector<Struck> struckLately;
+// The enemies a blocked blow made flinch lately, and when (GetTickCount64; touchBlocked).
+struct Touched {
+    uint64_t record{};
+    ULONGLONG at{};
+};
+std::vector<Touched> touched;
+// The counters enemies have begun (the repeated blocked punches' answer) that have not reached the hero yet,
+// and when each does (GetTickCount64).
+struct Retaliation {
+    uint64_t record{};
+    ULONGLONG due{};
+};
+std::vector<Retaliation> retaliations;
+// SpidyDodgeLive's count of the hero's dodges when the last frame looked (game_dodge::begun).
+uint64_t dodgesSeen{};
 constexpr float struckSeconds = 3, chestHeight = 1.3f;
 std::vector<FightTarget> enemies;
 struct Near {
@@ -178,6 +205,8 @@ void resetFight() {
     cues.clear();
     lock.clear();
     struckLately.clear();
+    touched.clear();
+    retaliations.clear();
     enemies.clear();
     nearby.clear();
     launches.clear();
@@ -272,6 +301,147 @@ void readSense(const Vec3& chest) {
         }
     }
 }
+// The bot of the target watch with this actor record, null for none (game_guard).
+const game_targets::Candidate* botOf(uint64_t record) {
+    for (const auto& b : bots)
+        if (b.record == record)
+            return &b;
+    return nullptr;
+}
+// He is in the middle of an attack the game warned the hero of. His guard holds then too: a blocked blow
+// staggers him only with guard.txt's `touch on` (touchBlocked), and otherwise he finishes his attack, blocked
+// all the same.
+bool attackingNow(uint64_t record) {
+    for (const auto& t : threats)
+        if (t.attacker == record && standing(t, sense.config()))
+            return true;
+    return false;
+}
+// A blocked blow does nothing to the enemy and counts for nothing in the flow (endCombo). With guard.txt's
+// `touch on` (off by default) he reacts to it all the same: the game's smallest hit reaction (Twitch) with
+// next to no damage, so the blow is seen to meet him - or, when he is in the middle of an attack, the game's
+// Stagger, which stops the attack if the game's reaction lets it. Once in touchGap for each enemy. Left off,
+// his arms come up instead (guard_pose.hpp: the mod's own pose, jolted by the blow) and an attacker finishes
+// his attack, blocked all the same.
+constexpr float interruptStagger = 2.f;
+constexpr float touchDamage = .01f, touchKnock = 1.f;
+constexpr ULONGLONG touchGap = 450, touchMemory = 5000;
+void touchBlocked(const game_targets::Candidate& bot, const PunchEvent& e, bool attacking) {
+    if (!game_guard::touchWanted())
+        return;
+    const ULONGLONG now = GetTickCount64();
+    for (auto it = touched.begin(); it != touched.end();) {
+        if (now - it->at > touchMemory)
+            it = touched.erase(it);
+        else
+            ++it;
+    }
+    const auto found = std::find_if(touched.begin(), touched.end(),
+                                    [&](const Touched& t) { return t.record == bot.record; });
+    if (found != touched.end()) {
+        if (now - found->at < touchGap)
+            return;
+        found->at = now;
+    } else if (touched.size() < 64) {
+        touched.push_back({bot.record, now});
+    }
+    Vec3 way = e.direction;
+    way.y = 0;
+    if (length(way) < .1f) {
+        way = e.point - fighter.feet;
+        way.y = 0;
+    }
+    way = length(way) > 1e-3f ? normalized(way) : Vec3{0, 0, -1};
+    native_bodies::Damage request;
+    request.victim = bot.record;
+    request.damager = fighter.record;
+    request.point = e.point;
+    request.direction = way;
+    request.normal = way * -1.f;
+    request.amount = touchDamage;
+    request.type = 1; // kMelee
+    if (attacking) {
+        request.knockback = static_cast<int32_t>(Knockback::Stagger);
+        request.knockbackAmount = interruptStagger;
+    } else {
+        request.knockback = static_cast<int32_t>(Knockback::Twitch);
+        request.knockbackAmount = touchKnock;
+    }
+    native_bodies::damage(request);
+}
+// A blow a guard stops ends the combo: the flow's count starts over and the call standing (left, right, up or
+// down, web_strike.hpp's Cues) is gone, so the headset takes the arrow and the count down with the BLOCKED
+// mark, and the next blow that lands is the first of a new flow. A flow with nothing in it and no call
+// standing has nothing to end, and the log says nothing of it.
+void endCombo(const game_targets::Candidate& bot) {
+    const int blows = flow.count();
+    const CueWay called = cues.cue().way;
+    if (blows <= 0 && called == CueWay::None)
+        return;
+    flow.reset();
+    cues.clear();
+    char line[160];
+    std::snprintf(line, sizeof(line), "COMBO #%u a blocked blow ended the combo (%d blow(s) in it%s)",
+                  bot.handle & 0xfffff, blows, called != CueWay::None ? ", a call standing" : "");
+    game_guard::log(line);
+}
+void blockedBlow(const game_targets::Candidate& bot, const PunchEvent& e, bool attacking) {
+    endCombo(bot);
+    touchBlocked(bot, e, attacking);
+    // Off the ground and on no web, the player stays up for the next blow.
+    if (!fighter.grounded && !fighter.swinging)
+        strike.hangOn(false);
+}
+// The guard's answer to blocked punches in a row, as the base game's guarding enemies have it: he swings at
+// the hero, and it does no damage - it only staggers him. The swing is seen (guard_pose.hpp: the headset side
+// poses his arm when the guard module says it began); it reaches the hero contactSeconds after it began, if
+// the hero is still within his reach and his guard has not been opened by then (a gadget, a dodge over him:
+// no counter), and then the game gets a stagger-level hit on the hero from the enemy with next to nothing of
+// damage in it - the game's own hit reaction does the rest.
+constexpr float retaliateDamage = .01f, retaliateKnock = 1.f, retaliateReach = 2.4f;
+constexpr ULONGLONG retaliateStale = 1500;
+void scheduleCounter(const game_targets::Candidate& bot) {
+    if (retaliations.size() >= 8)
+        retaliations.erase(retaliations.begin());
+    retaliations.push_back(
+        {bot.record, GetTickCount64() + static_cast<ULONGLONG>(guard_pose::contactSeconds * 1000.0)});
+}
+void answerCounters() {
+    if (retaliations.empty())
+        return;
+    const ULONGLONG now = GetTickCount64();
+    for (auto it = retaliations.begin(); it != retaliations.end();) {
+        if (now < it->due) {
+            ++it;
+            continue;
+        }
+        const Retaliation due = *it;
+        it = retaliations.erase(it);
+        const auto* bot = botOf(due.record);
+        Vec3 feet{};
+        if (now - due.due > retaliateStale || !bot || !fighter.record || !fighter.grounded ||
+            !game_targets::position(*bot, feet) || !game_guard::holds(*bot))
+            continue;
+        Vec3 way = fighter.feet - feet;
+        way.y = 0;
+        const float apart = length(way);
+        if (apart > retaliateReach)
+            continue;
+        way = apart > 1e-3f ? way / apart : Vec3{0, 0, 1};
+        native_bodies::Damage request;
+        request.victim = fighter.record;
+        request.damager = bot->record;
+        request.point = fighter.feet + Vec3{0, strike.config().chest, 0};
+        request.direction = way;
+        request.normal = way * -1.f;
+        request.amount = retaliateDamage;
+        request.type = 1; // kMelee
+        request.knockback = static_cast<int32_t>(Knockback::Stagger);
+        request.knockbackAmount = retaliateKnock;
+        if (native_bodies::damage(request))
+            game_guard::counterLanded(*bot);
+    }
+}
 // A counter's break: the game's flinch for the attacker the moment the fist
 // goes out at him, so his blow never comes; the blow that lands on him next
 // is the counter's (land()).
@@ -288,8 +458,13 @@ void breakAttack(const SpiderSense::Counter& c, Vec3 head) {
     request.type = 1; // kMelee
     request.knockback = static_cast<int32_t>(Knockback::Knockback);
     request.knockbackAmount = 3;
-    if (native_bodies::damage(request))
+    if (native_bodies::damage(request)) {
         ++senseTally.breaks;
+        // A guard's attack is broken, and the punch that follows is blocked all the same: the state this
+        // knockback gives him is the mod's own, and does not open his guard to it (game_guard::own).
+        if (const auto* bot = botOf(c.attacker))
+            game_guard::own(*bot);
+    }
 }
 void noteCounter(const SpiderSense::Counter& c, bool thrown) {
     (thrown ? senseTally.thrown : senseTally.landed) += 1;
@@ -373,6 +548,8 @@ void knockouts(float seconds) {
         it = out || !bot || it->age > struckSeconds ? struckLately.erase(it) : it + 1;
     }
 }
+// A manual swing kick's blow in progress (kickBlow): the flight it gives the one it hits.
+std::optional<Vec3> kickFlight;
 // One blow, a fist's or a strike's, into the flow and to the game.
 void land(PunchEvent e, bool byStrike) {
     uint64_t machine{};
@@ -384,6 +561,31 @@ void land(PunchEvent e, bool byStrike) {
     game_grab::struck(e.target);
     // He is the one from here on, and his knockout would be this blow's.
     lock.take(e.target);
+    // The guard judges the blow first (game_guard). Whether it is a Spider-Sense counter's is known before,
+    // and a guard stops that too, as it stops a blow at an enemy in the middle of an attack: he guards then
+    // as well. A blocked blow ends here: nothing lands, and the combo is over (blockedBlow: endCombo).
+    std::optional<SpiderSense::Counter> made;
+    const bool counterBlow =
+        sense.blow(e.target, threats, fighter.feet + Vec3{0, strike.config().chest, 0}, made);
+    guards::Outcome guarded{};
+    if (const auto* bot = botOf(e.target)) {
+        game_guard::Strike hit;
+        hit.hand = static_cast<uint32_t>(e.hand);
+        hit.strength = e.strength;
+        hit.grounded = fighter.grounded;
+        hit.attacking = attackingNow(e.target);
+        hit.point = e.point;
+        // A swing kick - a dive's blow, whose hand is WebStrike::diveHand - goes through a baton's guard
+        // (game_guard).
+        hit.kick = byStrike && e.hand == WebStrike::diveHand;
+        guarded = game_guard::blow(*bot, hit);
+        if (guarded.verdict == guards::Verdict::Blocked) {
+            blockedBlow(*bot, e, hit.attacking);
+            if (guarded.retaliates)
+                scheduleCounter(*bot);
+            return;
+        }
+    }
     {
         Vec3 chest = e.point;
         for (const auto& enemy : enemies)
@@ -429,11 +631,18 @@ void land(PunchEvent e, bool byStrike) {
         d.knockback = Knockback::Knockback;
         d.velocity = {};
     }
+    // MANUAL SWING KICK: a kinetic blow whose flight is the player's velocity's share.
+    if (kickFlight) {
+        d.kind = BlowKind::Heavy;
+        d.kinetic = d.fly = true;
+        d.knockback = Knockback::FlyBack;
+        d.velocity = *kickFlight;
+        kickFlight.reset();
+    }
     // A counter's blow (spider_sense.hpp): the one after a fist thrown at him
     // while his warning stood, or one that lands while it stands and so
     // counters him itself. It sends him flying, whatever the flow says.
-    std::optional<SpiderSense::Counter> made;
-    if (sense.blow(e.target, threats, fighter.feet + Vec3{0, strike.config().chest, 0}, made)) {
+    if (counterBlow) {
         if (made)
             noteCounter(*made, false);
         ++senseTally.counterBlows;
@@ -478,10 +687,9 @@ void land(PunchEvent e, bool byStrike) {
         game_focus::earn(fighter.record,
                          fighter.grounded ? game_focus::Kind::meleeDefault : game_focus::Kind::meleeAir);
         game_sound::Blow sound;
-        sound.intensity = d.kind == BlowKind::Finisher        ? 4
-                          : d.kind != BlowKind::Hit || called ? 3
-                          : e.strength >= .35f                ? 2
-                                                              : 1;
+        // LOUDER HITS (hit_sound.hpp): a jab Medium, a full swing or a kick Heavy, a flying kick or a finisher Extreme.
+        sound.intensity = hit_sound::intensity({d.kind == BlowKind::Finisher, d.kind != BlowKind::Hit || called,
+                                                e.hand == WebStrike::diveHand, kickFlight.has_value(), e.strength});
         for (const auto& enemy : enemies)
             if (enemy.id == e.target)
                 sound.location = game_sound::locationOf(e.point.y - enemy.feet.y, enemy.height);
@@ -534,6 +742,9 @@ uint32_t game_punch::start(uintptr_t gameBase) {
             senseTally = {};
             warnedLately = {};
             ReleaseSRWLockExclusive(&updating);
+            // The guards (game_guard): their rules file is read before the first scan reads the classes.
+            game_guard::start(base);
+            dodgesSeen = game_dodge::begun();
             watch.start(base, 1u << static_cast<unsigned>(game_targets::Kind::bot));
             enabled = true;
         }
@@ -560,6 +771,7 @@ uint32_t game_punch::stop() {
     publishSense(0, {});
     ReleaseSRWLockExclusive(&updating);
     watch.stop();
+    game_guard::stop();
     publish([](Data& d) { d.status = 0; });
     ReleaseSRWLockExclusive(&lifecycle);
     return 0;
@@ -573,8 +785,38 @@ float game_punch::worldScale() {
         return 1;
     return static_cast<float>(std::clamp(clock, .05, 1.));
 }
+namespace {
+// THE PUNCH SCAN'S PARTS (the 9790d67 playtest: "punch scan" peaks of 19-39 ms in and out of fights): the last
+// update's time per part (game_punch::partName order: targets, sense, lock, punches, flow, strikes), in us.
+double punchParts[game_punch::partCount]{};
+struct PartClock {
+    LARGE_INTEGER last{}, hz{};
+    unsigned part = 0;
+    PartClock() {
+        std::fill(std::begin(punchParts), std::end(punchParts), 0.);
+        QueryPerformanceFrequency(&hz);
+        QueryPerformanceCounter(&last);
+    }
+    // The part so far ends here; `next` begins.
+    void lap(unsigned next) {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+        if (hz.QuadPart > 0 && now.QuadPart >= last.QuadPart && part < game_punch::partCount)
+            punchParts[part] += static_cast<double>(now.QuadPart - last.QuadPart) * 1e6 / static_cast<double>(hz.QuadPart);
+        last = now;
+        part = next;
+    }
+    ~PartClock() {
+        lap(part);
+    }
+};
+} // namespace
+void game_punch::lastParts(double (&out)[partCount]) {
+    std::copy(std::begin(punchParts), std::end(punchParts), out);
+}
 Opened game_punch::update(float seconds, const Input& in, const Player& player, const WorldQueries& world) {
     Opened opened;
+    PartClock parts; // targets until the first lap
     if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
         return opened;
     struct Release {
@@ -593,6 +835,19 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
         counterWishLeft = 0;
     }
     fighter = player;
+    // The guards (game_guard) from the bots as they stand: the hit points of the ones with a guard, the dodge
+    // over them, and how fast each enemy comes at the hero (a runner guards), in the world's time - the
+    // game's time scale is told.
+    game_guard::watch(bots, player.feet, worldScale());
+    // A guard's counter that has arrived staggers the hero.
+    answerCounters();
+    // A dodge of the hero's that has begun since the last frame carries him over or past the enemies, and
+    // opens their guards.
+    if (const uint64_t begun = game_dodge::begun(); begun != dodgesSeen) {
+        if (begun > dodgesSeen)
+            game_guard::dodgeBegan(player.feet);
+        dodgesSeen = begun;
+    }
     if (fighter.contactOnly) strike.cancel();
     // Ownership policy is immediate even if this is a repeated/zero-time
     // sample. Do not leave an old original-VR flight armed until time advances.
@@ -662,16 +917,69 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
     }
     // The attacks the game has warned the player of, before any blow of this
     // sample lands: a blow during a warning counters it.
+    parts.lap(1);
     readSense(chest);
     // The enemy the next punch goes to: the one a blow locked the player
     // onto, else the one he looks at. A web that holds an enemy makes him
     // the one. And of those his blows landed on, the ones knocked out.
+    parts.lap(2);
     for (const uint64_t held : player.holds)
         lock.take(held);
     lock.update(seconds, head, in.look, enemies);
     knockouts(seconds);
+    parts.lap(3);
     events.clear();
     punches.update(seconds, hands, inReach, events);
+    // PUNCH AUTO-TARGET: a throw is judged on its sample, against the enemy the ring marks (the lock's), never
+    // against anyone else: nobody targeted is no tracking, and no punch's damage depends on any of this.
+    {
+        AcquireSRWLockShared(&trackLock);
+        const TrackAsk ask = trackAsk;
+        ReleaseSRWLockShared(&trackLock);
+        punch_track::Config tc;
+        tc.on = (ask.flags & 1u) != 0;
+        tc.coneDeg = ask.coneDeg;
+        tc.rangeM = ask.rangeM;
+        tc.byLook = (ask.flags & 2u) != 0;
+        for (int i = 0; i < 2; ++i) {
+            if (!trackThrows[i].update(seconds, punches.speed(i), hands[i].tracked && !hands[i].busy))
+                continue;
+            bool found{};
+            Vec3 middle{};
+            if (const uint64_t id = lock.target())
+                for (const auto& e : enemies)
+                    if (e.id == id) {
+                        found = true;
+                        middle = e.middle();
+                        break;
+                    }
+            const auto verdict = punch_track::decide(tc, found, head, punches.velocity(i), middle, in.look);
+            volatile TrackLive& live = SpidyPunchTrackLive;
+            live.throws = live.throws + 1;
+            switch (verdict.why) {
+            case punch_track::Why::tracked: live.tracked = live.tracked + 1; break;
+            case punch_track::Why::noTarget: live.noTarget = live.noTarget + 1; break;
+            case punch_track::Why::tooFar: live.tooFar = live.tooFar + 1; break;
+            case punch_track::Why::outsideCone: live.outsideCone = live.outsideCone + 1; break;
+            default: live.off = live.off + 1; break;
+            }
+            live.lastHand = static_cast<uint32_t>(i);
+            live.lastWhy = static_cast<uint32_t>(verdict.why);
+            live.target = found ? lock.target() : 0;
+            live.towardX = verdict.toward.x;
+            live.towardY = verdict.toward.y;
+            live.towardZ = verdict.toward.z;
+            live.distance = verdict.distance;
+            live.angleDeg = verdict.angleDeg;
+            live.lastByLook = verdict.byLook ? 1u : 0u;
+            live.lookDeg = verdict.lookDeg;
+            if (verdict.byLook)
+                live.byLook = live.byLook + 1;
+            MemoryBarrier();
+            live.events = live.events + 1;
+        }
+    }
+    parts.lap(4);
     flow.update(seconds);
     if (!fighter.combatVisuals || !flow.count())
         cues.clear();
@@ -683,6 +991,7 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
     }
     // Contact damage above is shared. Only original VR may acquire a remote
     // strike, dive, counter lunge or automated arrival blow below.
+    parts.lap(5);
     if (!fighter.contactOnly) {
     std::array<FightFist, 2> fists{};
     for (int i = 0; i < 2; ++i)
@@ -735,8 +1044,10 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
         tally.swung += strikeOpened->called;
         tally.held += strikeOpened->held;
         tally.distance = strikeOpened->distance;
-    } else if (const auto dove = strike.dive(player.velocity, player.grounded, head, player.feet, enemies, world,
-                                             wish.target, punches.config())) {
+    } else if (const auto dove = player.noDive
+                                     ? std::optional<WebStrike::Opening>{}
+                                     : strike.dive(player.velocity, player.grounded, head, player.feet,
+                                                   enemies, world, wish.target, punches.config())) {
         // His own flight into the marked enemy: a swing, a zip, a jump or a
         // fall that takes him at him fast, feet first (WebStrike::dive). The
         // webs let go; the rest of the way is the strike's.
@@ -772,6 +1083,96 @@ Opened game_punch::update(float seconds, const Input& in, const Player& player, 
     publishStrikes(2);
     publishSense(2, chest);
     return opened;
+}
+game_punch::KickTarget game_punch::kickTarget() {
+    KickTarget out;
+    if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
+        return out;
+    if (enabled && !fighter.contactOnly && lock.target()) {
+        for (const auto& e : enemies)
+            if (e.id == lock.target()) {
+                out = {true, e.id, e.feet, e.height, e.radius, e.airborne};
+                break;
+            }
+    }
+    ReleaseSRWLockShared(&updating);
+    return out;
+}
+bool game_punch::kickBlow(uint64_t target, Vec3 point, Vec3 direction, float playerSpeed, Vec3 enemyVelocity,
+                          Vec3 feet, bool grounded) {
+    if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
+        return false;
+    struct Release {
+        ~Release() {
+            ReleaseSRWLockShared(&updating);
+        }
+    } release;
+    if (!enabled || fighter.contactOnly || !target || !finite(point) || !finite(direction) ||
+        !finite(enemyVelocity))
+        return false;
+    const Vec3 way = length(direction) > .5f ? normalized(direction) : Vec3{0, 0, -1};
+    const float strength = std::max(strike.diveStrength(playerSpeed), strike.config().minStrength);
+    auto e = punches.blow(way, speedOf(punches.config(), strength));
+    e.hand = WebStrike::diveHand;
+    e.target = target;
+    e.point = point;
+    fighter.feet = feet;
+    fighter.grounded = grounded;
+    kickFlight = enemyVelocity;
+    land(e, false);
+    kickFlight.reset();
+    return true;
+}
+size_t game_punch::kickCandidates(KickCandidate* out, size_t max, Vec3 feet) {
+    size_t count = 0;
+    if (!out || !max || !enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
+        return 0;
+    if (enabled && !fighter.contactOnly) {
+        for (const auto& e : enemies) {
+            if (!e.id || !finite(e.feet))
+                continue;
+            const KickCandidate c{e.id, e.feet, e.height, e.radius};
+            // Nearest first, the list kept at `max`.
+            size_t at = count;
+            while (at > 0 && length(out[at - 1].feet - feet) > length(c.feet - feet))
+                --at;
+            if (at >= max)
+                continue;
+            if (count < max)
+                ++count;
+            for (size_t i = count - 1; i > at; --i)
+                out[i] = out[i - 1];
+            out[at] = c;
+        }
+    }
+    ReleaseSRWLockShared(&updating);
+    return count;
+}
+bool game_punch::kickHit(uint64_t target, Vec3 point, Vec3 direction, float strength, bool fly, Vec3 enemyVelocity,
+                         Vec3 feet, bool grounded) {
+    if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
+        return false;
+    struct Release {
+        ~Release() {
+            ReleaseSRWLockShared(&updating);
+        }
+    } release;
+    if (!enabled || fighter.contactOnly || !target || !finite(point) || !finite(direction) ||
+        !std::isfinite(strength) || (fly && !finite(enemyVelocity)))
+        return false;
+    const Vec3 way = length(direction) > .5f ? normalized(direction) : Vec3{0, 0, -1};
+    const float s = std::max(std::clamp(strength, 0.f, 1.f), strike.config().minStrength);
+    auto e = punches.blow(way, speedOf(punches.config(), s));
+    e.hand = WebStrike::diveHand;
+    e.target = target;
+    e.point = point;
+    fighter.feet = feet;
+    fighter.grounded = grounded;
+    if (fly)
+        kickFlight = enemyVelocity;
+    land(e, false);
+    kickFlight.reset();
+    return true;
 }
 bool game_punch::lifting(Vec3 feet) {
     if (!enabled.load(std::memory_order_relaxed) || !TryAcquireSRWLockShared(&updating))
@@ -868,6 +1269,18 @@ extern "C" __declspec(dllexport) DWORD WINAPI SpidyPunchStart(void* input) {
         c.base != reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)))
         return 9501;
     return game_punch::start(c.base);
+}
+// PUNCH AUTO-TARGET: XR's settings. 2001: not a TrackAsk; 0 taken. What it saw: SpidyPunchTrackLive.
+extern "C" __declspec(dllexport) DWORD WINAPI SpidyPunchTrack(void* input) {
+    TrackAsk a{};
+    if (!read(reinterpret_cast<uintptr_t>(input), &a, sizeof(a)) || a.magic != 0x5350544b || a.version != 1 ||
+        a.bytes != sizeof(a) || (a.flags & ~3u) || !std::isfinite(a.coneDeg) || a.coneDeg < 5.f || a.coneDeg > 120.f ||
+        !std::isfinite(a.rangeM) || a.rangeM < 1.f || a.rangeM > 30.f)
+        return 2001;
+    AcquireSRWLockExclusive(&trackLock);
+    trackAsk = a;
+    ReleaseSRWLockExclusive(&trackLock);
+    return 0;
 }
 extern "C" __declspec(dllexport) DWORD WINAPI SpidyPunchStop(void*) {
     return game_punch::stop();

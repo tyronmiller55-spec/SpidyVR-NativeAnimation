@@ -5,9 +5,11 @@
 #include "native_rays.hpp"
 #include "native_view.hpp"
 #include "realistic_flip.hpp"
+#include "recoil.hpp"
 #include "swing.hpp"
 #include "tracking.hpp"
 #include "view_ease.hpp"
+#include "vr_stabilize.hpp"
 #include "wall_roll.hpp"
 #include <algorithm>
 #include <cmath>
@@ -82,6 +84,10 @@ struct GameMotionFrame {
     // out of what the world is built of (HeadClearance), metres in the world.
     Vec3 headPush{};
     Vec3 handPush{}; // Camera placement from pressing solid building surfaces.
+    // How far a blow the guard stopped has knocked the view back now (Recoil), metres in the world: a
+    // placement like handPush, with the hands, the webs and the body placed with the eyes. Zero while no blow
+    // has.
+    Vec3 recoil{};
     unsigned wallTouches{}; // Ray-confirmed palm contact/pressure, independent of grip buttons.
     bool climbTracking{};
     std::array<Vec3, 2> climbGrips{}; // tracking metres relative to the head at hold entry
@@ -90,6 +96,9 @@ struct GameMotionFrame {
     // and how far the inverted eyes came down toward the floor (m).
     handstand::Handstand::Out handstand{};
     float handstandDrop{};
+    // VR STABILIZATION (vr_stabilize.hpp): the view tilt off upright, degrees: as the rig wanted it, as
+    // shown.
+    float vrTiltRaw{}, vrTiltShown{};
     Quat bodyTilt(bool runningPose = false) const {
         // The travel-driven wall-run gait stays in the wall frame. The camera
         // may stand on that wall, but it must not select a different body pose.
@@ -284,6 +293,22 @@ class FlipMotion {
     // Preserve the A latch so a button held across the reset is not a press.
     void reset();
     void reset(bool jump) { reset(); held_ = jump; }
+    // GROUND FLIPS (ground_flip.hpp; the owner, Nov 18: "every flip mode"): a launched turn, `spin` (tracking-local
+    // axes, rad/s; its size the rate) for `radians` in the air, then held for the landing (or A) to upright as any
+    // flip's tilt. The stick's steering waits while it turns.
+    void launch(Vec3 spin, float radians) {
+        const float rate = finite(spin) ? length(spin) : 0.f;
+        if (!(rate > 1e-4f) || !(radians > 0))
+            return;
+        launchAxis_ = spin / rate;
+        launchRate_ = rate;
+        launchLeft_ = radians;
+        if (phase_ == Phase::level)
+            turned_ = 0;
+        phase_ = Phase::held;
+        spin_ = {};
+    }
+    bool launching() const { return launchLeft_ > 0; }
 
   private:
     enum class Phase { level, rotating, held, settling };
@@ -294,6 +319,8 @@ class FlipMotion {
     float total_{}, left_{}, returnRate_{}, turned_{}, landed_{};
     float scale_ = 1;
     bool held_{}, resetHeld_{}, stickReady_{}, active_{};
+    Vec3 launchAxis_{1, 0, 0};
+    float launchRate_{}, launchLeft_{};
 };
 // Converts one complete predicted tracking sample into world-space head, eyes,
 // hand aims, and physical swing input. The game adapter still owns collision and
@@ -312,6 +339,28 @@ class GameTrackingRig {
     }
     // LEG CONTROL owns the right stick (CONTROLLED FLIPS, in the air): it
     // turns nothing, and a push held into the landing is no snap turn.
+    // GROUND FLIPS (ground_flip.hpp, S2): the spin (world axes, rad/s) the realistic flips take on his first airborne
+    // frame after a flip jump's launch, as the handstand's leap lets go with its spin; with CONTROLLED or basic FLIPS
+    // the flip motion turns one full turn at that rate (FlipMotion::launch). Dropped if he is not off the ground within
+    // groundFlipWaitSeconds, or with no flip mode on. A fight does not stop it (the owner, Nov 18).
+    static constexpr float groundFlipWaitSeconds = .5f;
+    void groundFlip(Vec3 worldSpin) {
+        groundFlipSpin_ = finite(worldSpin) ? worldSpin : Vec3{};
+        groundFlipWait_ = length(groundFlipSpin_) > 0 ? groundFlipWaitSeconds : 0.f;
+    }
+    // GROUND FLIP OFF (F2, the Nov 19 log: 3 of 3 front flips dropped at 500 ms, "owned 0": the game's own air carried
+    // him, which the flips' airborne test - the swing's own flight - never counted): the swing reports him off the
+    // ground and off any wall this frame. Counts as the flips' air while a ground flip waits or spins.
+    void groundFlipOff(bool off) {
+        groundFlipOff_ = off;
+    }
+    // How many ground flips' spins were let go into the air, and how many ran out on the ground.
+    unsigned groundFlipsReleased() const {
+        return groundFlipsReleased_;
+    }
+    unsigned groundFlipsLapsed() const {
+        return groundFlipsLapsed_;
+    }
     void legStick(bool on) {
         legStick_ = on;
     }
@@ -428,6 +477,12 @@ class GameTrackingRig {
     const HeadClearance& clearance() const {
         return clearance_;
     }
+    // A blow a guard stopped knocks the view back a little (recoil.hpp), for the feel of it: `away` is the
+    // way (it is levelled), `metres` how far the kick takes the view at most (a tiny bit: 0.03). The view
+    // only: the player's body does not move. Zero metres, or no way: nothing. reset() ends one that is on.
+    void recoil(Vec3 away, float metres) {
+        recoil_.kick(away, metres);
+    }
     void handFeedback(const native_rays::Data& data, int64_t now, int64_t frequency) {
         handCollision_.feedback(data, now, frequency);
     }
@@ -471,6 +526,10 @@ class GameTrackingRig {
         handstandGround_ = ground;
         handstandAloft_ = aloft;
         handstandFloorY_ = floorY;
+    }
+    // VR STABILIZATION: the CAMERA rows, HORIZON LEVEL and the bank's ANGLE on the rig's view tilt.
+    void vrStabilization(const vr_stabilize::Settings& s) {
+        vrStab_ = s;
     }
     void handstandVrAir(bool vrAir) {
         handstandVrAir_ = vrAir;
@@ -521,7 +580,11 @@ class GameTrackingRig {
     // `worldEyes` (what the last animated frame showed), easing to the lock
     // over `seconds`. The lock (rig origin) is not changed. Returns whether
     // an ease began; the offset is startOffset() of viewEase().
-    bool beginViewEase(Vec3 worldEyes, const Pose& head, float seconds);
+    bool beginViewEase(Vec3 worldEyes, const Pose& head, float seconds, float verticalSeconds = 0, float holdSeconds = 0,
+                       bool gentle = false, float farKeep = 0);
+    bool retimeViewEase(float seconds, float verticalSeconds) {
+        return viewEase_.retime(seconds, verticalSeconds);
+    }
     void cancelViewEase(view_ease::End why) {
         viewEase_.cancel(why);
     }
@@ -592,13 +655,21 @@ class GameTrackingRig {
     Vec3 headDrop_{};
     HeadClearance clearance_{};
     HandCollision handCollision_{};
+    Recoil recoil_{};
     // HANDSTAND: the state machine, its last output, the tilt at the catch,
     // the eyes' drop and the palms' last tracked offsets from the head.
     handstand::Params handstandParams_{};
     handstand::Handstand handstand_{};
     handstand::Handstand::Out handstandOut_{};
     Quat handstandCatchTilt_{};
+    Vec3 groundFlipSpin_{};
+    bool groundFlipLive_{}; // released, until he lands: a fight does not calm the realistic flip
+    bool groundFlipOff_{};  // GROUND FLIP OFF: the swing reports him off the ground (and any wall)
+    float groundFlipWait_{};
+    unsigned groundFlipsReleased_{}, groundFlipsLapsed_{};
     float handstandDrop_{};
+    vr_stabilize::Settings vrStab_{};
+    vr_stabilize::TiltFilter vrTilt_{};
     bool handstandVrAir_{}, handstandSampled_{}, handstandGround_{}, handstandAloft_{};
     float handstandFloorY_ = NAN;
     std::array<Vec3, 2> handstandRel_{};

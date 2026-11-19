@@ -1,4 +1,5 @@
 #pragma once
+#include "spidy/na_help.hpp"
 #include <array>
 #include <cstdint>
 #include <span>
@@ -84,6 +85,11 @@ struct Values {
     // Experimental physical hand pulls, solid palms and crawling body poses.
     bool handClimb = false;
     bool halfPunchDamage = false; // half health damage, unchanged punch reactions
+    // ENEMY TYPES (the launcher's Enemy types; game_guard): the enemies that block in the base game (batons,
+    // shields, brutes and swordsmen) block the base attacks (punches and web strikes) until they are webbed
+    // or stunned. Off by default: nobody guards, as before Enemy types. First person cutscenes and half punch
+    // damage are other settings and do not change with it.
+    bool enemyTypes = false;
     // The web tie (the tab's WEB TIE; web_tie.hpp, docs/WEB-TIE.md): a webbed-up
     // enemy stuck to a wall by the hands together and the right stick's click,
     // and a webbed enemy who comes to the player only on the yank
@@ -137,9 +143,16 @@ struct Values {
     // that is a fall (degrees); and the centre of mass's height over the
     // palms (cm), the assist's gain (percent) and how far the inverted eyes
     // come down (cm).
-    bool handstand = true, handstandAssist = true;
-    int handstandPushGain = 220, handstandPushMax = 7, handstandFallDegrees = 35;
-    int handstandHeightCm = 95, handstandGainPct = 300, handstandEyeDropCm = 90;
+    //
+    // THE BALANCE PASS (Nov 14, t67u: "a lot more balance. Make it hard to fall out of it, but easy to leap out of."; the
+    // movement-defaults revision 3 moves a saved profile still on the old values): the fall angle 35 -> 50 degrees, the
+    // assist's gain 300% -> 500%, and four new ones: the support's radius around the palms (cm; was a fixed 12), how long
+    // you can be off balance before you fall (ms; was a fixed 120), the damping of the sway (percent of 1/s; was none) and
+    // the leap out (A, the stick held hard or a push leaves at once in a jump along your view).
+    bool handstand = true, handstandAssist = true, handstandLeap = true;
+    int handstandPushGain = 220, handstandPushMax = 7, handstandFallDegrees = 50;
+    int handstandHeightCm = 95, handstandGainPct = 500, handstandEyeDropCm = 90;
+    int handstandSupportCm = 18, handstandGraceMs = 500, handstandDampingPct = 250;
     // How strongly a bHaptics vest, sleeves and visor play (the tab's BODY
     // HAPTICS; body_haptics.hpp), percent; 0 off. And which of its groups
     // play (the tab's WEB, WIND, COMBAT and MOVEMENT HAPTICS switches;
@@ -289,7 +302,7 @@ struct Values {
     // from before it gets RUN CURVE on and EARLY JUMP QUICK TAP once (the
     // user: "movement fixes will be defaults"); after that the player's own
     // choice stands. Not a row. movement_defaults.
-    int movementDefaults = 1;
+    int movementDefaults = 14; // movementDefaultsRevision: a new file has seen them
     // SOFT LANDING (the tab's SOFT LANDING; Swing::allowSoftLanding,
     // run_update::softLandVertical): a fall the swing flies, with no web
     // holding, eases to 9 m/s down over its last 3 m (or 0.35 s), its speed
@@ -374,7 +387,7 @@ struct Values {
     // headset's own look and lean stay 1:1 (headset_smoothing.hpp). Response
     // times in milliseconds, 0 off. STABILIZATION picks the bank: OFF the
     // three CAMERA rows, LIGHT the three LIGHT rows, HEAVY the three HEAVY
-    // rows (heavier speed damping too). Off and 0 by default: as before.
+    // rows (heavier speed damping too), STEADY (3) the three STEADY rows. Off and 0 by default: as before.
     int cameraStabilization = 0;
     int cameraVerticalMs = 0, cameraHorizontalMs = 0, cameraAngleMs = 0;
     int lightVerticalMs = 75, lightHorizontalMs = 50, lightAngleMs = 75;
@@ -502,18 +515,23 @@ struct Values {
     // SOUND TRACE (game_sound.hpp, sound_trace.hpp; the user, November 12: yes
     // to the trace): diagnostics only. Logs the ids of the game's sounds
     // played around takeoffs, landings and point jumps. Plays nothing,
-    // changes nothing. On by default. sound_trace.
-    bool soundTrace = true;
+    // changes nothing. Off by default since the beta (decision D7, movement_defaults 13); the hook it uses stays
+    // installed either way (it guards the hero cues against double plays). sound_trace.
+    bool soundTrace = false;
+    // LOG LEVEL (beta polish G4; ini log_level, no menu row): how often the diagnostics repeat their noisiest
+    // unchanged lines (diag_log::Throttle::level): 0 QUIET (30 s), 1 (default, 5 s, the head probe and aim family
+    // included), 2 VERBOSE (2 s, as before the beta). A changed state is always written at once.
+    int logLevel = 1;
     // JUMP TO SPIDYVR (hybrid_owner.hpp; the user, November 12 05:07/05:41:
     // plain jumps, zip launches, vaults and wall launches hand off to SpidyVR
     // after a timer): ms into a midair animation's air; 0 STAY TO LANDING (the
     // November 11 23:39 rule). 500 by default. jump_handoff_ms.
-    int jumpHandoffMs = 500;
+    int jumpHandoffMs = 250; // 300 until the handoff tune (Nov 18)
     // AIR VIEW EASE (view_ease.hpp, the punch's hold and ease): the timed
     // jump handoff, a flip break and the grip cancel hold the view where the
     // animation showed it and ease it onto the feet over this; 0 OFF (SNAP),
     // the old snap. 250 by default. air_view_ease_ms.
-    int airViewEaseMs = 250;
+    int airViewEaseMs = 200; // 250 until the handoff tune (Nov 18)
     // ANIM YAW SWAY (view_yaw_lock.hpp, rotation desync Step B): with HEAD
     // LOCK FULL and VIEW YAW SOURCE STABLE the eyes' yaw is the stable heading
     // plus this share of the head bone's yaw sway; 100 is the old feel (the eyes
@@ -534,6 +552,83 @@ struct Values {
     // v2 (t86u "do a head rotation instead of a frame switch"): eased by default; the
     // ini key was renamed from rear_snap_ms so 5061b4a's saved INSTANT does not stick.
     int rearSnapMs = 200;
+    // TORSO UPDATE (Nov 13): the most the animation's arm overlay turns the chest toward the player, degrees
+    // (0 off, 40 the old cap). animated_torso_twist.
+    int animatedTorsoTwist = 80;
+    // TORSO UPDATE (Nov 13): in the animation the web line falls back to the controller's once the forearm
+    // is this many degrees off it (0 off). anim_forearm_fallback_deg.
+    int animForearmFallbackDeg = 60;
+    // STEADY (November 14): STABILIZATION's fourth bank, above HEAVY (heavier speed damping again), ms.
+    // Polish pass: 200/200/200 (was 350/300/450), so the view answers the head sooner; the bank's speed
+    // terms went up with them (headset_smoothing.hpp bankAngleBeta / bankPositionBeta).
+    int steadyVerticalMs = 200, steadyHorizontalMs = 200, steadyAngleMs = 200;
+    // HORIZON LEVEL (November 14): this share of the view's roll and pitch tilt removed, in the animation and
+    // in SpidyVR; flips pass whole. camera_horizon_level_pct.
+    int cameraHorizonLevelPct = 0;
+    // VR STABILIZATION (November 14): 1 applies the CAMERA rows, HORIZON LEVEL and the bank's ANGLE to
+    // SpidyVR's own view tilt (swing, air, combat, wall); 0 leaves it as before. camera_vr_stabilization.
+    int cameraVrStabilization = 1;
+    // MANUAL SWING KICK (K1, swing_kick.hpp; November 14), EXPERIMENTAL: ON by default (the owner, Nov 19 6:06 AM:
+    // "Yes, manual swing kicks on by default"; movement_defaults revision 12 turns it on once). Swinging with the
+    // legs engaged (Y + X), a flick of the right stick up kicks at the ringed enemy within 30 degrees of
+    // the swing's velocity. swing_kick_manual. And the auto dive (WebStrike::dive, today's) as its own
+    // setting, on as before: swing_kick_auto. Both can be on; the dive holds back during a manual kick.
+    bool swingKickManual = true, swingKickAuto = true;
+    // LEG HOLD EVERYWHERE (EngineBot's K1 series, Nov 19 port; ini leg_hold_everywhere, no menu row):
+    // the Y+X chord may start wherever LEG CONTROL is usable, not only where the legs can move. OFF by
+    // default (the owner, Nov 19 t127u): on, a lone X or Y on the ground waits up to 80 ms for its partner,
+    // which would hold back the X throw.
+    bool legHoldEverywhere = false;
+    // SWING KICK GRUNT (ini swing_kick_grunt; off by default): Spidey's own jump grunt plays as a manual swing
+    // kick arms (from EngineBot's swing kick series).
+    bool swingKickGrunt = false;
+    // GRIP ACROSS THE GAME (G1, grip.hpp; November 14), EXPERIMENTAL: on by default (the owner, Nov 19,
+    // "leave all features on for further testing"; movement_defaults revision 14 turns an old off once). wall_brake: on
+    // Spidy's wall a grip closed on a slide slows it as friction does (mu grip_stop_pct, 200: the Nov 14 pass; it was wall_brake_mu_pct, 90, and files that saved that key keep their old default behind it), then holds.
+    // grip_fling: a pull let go of while gripping a surface launches the body the other way (gain
+    // grip_fling_gain_pct, 130; at most grip_fling_max m/s, 9), the ground included.
+    bool wallBrake = true, gripFling = true;
+    int wallBrakeMuPct = 200, gripFlingGainPct = 130, gripFlingMax = 9;
+    // HAND GRAB (G2, hand_grab.hpp; November 14), EXPERIMENTAL: on by default (the owner, Nov 19; revision 14).
+    // hand_grab: a grip squeezed
+    // with the palm within 35 cm of an enemy or a prop takes it by hand: held 45 cm ahead of the palm,
+    // punched with the free fist, thrown or slammed on letting go. hand_grab_force: one hand's force in
+    // newtons (1200; 90 kg lifted). enemy_hold_cost: how fast holding an enemy tires the hand (1; 0 never).
+    bool handGrab = true;
+    int handGrabForce = 1200, enemyHoldCost = 1;
+    // hand_grab_class_rules (G2b, hand_grab::Foe; on; the launcher's HAND GRAB CLASS RULES row, KICKS & COMBAT): heavies (brutes, big
+    // capsules) and bosses resist throws unless open for a finisher (stunned or webbed up), shield guards and
+    // bosses tire the hand 3x, and an open enemy costs nothing and is fully manipulated. 0: G2 as before.
+    bool handGrabClassRules = true;
+    // AIR KICKS (K2, air_kick.hpp; November 14), EXPERIMENTAL: on by default (the owner, Nov 19; revision 14).
+    // kicks: off the ground with the
+    // legs engaged (Y + X), a quick flick of the right stick kicks: up a two-leg dive, up-left or up-right a
+    // one-leg dive, a quarter circle from a side to up a roundhouse, any other flick a freeform blow.
+    // kick_gaze_cone_deg: how far from your gaze a zone point can be and still be aimed at (25).
+    // kick_spin_pct: how much of the kick's spin reaction the legs' coupling keeps (30).
+    bool kicks = true;
+    int kickGazeConeDeg = 40, kickSpinPct = 30; // cone 25 until the 2 AM log (Nov 18): 25 of 25 kicks found no enemy
+    // GROUND KICKS (K3, ground_kick.hpp; November 14): on by default since Nov 18 (the owner, t119u; revision 9
+    // moves an untuned off). ground_kicks: standing
+    // (slower than 2 m/s) with the legs engaged (Y + X), a quick flick of the right stick kicks: up a front
+    // kick, sideways a side kick, a half circle across the bottom sweeps the legs (a knock-down). The Y + X
+    // chord is then the kicks' on the ground (no web strike or zip with both held). The kick's leg shows
+    // while the animation owns the body (ANIMATED moves); the blow lands either way. kick_gaze_cone_deg aims
+    // these too.
+    bool groundKicks = true; // false until Nov 18
+    // ENEMY JOINTS (R1, enemy_joints.hpp; November 14), EXPERIMENTAL: off until set. enemy_joints: a kick (air
+    // or ground) reads the enemy's head and chest joints, so the zone it aims at and the zone it hits are the
+    // enemy's own, not a capsule's bands (the bands remain the fallback for any joint a rig lacks).
+    // enemy_limb_zones: also the legs from the shins and the arms from the forearms; leave it off until
+    // probe_c0_skeleton.py has said READABLE on your game (no enemy's limb joint has been read yet).
+    bool enemyJoints = false, enemyLimbZones = false;
+    // PHYSICAL WEB TETHERS (W1, tether.hpp; November 14), EXPERIMENTAL: on by default (the owner, Nov 19;
+    // revision 14). physical_tethers: a
+    // simulated rope on each web (a held line sags and drapes), a whip of the hand jerks what is on it, circling
+    // the hand turns it round you, and a throw with the trigger held keeps the line, paid out by the trigger.
+    // tether_particles: points in the rope (24). tether_substeps: its steps a frame (8).
+    bool physicalTethers = true;
+    int tetherParticles = 24, tetherSubsteps = 8;
     // PASSIVE LEGS (leg_layers.hpp; November 12 06:18): in SpidyVR's air with
     // LEG CONTROL not engaged, the legs' spring runs with no stick, so momentum
     // moves them; this share of it shown (0 OFF). 60 by default. passive_legs_pct.
@@ -544,11 +639,17 @@ struct Values {
     // AIR CROUCH / REACH SPREAD (leg_layers.hpp's auto poses). leg_air_crouch, leg_reach_spread.
     bool legAirCrouch = true;
     bool legReachSpread = true;
+    // MIDAIR POSES (leg_layers.hpp: tuck, dive, superhero, starfish; the owner, Nov 18): their own switch since Nov 18
+    // 1:09 PM (they rode AIR CROUCH's before). air_poses.
+    bool airPoses = true;
+    // DIRECTIONAL FLIPS (ground_flip.hpp's TapTrigger): standing, the left stick held to a side, ahead or back and a
+    // quick A tap flips that way. Off, A is never held back. directional_flips.
+    bool directionalFlips = true;
     // POINT JUMP (point_jump.hpp; the user, November 11; EngineBot's plan):
     // touching a surface, A+B (or hold B, then A) charges a jump the way you
     // look. A tap is a quick jump at the tap speed; held up to CHARGE TIME a
-    // leap rising to MAX SPEED. The tab's VR POINT JUMP rows: POINT JUMP (off
-    // by default, experimental), TRIGGER, TAP SPEED and MAX SPEED (m/s),
+    // leap rising to MAX SPEED. The tab's VR POINT JUMP rows: POINT JUMP (on
+    // by default since revision 14, experimental), TRIGGER, TAP SPEED and MAX SPEED (m/s),
     // CHARGE TIME (ms) and SURFACE PUSH (percent of the surface's normal mixed
     // into the look). The rest are spidy_vr.ini only (point_jump_* keys): the
     // chord window, the tap's length, the curve (0 ease-out, 1 linear), the
@@ -556,10 +657,10 @@ struct Values {
     // coyote time, the buffer, the cooldown, the guard after a game zip, B's
     // hold before it is the dodge (TRIGGER 1), and whether it works in a fight.
     // The player's own (comfort and controls), not in shared profiles.
-    bool pointJump = false, pointJumpInCombat = true;
+    bool pointJump = true, pointJumpInCombat = true;
     int pointJumpTrigger = 0, pointJumpChordMs = 50, pointJumpTapMs = 150, pointJumpFullMs = 1000;
     int pointJumpMinSpeed = 9, pointJumpMaxSpeed = 22, pointJumpCurve = 0, pointJumpNormalBias = 25;
-    int pointJumpMinOutDegrees = 10, pointJumpKeep = 25, pointJumpCoyoteMs = 120, pointJumpBufferMs = 150;
+    int pointJumpMinOutDegrees = 10, pointJumpKeep = 25, pointJumpCoyoteMs = 120, pointJumpBufferMs = 200; // buffer 150 until Nov 16 (movement defaults 4)
     int pointJumpCooldownMs = 250, pointJumpZipGuardMs = 400, pointJumpDodgeHoldMs = 250;
     // QUICK SIDESTEP (November 12, sidestep.hpp; approved by the user, on by
     // default): on the ground, a left-stick flick then A within sidestepAMs is
@@ -577,7 +678,204 @@ struct Values {
     // (it replaced the 90-degree rule). SNAP REALIGN: the right stick's tap is
     // a snap round the full 360 and a realign of the heading, the model and the
     // headset. spidy_vr.ini only, on by default; 0 turns each off.
-    bool animHeadRide = true, shoulderLimit = true, snapRealign = true;
+    bool animHeadRide = false, shoulderLimit = false, snapRealign = true;
+    // HEADSET FIRST (the polish pass, November 14; the user, t64u: "Where the player looks takes full precedence, and everything else
+    // should be adjusting to it"). On (default): the left stick runs relative to your headset - where you look when you press it,
+    // following only your own head and right stick turns after - never relative to the body that is still turning,
+    // and (with the view is yours, below) the animation never turns the view. Off: the old HYBRID heading.
+    bool headsetFirst = true;
+    // PUNCH AUTO-TARGET (the polish pass, slice 7; the user, t65u: "an autotarget for punches that turns your view toward any
+    // enemy you're attacking", then: "I only want punches to target enemies that are highlighted and targeted by the
+    // player. Punches always do damage, but tracking only happens on targeted enemies. If the player punches toward a
+    // targeted enemy, everything should immediately realign in that direction."): a punch thrown within punchTrackConeDeg of
+    // the targeted enemy (the one the ring marks), at most punchTrackRangeM away, turns the body, the aim and the icons onto
+    // him on that frame. The VIEW turns only with punchViewSnap (off by default: t66u, "it can be a switch"). Punches do the
+    // same damage with all of it off. punch_autotarget, punch_track_cone_deg, punch_track_range_m, punch_view_snap.
+    bool punchAutotarget = true, punchViewSnap = false;
+    // Nov 16 (the owner; s165800: 99 of 136 untracked punches outside 45 degrees, 37 past 6 m): 60 degrees, 8 m.
+    // Nov 17 (the owner, "open up punch tracking and lengthen it to 10m"; s131456: 29 of 49 throws outside 60
+    // degrees, 17 of them within 90): 90 degrees, 10 m.
+    int punchTrackConeDeg = 120, punchTrackRangeM = 10; // cone 90 until the 2 AM log (Nov 18): 41 throws at 90-120
+    // JUMP PULL (the polish pass, slice 8; the user, t65u: "a soft pull that gently pulls you toward enemies you jump toward"):
+    // in SpidyVR's own air, with no web out, an enemy within jumpPullGazeDeg of where you look (or within jumpPullStickDeg of
+    // the left stick's way while it is held) and jumpPullRangeM pulls a little (4 m/s^2, fading at the cone's edge and the
+    // range's, off inside 1.5 m) until the jump has added jumpPullCapDmps of speed: the cap is in tenths of a
+    // m/s (15 = 1.5 m/s). jump_pull, jump_pull_gaze_deg, jump_pull_stick_deg, jump_pull_range_m, jump_pull_cap_dmps.
+    bool jumpPull = true;
+    int jumpPullGazeDeg = 20, jumpPullStickDeg = 25, jumpPullRangeM = 12, jumpPullCapDmps = 15;
+    // SHOWTIME (showtime.hpp; the plan's Pillar 6, EXPERIMENTAL, on by default — the owner, Nov 19,
+    // "leave all features on for further testing"; revision 14 turns an old off once): hold X + B and the view steps outside
+    // Spidey. showtimeWhile: 0 WATCH ONLY, 1 KEEP CONTROL; showtimeFadeMs: the whole cut. showtime, showtime_while, showtime_fade_ms.
+    bool showtime = true;
+    int showtimeWhile = 0, showtimeFadeMs = 150;
+    // SHOWTIME's camera (S1): DISTANCE and HEIGHT in cm, ORBIT ANGLE in degrees off his back, ORBIT TURN 0 smooth / 1 snap, FOLLOW 0..2,
+    // VIGNETTE 0..2, SLOW-MO IN SHOWTIME (L3), LATCH 0 off / 1 double press.
+    int showtimeDistanceCm = 250, showtimeHeightCm = 30, showtimeAngleDeg = 35, showtimeTurn = 0, showtimeFollow = 1, showtimeVignette = 1;
+    bool showtimeSlowMo = true;
+    int showtimeLatch = 0;
+    // SHOWTIME's automatic moments (S2): CHORD 0 hold X+B / 1 auto only; AUTO: DODGES 0 off / 1 perfect only / 2 all; AUTO: FINISHERS
+    // (log only in this build; on by default since revision 14, as in the owner's Nov 19 session).
+    int showtimeChord = 0, showtimeAutoDodge = 1;
+    bool showtimeAutoFinish = true;
+    // SHOWTIME's body (S3): 0 game pose with the head shown, 1 as in play (no head).
+    int showtimeBody = 0;
+    // A IN THE AIR (the user, Nov 14 t71u; air_correct_ms): the upright turn takes this long, smoothly (realistic_flip.hpp
+    // RealisticFlipSettings::levelMs). REALISTIC FLIPS' A rights the player; it was a 0.18 s chase with a hard start.
+    int airCorrectMs = 1000;
+    // POINT JUMP BULLET (the user, Nov 14 t71u, t73s656; point_jump_bullet, default on): the body takes the RAW look on a point
+    // jump, any angle, eased over about 120 ms (point_bullet.hpp). The launch velocity is unchanged (10 degree out-of-surface fix).
+    bool pointJumpBullet = true;
+    // JUMP SOUNDS (beta polish A4, the owner's D6; point_jump_sound, on): the game's jump grunt (sound_guard.hpp) on
+    // Spidey at every point jump (the game already adds its own a442c255/050553e7 there), and the grunt with the rest
+    // of the game's jump set at a ground flip or handstand leap; skipped when the game's own grunt already sounds
+    // (300 ms guard).
+    bool pointJumpSound = true;
+    // WALL JUMP SOUND (beta polish A5; wall_jump_sound): 0 off (silent as before), 1 d321a6f9 (default), 2 110d202b,
+    // the Nov 19 trace's two candidates (sound_guard.hpp) for a headset A/B.
+    int wallJumpSound = 1;
+    // HERO ATTACK SOUND (beta polish A2; attack_sound, spidy_vr.ini only, no menu row): one of the game's sounds played
+    // on Spidey as a punch is thrown or a kick starts (at most one a hand every 250 ms, hit_sound.hpp): the id's 32
+    // bits as a signed decimal. 0 (the default): none - the game's own whoosh and effort ids are not captured yet
+    // (the capture session); nothing is guessed.
+    int attackSound = 0;
+    // AIR TAKEOVER (fall_handoff_ms, 150): a plain fall (a ledge, a stumble; no jump press, never rose) hands to SpidyVR this long
+    // into the air; 0 waits for JUMP TO SPIDYVR's timer (hybrid_owner.hpp Frame::fallHandoffNs).
+    int fallHandoffMs = 150;
+    // LANDING BLEND-IN (air_landing_blend, default on; landing_blend.hpp): the time to impact in SpidyVR's air from a downward ray,
+    // the body coming upright over the last 0.3 s, and a per-landing account of the prediction. The touchdown handoff is as before.
+    bool airLandingBlend = true;
+    // The animation takes the body 0.2 s BEFORE the touchdown (air_landing_release, on by default since revision 14 for
+    // further testing; UNVERIFIED: it needs the game to keep his velocity and pick its normal landing clip when the body
+    // is let go in the air). Needs AIR LANDING BLEND.
+    bool airLandingRelease = true;
+    // [air takeover pass settings]
+    // HANDSTAND CATCH HOLD (handstand_catch_hold_cm, 35; 12 was the old floorReach): while a catch settles, palms
+    // within this of the floor count as on it, so a catch is not dropped at the 0.6 s settle (the 9790d67 playtest: 3 of 3).
+    int handstandCatchHoldCm = 35;
+    // HANDSTAND REACH (handstand_reach_cm, 160; 130 until Nov 17, 100 before): an upside-down touchdown counts a palm within
+    // this of the floor (and the hands over the head: the gesture is kept). s131456's attempts read 1.15-1.41 m.
+    int handstandReachCm = 160;
+    // TAKEOVER VIEW EASE (takeover_view_ease, on): every switch to SpidyVR (a point jump, a web, a wall run, a handstand,
+    // a sidestep, a swing, an animation's end) holds the view and eases it over AIR VIEW EASE, as the jump, flip and grip
+    // cancel always did (the 9790d67 playtest: 60-110 uneased 0.26-0.30 m eye jumps a session). Off: only those.
+    bool takeoverViewEase = true;
+    // HEAD HEIGHT FADE (head_height_fade_ms, 500; 0: off): at a switch to SpidyVR the animation head's height over
+    // where tracking puts the eyes (median 0.27 m seated) fades out over this, on its own, instead of riding the view
+    // ease's 250 ms (view_ease.hpp). Only with a view ease.
+    int headHeightFadeMs = 275; // 500 until the handoff tune (Nov 18): it set every takeover's end (493 ms)
+    // ONE HANDOFF BLEND (handoff_one_blend, on): a switch's eye blend runs as long as AIR VIEW EASE (250 ms; 180 ms when
+    // that is off), and when the view ease carries the eyes' place, the blend turns only their angle: one ease of one
+    // length instead of a 180 ms blend on top of a 250 ms ease (the 9790d67 playtest). Off: as before.
+    bool handoffOneBlend = true;
+    // PUNCH CAMERA LOCK (punch_camera_lock_ms, 300; 0: off): a punch thrown on the ground hands him to SpidyVR and,
+    // most often, straight back on the landing (45 of 58 short stints in the 9790d67 playtest): the view is held where
+    // the animation showed it for this long before PUNCH VIEW EASE starts, so a round trip inside it never moves the camera.
+    int punchCameraLockMs = 300;
+    // VIEW RELATCH FIX (view_relatch_fix, on): when the head lock's reference is latched afresh (a landing, a takeover
+    // back, a recenter, a snap realign), the next frame measures where the player looks against the new reference,
+    // not by subtracting the old reference's headset turn: that one wrong frame let a turn hold "arrive" with the hero still
+    // far off (snap realigns and landings that never turned him, 9790d67). Off: as before.
+    bool viewRelatchFix = true;
+    // SNAP BODY TURN (snap_body_turn, on): a snap realign (the right stick's tap) turns the body onto the new heading
+    // too - the walk stick brings him round, fights included - and the turn is logged as a "realign" hero turn.
+    // Off: the view snaps and the body stays where it was.
+    bool snapBodyTurn = true;
+    // SNAP TAP WINDOW (snap_tap_ms, 250; 120 Nov 16-18, 250 before): with SMOOTH TURN on, a right-stick push out and
+    // back within this many milliseconds is a snap realign; a longer push is the smooth turn. Shorter: fewer snaps by
+    // accident. The owner, Nov 18: "Raise the snap tap window to 250 ms" (s131456: 67 flicks of 167-375 ms missed).
+    int snapTapMs = 250;
+    // DODGE RE-FACE (dodge_reface, on): when a dodge has settled (0.4 s after the button is let go) and the body faces
+    // more than 10 degrees off where the player looks, the walk stick turns him back onto the view - a smooth turn,
+    // never a snap, fights included; the view is never written. Off: as before (only the turn-in-place angle).
+    bool dodgeReface = true;
+    // LANDING BODY TO VIEW (landing_body_to_view, on; headset first): after a landing the drawn body is turned about the
+    // head onto where the player looks while the walk stick brings the hero round, then eases back onto his real facing -
+    // the pose only: nothing is written to the game, and the camera does not move. Off: as before.
+    bool landingBodyToView = true;
+    // LANDING BODY EASE (landing_body_ease_ms, 500): how long the drawn body takes to ease onto the view after a landing,
+    // and to ease back off it.
+    int landingBodyEaseMs = 500;
+    // LANDING REAR TURN (landing_rear_turn, on): a calm landing with the view more than 120 degrees behind him turns him
+    // onto it too (the facing check no longer keeps him facing away). Off: he stays, as before.
+    bool landingRearTurn = true;
+    // HANDOFF EASE CURVE (handoff_ease_curve, 1; 0: the old quick start): how a takeover's view glide moves. 1 starts
+    // and stops at rest (smootherstep, no motion bleed): the camera never jolts into the glide. 0: the cubic ease-out with
+    // the motion bleed, which starts at three times the average speed (d591229: median 0.32 m in 250 ms, 3.8 m/s at once).
+    int handoffEaseCurve = 1;
+    // HANDOFF GLIDE SPEED (handoff_glide_cm_s, 200 = 2 m/s; 0: the fixed lengths): a handoff's camera glide is made
+    // long enough that the camera never moves faster than this - a 0.3 m offset still takes the ease's 250 ms, a 0.6 m
+    // one about 560 ms (d591229: offsets up to 0.94 m level and 1.31 m in height were crossed in 250 ms). Takeovers'
+    // glides and the height fade, and the landing's blend onto the head.
+    int handoffGlideCmS = 350; // 200 until the handoff tune (Nov 18)
+    // HANDOFF GLIDE LONGEST (handoff_glide_max_ms, 700): the longest a glide is stretched to by HANDOFF GLIDE SPEED.
+    int handoffGlideMaxMs = 450; // 700 until the handoff tune (Nov 18)
+    // HANDOFF HEAD LEADS (handoff_head_leads, on): through a handoff's blend your head turns move the view 1:1; only
+    // the difference between the two views at the switch (the animation's pitch and roll, mostly) fades out. Off: the old
+    // blend from the switch's view to the live one, which follows head turns only partly until it ends.
+    bool handoffHeadLeads = true;
+    // HANDOFF ANGLE TIME (handoff_angle_ms, 300; 0: the blend's own length): how long the pitch and roll the animation's
+    // head gave the view take to fade out after a switch (the place glides on its own clock).
+    int handoffAngleMs = 200; // 300 until the handoff tune (Nov 18)
+    // LANDING BLEND (landing_blend_ms, 250; 0: air_view_ease_ms as before): how long a landing's view takes to glide
+    // onto the hero's head when the animation takes over (HANDOFF GLIDE SPEED stretches a long one). Was tied to
+    // air_view_ease_ms; now tunable on its own.
+    int landingBlendMs = 200; // 250 until the handoff tune (Nov 18)
+    // HEAD SEAT GLIDE (head_seat_glide_ms, 250; 180 was the old fixed length): how long the view takes to slide when
+    // the mod re-seats your head on the hero's (after a move change, an action, a zip or drift; up to ~0.2 m).
+    int headSeatGlideMs = 165; // 250 until the handoff tune (Nov 18)
+    // HANDSTAND ARMS OVER HEAD (handstand_arms_over_head_cm, 10; 0: the old test): at a landing, both hands count as up
+    // when they are at least this far over your real head (as you hold them), whatever the flip's angle. The old test
+    // wanted the palms 20 cm below the head in the flipped world, which hands held over the head only met when he was
+    // past about 125 degrees upside down (s165800: refused at 100 and 117).
+    int handstandArmsOverHeadCm = 10;
+    // TURN SPEED (turn_push_pct, 55; 35 was the old fixed push): how hard the walk stick is pushed when the mod turns
+    // the hero onto your view (landing turns, re-faces, turn-in-place). s165800: at 35 the game turned him about 100-140
+    // deg/s and a landing's turn took 0.73 s (median), up to 2.6 s. Higher turns faster; a push past ~60 may make him
+    // step while turning. The 'still stuck' push stays at least 50.
+    int turnPushPct = 55;
+    // LANDING BODY HOLDS THE TURN (landing_body_hold_turn, on): after a landing the drawn body stays on your view until
+    // the hero has really come round (within 12 deg), not the first frame the walk stick's turn pauses. Off: as before
+    // (s165800: 27 of 96 ended 'came round' early, 35 cancelled).
+    bool landingBodyHoldTurn = true;
+    // INSTANT WEB ZIP (web_zip_instant, on): a web zip or web strike pressed while you swing or run a wall in SpidyVR
+    // hands the body to the game's zip on the press, so it starts at once. s165800: from SpidyVR the zip waited a median
+    // 0.9 s (up to 2.5 s) for the game to begin it. A press the game does not take (nothing to zip or strike) gives the
+    // swing back after 0.4 s. Off: SpidyVR waits for the game to start the zip, as before.
+    bool webZipInstant = true;
+    // POINT JUMP FIRES AT FULL CHARGE (point_jump_fire_full, on): held to CHARGE TIME the point jump launches by itself at
+    // full power, instead of waiting for you to let go (s165800: press to launch median 361 ms, p90 1.2 s, mostly the
+    // hold). A tap or a shorter hold still fires on the release. Off: only the release fires, as before.
+    bool pointJumpFireFull = true;
+    // TARGET SCAN OUTSIDE FIGHTS (the owner, Nov 16; s165800: "things are lagging during heavy action"): how often,
+    // milliseconds, the web, grab and punch target lists rescan the game's actors when nothing is fighting (250 to
+    // 2000); in a fight, and for 3 s after one, every 250 ms as before. 500: half the scans out on the streets.
+    int targetScanIdleMs = 500;
+    // HANDOFF PLACE (handoff_place_cm, 200; 0: always glide): a landing or zip handoff whose view has farther than this to go
+    // onto the head is placed there at once (the position only; the angle still blends, the headset leads) instead of
+    // sliding at many metres a second (b318cb1: 26 of 85 landing glides had over 1.4 m to go, up to 47 m in 700 ms).
+    int handoffPlaceCm = 125; // 200 until the handoff tune (Nov 18)
+    // PUNCH TRACK BY LOOK (Nov 17; off by default): a throw also tracks when you LOOK within the cone of the
+    // targeted enemy, the fist thrown off it (punch_track.hpp). punch_track_by_look.
+    bool punchTrackByLook = false;
+    // HANDSTAND GRACE (the owner, Nov 17: "give some grace for getting into one"): hands over the head up to this long
+    // before an upside-down touchdown count at it, their hold too (handstand_grace_before_ms, 300); and the touchdown can catch for
+    // handstand_grace_after_ms (400; 250 before) after SpidyVR's air.
+    int handstandGraceBeforeMs = 300;
+    int handstandGraceAfterMs = 400;
+    // HANDSTAND TIP-IN (the owner, Nov 17: "tip the player into the handstand when it's clear they're attempting one"):
+    // inverted at least handstand_tip_in_deg (120), not spinning, the hands over the head (now or in the grace): the catch takes
+    // the palms from up to handstand_tip_in_reach_cm (200) over the floor with no hold wait, and sets them down.
+    bool handstandTipIn = true;
+    int handstandTipInDeg = 120;
+    int handstandTipInReachCm = 200;
+    // MARKER TWIST STEADY (the owner, Nov 17: "reaching around to fire webs causes the marker to jump ... loosen up that
+    // twisting"): the arm line is smoothed in the world, carried with the controller's pointing, so a twist of the hand no longer
+    // swings it round (web_aim::ForearmAim::updateWorld); its own changes go at most marker_turn_rate_dps (360; 0 no cap), and the
+    // arm/controller fallback switches only after marker_switch_hold_ms (150) of the new answer. marker_twist_steady=0: as before.
+    bool markerTwistSteady = true;
+    int markerTurnRateDps = 360;
+    int markerSwitchHoldMs = 150;
+    // [next pass settings]
     bool operator==(const Values&) const = default;
 };
 inline constexpr int eyeAimShots = 1, eyeAimZips = 2;
@@ -785,8 +1083,98 @@ enum class Item : uint8_t {
     // November 12 (hybrid movement): MOVEMENT MODE, REAR SNAP TURN (hybrid_movement.hpp), VR CAMERA & STABILIZATION.
     movementMode,
     rearSnap,
+    animatedTorsoTwist,
+    animForearmFallback,
+    steadyVertical,
+    steadyHorizontal,
+    steadyAngle,
+    cameraHorizonLevel,
+    cameraVrStabilization,
+    swingKickManual,
+    swingKickAuto,
+    wallBrake,
+    gripFling,
+    handGrab,
+    handstand,
+    handstandAssist,
+    handstandFall,
+    handstandPushGain,
+    handstandPushMax,
+    handstandHeight,
+    handstandGain,
+    handstandEyeDrop,
+    handGrabForce,
+    enemyHoldCost,
+    kicks,
+    kickGazeCone,
+    kickSpin,
+    groundKicks,
+    enemyJoints,
+    enemyLimbZones,
+    physicalTethers,
+    tetherParticles,
+    tetherSubsteps,
+    headsetFirst,
+    animHeadRide,
+    shoulderLimit,
+    punchAutotarget,
+    punchTrackCone,
+    punchTrackRange,
+    punchViewSnap,
+    jumpPull,
+    jumpPullGaze,
+    jumpPullStick,
+    jumpPullRange,
+    jumpPullCap,
+    handstandSupport,
+    handstandGrace,
+    handstandDamping,
+    handstandLeap,
+    showtime,
+    showtimeWhile,
+    showtimeFade,
+    showtimeDistance,
+    showtimeHeight,
+    showtimeAngle,
+    showtimeTurn,
+    showtimeFollow,
+    showtimeVignette,
+    showtimeSlowMo,
+    showtimeLatch,
+    showtimeChord,
+    showtimeAutoDodge,
+    showtimeAutoFinish,
+    showtimeBody,
+    airCorrect,
+    pointJumpBullet,
+    fallHandoff,
+    airLandingBlend,
+    airLandingRelease,
+    // Handoff tune (Nov 18, the owner: "give me smaller increments to set"): the handoff and landing
+    // timing rows, ini-only until now.
+    landingBlend,
+    handoffGlideSpeed,
+    handoffGlideLongest,
+    handoffPlace,
+    handoffAngle,
+    headSeatGlide,
+    landingBodyEase,
+    // Nov 18 1:09 PM (the owner: "Give poses and side flips their own toggles"): DIRECTIONAL FLIPS (ground_flip.hpp's
+    // A taps), FLIPS tab; MIDAIR POSES (leg_layers.hpp's first poses), VR LEGS (ADVANCED).
+    directionalFlips,
+    airPoses,
+    // 0.8.7 (Ilya): ENEMY TYPES, after the fork's items (the launcher's order is the enum's).
+    enemyTypes,
+    // HAND GRAB CLASS RULES (G2b, the owner's Nov 13 rules; beta polish: a launcher row in KICKS & COMBAT).
+    handGrabClassRules,
+    // JUMP SOUNDS and WALL JUMP SOUND (beta polish A4/A5, POINT JUMP's tab).
+    pointJumpSound,
+    wallJumpSound,
+    // NA HELP (beta polish M5, na_help.hpp): the NA · HELP tab's pages, one item for all of them (a page has no
+    // value: one choice, READ). Its rows are the catalog's last.
+    helpPage,
 };
-inline constexpr Item lastItem = Item::rearSnap;
+inline constexpr Item lastItem = Item::helpPage;
 // SLOW-MO LENGTH's last step: no time limit (until L3 toggles it off).
 inline constexpr int slowMotionEndless = 91;
 // Real seconds a full meter lasts for a SLOW-MO LENGTH value; 0 = endless.
@@ -816,14 +1204,32 @@ struct Row {
     Place place{};
 };
 // Stable row/setting numbers; categories below determine presentation order.
-const std::array<Row, 155>& rows();
+// The catalog: the settings' rows (235), then NA HELP's pages.
+inline constexpr size_t settingRowCount = 235;
+inline constexpr size_t rowTotal = settingRowCount + na_help::pageCount;
+const std::array<Row, rowTotal>& rows();
 const Row* rowFor(Item);
+// NATIVE ANIMATION'S OWN (beta polish M1): true for every setting the Native Animation fork added (135 at 88cc744),
+// false for upstream Spidy's (the 89 settings of v0.8.7's Item, WEB LINES, AIR FISTS and ENEMY TYPES among the fork's
+// numbers included). The one source for the launcher's NA highlight and the in-game NA tabs.
+bool isNativeAnimation(Item);
+// NA HELP (beta polish M5): docs/NA_HELP.md, generated from na_help.hpp and, for its cheat sheet, the catalog's NA
+// tabs (every row, where it shows and its default). beta_polish_tests keeps the file equal to this.
+std::string helpMarkdown();
 // camera, shooters and legs (November 11, the user: "I can't find legs or
 // camera settings in any of the menus. Make sure it's clearly labeled"): tabs
 // of their own, after the older ones so their numbers stay.
 // pointJump (November 11): POINT JUMP's own tab, last so the others keep theirs.
+// NA TABS (beta polish M4, the owner's D1/D2): the in-game tabs are the upstream ones, then every setting Native
+// Animation added, grouped in tabs whose names start with naTabPrefix (the tab order is this order; a tab is
+// numbered by its place only while the menu is open, so reordering needs no migration). KICKS & COMBAT took the
+// kicks out of LEGS and the punch / jump assists out of MOVEMENT.
 enum class Category : uint8_t { setup, webs, swinging, movement, flips, feedback, display, nativeAnimation,
-                                camera, shooters, legs, pointJump, count };
+                                camera, handoff, legs, kicks, shooters, pointJump, showtime, help, count };
+// The in-game NA tabs' prefix: "NA" and a middle dot (U+00B7, UTF-8). RE: the game's font is not verified to have
+// the dot (the capture-session list); swap this for "NA - " if a headset shows a box.
+#define SPIDY_NA_TAB_PREFIX "NA \xC2\xB7 "
+inline constexpr const char* naTabPrefix = SPIDY_NA_TAB_PREFIX;
 inline constexpr size_t categoryCount = static_cast<size_t>(Category::count);
 struct Screen {
     const char* title;
@@ -843,7 +1249,7 @@ bool shownWhenInactive(Item);
 Values resetCategory(Category, Values);
 // The most choices a row shows (game_menu's buffers): a row with more would
 // lose its last ones.
-inline constexpr size_t maxChoices = 9;
+inline constexpr size_t maxChoices = 11; // 9 until November 14 (the camera rows' 750 and 1000 ms)
 // The values a list setting's choices stand for, in their order; none for a
 // switch.
 std::span<const int> steps(Item);
@@ -866,10 +1272,12 @@ std::string tabOnlyText(const Values&);
 // key, or whose value is no whole number, is passed over.
 Values withTabOnly(Values, std::string_view text);
 // The movement defaults' revision (Values::movementDefaults) this build has.
-inline constexpr int movementDefaultsRevision = 1;
+inline constexpr int movementDefaultsRevision = 14;
 // November 12 movement cleanup: a settings file (that text) older than
 // movementDefaultsRevision gets the new movement defaults once - RUN CURVE
 // on, EARLY JUMP at least QUICK TAP - and is marked as having seen them; a
-// newer one is left as it is. Call after withTabOnly on the same text.
+// newer one is left as it is. Revision 2 (polish pass): STEADY's three times saved at the old defaults
+// (350/300/450 ms, never tuned) become the new ones (200/200/200); any other value stays.
+// Call after withTabOnly on the same text.
 Values withMovementDefaults(Values, std::string_view text);
 } // namespace spidy::vr_settings

@@ -179,10 +179,63 @@ int main() {
         // Smooth mode: a quick tap right is one snap right (- yaw), on release.
         auto o = s.update(.01f, .9f, true, 30);
         check(o.began && !o.fire, "smooth: the push starts, nothing yet");
-        o = s.update(.1f, .9f, true, 30);
+        o = s.update(.06f, .9f, true, 30);
         check(!o.fire, "still out");
         o = s.update(.05f, .1f, true, 30);
-        check(o.fire && near(o.turn, -30 * deg), "smooth: back within 0.25 s: one snap right");
+        check(o.fire && near(o.turn, -30 * deg), "smooth: back within 0.12 s: one snap right");
+        // SNAP TAP WINDOW (snap_tap_ms, 250; the owner, Nov 18): s131456's 167-375 ms flicks; 120 ms missed them.
+        {
+            SnapRealign w;
+            check(near(w.tapSeconds, .25f) && near(SnapRealign::tapSecondsOf(250), .25f) &&
+                      near(SnapRealign::tapSecondsOf(5), .06f) && near(SnapRealign::tapSecondsOf(9000), .4f),
+                  "the tap window: 250 ms by default, clamped 60-400 ms");
+            w.update(.01f, .9f, true, 30);
+            w.update(.1f, .9f, true, 30);
+            check(w.update(.05f, .1f, true, 30).fire, "a 0.15 s push: a snap at 250 ms");
+            // 0.24 s out and back: still a tap; 0.26 s and longer: the smooth turn, never a snap.
+            const auto push = [](SnapRealign& r, float seconds) {
+                r.update(.01f, .9f, true, 30);
+                float t = 0;
+                const float step = 1.f / 90.f;
+                while (t + step < seconds) {
+                    r.update(step, .9f, true, 30);
+                    t += step;
+                }
+                return r.update(seconds - t, .1f, true, 30).fire;
+            };
+            SnapRealign a;
+            check(push(a, .24f), "0.24 s: a tap");
+            SnapRealign b;
+            check(!push(b, .26f), "0.26 s: a smooth turn hold, no snap");
+            SnapRealign c;
+            check(!push(c, .375f), "0.375 s: a smooth turn hold, no snap");
+            SnapRealign d;
+            d.tapSeconds = SnapRealign::tapSecondsOf(120);
+            check(!push(d, .15f), "a tuned 120 ms window: a 0.15 s push is the smooth turn");
+        }
+        // SNAP FROM THE LIVE VIEW (Nov 17, realign #6): the snap returns to the live view less this push's own
+        // smooth turn, whatever re-latched the view meanwhile.
+        {
+            SnapRealign w;
+            auto b = w.update(.01f, .9f, true, 45);
+            check(b.began, "the push begins");
+            w.began();
+            w.turned(-5 * deg); // the smooth turn while held
+            w.turned(-3 * deg);
+            check(near(w.from(100 * deg, true), 108 * deg), "the live view less the push's turn");
+            check(near(w.from(100 * deg, false), 100 * deg), "snap mode: the live view");
+            // A landing re-latches the view from -36 to 136 between the push and the release: the snap is from 136.
+            SnapRealign l;
+            l.update(.01f, .9f, true, 45);
+            l.began();
+            const auto f = l.update(.016f, .1f, true, 45);
+            check(f.fire && near(l.from(136 * deg, true), 136 * deg), "the re-latched view, not the stale -36");
+            l.turned(10 * deg);
+            check(near(l.pushTurn, 0), "after the release nothing more counts");
+            l.update(.01f, .9f, true, 45);
+            l.began();
+            check(near(l.pushTurn, 0), "a new push starts from zero");
+        }
         // A long push is the smooth turn, no snap.
         s.update(.01f, -.9f, true, 30);
         for (int i = 0; i < 4; ++i)
@@ -260,13 +313,44 @@ int main() {
         w.update(f, 1'000'000'000);
         check(w.domain == hybrid_owner::Domain::vr, "Spidy's wall: never a perch");
     }
+    // ---- EASED BY GAP (G1 playtest): a big view-to-bone gap slews over longer, never faster than 250 ms.
+    {
+        const float d = 3.14159265f / 180.f;
+        check(HeadRide::enterSecondsFor(0) == HeadRide::enterSeconds &&
+                  HeadRide::enterSecondsFor(30 * d) == HeadRide::enterSeconds,
+              "gap under 40 degrees: the usual 250 ms");
+        const float t90 = HeadRide::enterSecondsFor(90 * d), t130 = HeadRide::enterSecondsFor(130 * d);
+        check(t90 > .5f && t90 < .6f && t130 > .8f && t130 < .85f, "90 degrees about 560 ms, 130 about 810 ms");
+        check(HeadRide::enterSecondsFor(180 * d) <= HeadRide::easeMaxSeconds &&
+                  HeadRide::enterSecondsFor(-130 * d) == t130 && HeadRide::enterSecondsFor(NAN) == HeadRide::enterSeconds,
+              "capped, either way round, unknown: usual");
+        // A 130 degree gap: the largest step of the yaw is the blend's peak rate (at most ~240 deg/s).
+        HeadRide r;
+        r.update(1.f / 90, true, 130 * d);
+        check(near(r.enterTime, t130), "the ride latched its blend at the start");
+        float prev = r.eased(), biggest = 0;
+        for (int i = 0; i < 100; ++i) {
+            r.update(1.f / 90, true, 10 * d); // the gap read later does not change the blend
+            biggest = std::max(biggest, r.eased() - prev);
+            prev = r.eased();
+        }
+        check(r.eased() == 1.f && biggest * 130.f * 90.f <= 240.f * 1.02f, "130 degrees: no faster than 240 deg/s");
+        // The same ride at a small gap is as it was.
+        HeadRide q;
+        q.update(1.f / 90, true, 20 * d);
+        check(near(q.enterTime, HeadRide::enterSeconds), "a 20 degree gap: 250 ms");
+    }
     // ---- Settings ----
     {
         vr_settings::Values v;
-        check(v.animHeadRide && v.shoulderLimit && v.snapRealign, "on by default");
+        // THE VIEW IS YOURS (polish pass, November 14): head ride and shoulder limit turn the view without
+        // the player, so they are off by default (still in the launcher); the snap realign is the player's.
+        check(!v.animHeadRide && !v.shoulderLimit && v.snapRealign, "head ride and shoulder limit off by default");
         vr_settings::Values p =
-            vr_settings::withTabOnly(vr_settings::Values{}, "anim_head_ride=0\nshoulder_limit=0\nsnap_realign=0\n");
-        check(!p.animHeadRide && !p.shoulderLimit && !p.snapRealign, "each turns off");
+            vr_settings::withTabOnly(vr_settings::Values{}, "anim_head_ride=1\nshoulder_limit=1\nsnap_realign=0\n");
+        check(p.animHeadRide && p.shoulderLimit && !p.snapRealign, "each can be switched");
+        check(vr_settings::rowFor(vr_settings::Item::animHeadRide) && vr_settings::rowFor(vr_settings::Item::shoulderLimit),
+              "both have launcher rows");
     }
     std::printf("camera mode: %d checks passed\n", passed);
     return 0;

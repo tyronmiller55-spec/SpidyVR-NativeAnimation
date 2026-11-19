@@ -113,20 +113,33 @@ inline RideWhy rideWanted(const RideIn& in) {
 // linear in time, shown eased (smoothstep).
 struct HeadRide {
     static constexpr float enterSeconds = .25f, exitSeconds = .2f;
+    // EASED BY GAP (G1 playtest: 37-52% of the landing rides started over 45 degrees between the view and the
+    // head bone, 23-37% over 90: a 250 ms slew of up to ~130 degrees). The blend takes as long as the slew needs
+    // at easeRate degrees a second of the smoothstep's peak (1.5 x the gap / the rate), never under the usual
+    // 250 ms (a gap under 40 degrees: as it was) and never over easeMaxSeconds.
+    static constexpr float easeRate = 240.f * (3.14159265f / 180.f), easeMaxSeconds = 1.2f;
+    static float enterSecondsFor(float gap) {
+        if (!std::isfinite(gap))
+            return enterSeconds;
+        return std::clamp(1.5f * std::abs(gap) / easeRate, enterSeconds, easeMaxSeconds);
+    }
     Mode mode = Mode::locomotion;
     float weight = 0;
     float age = 0; // seconds in the current mode
+    float enterTime = enterSeconds; // this ride's blend (enterSecondsFor the gap at its start)
     uint32_t enters = 0, exits = 0;
     struct Step {
         bool entered = false, exited = false;
     };
-    Step update(float dt, bool wanted) {
+    // gap: view minus head bone, radians (any wrap), read when the ride starts.
+    Step update(float dt, bool wanted, float gap = 0.f) {
         Step s;
         const float d = std::isfinite(dt) ? std::clamp(dt, 0.f, .1f) : 0.f;
         age += d;
         if (wanted && mode != Mode::animHeadRide) {
             mode = Mode::animHeadRide;
             age = 0;
+            enterTime = enterSecondsFor(wrap(gap));
             ++enters;
             s.entered = true;
         } else if (!wanted && mode == Mode::animHeadRide) {
@@ -136,7 +149,7 @@ struct HeadRide {
             s.exited = true;
         }
         if (mode == Mode::animHeadRide)
-            weight = std::min(1.f, weight + d / enterSeconds);
+            weight = std::min(1.f, weight + d / enterTime);
         else
             weight = std::max(0.f, weight - d / exitSeconds);
         return s;
@@ -231,11 +244,15 @@ inline float shouldersYaw(bool chestOk, float chestYaw, float heroYaw, bool* use
 // The right stick's tap left or right: one snap of the heading (SNAP TURN
 // degrees, 45 when that is 0), any number of times round the full 360, and
 // every tap a realign (game_xr: heading, model and headset re-synced). With
-// SMOOTH TURN on, a tap is out past 0.7 and back under 0.4 within 0.25 s (a
-// longer push is the smooth turn, as before); without it, the flick fires on
+// SMOOTH TURN on, a tap is out past 0.7 and back under 0.4 within `tapSeconds`
+// (snap_tap_ms, 120 ms; it was 0.25 s; a longer push is the smooth turn, as before); without it, the flick fires on
 // the way out (the old snap's feel). `turn`: radians, + left (the rig's yaw).
 struct SnapRealign {
-    static constexpr float on = .7f, off = .4f, tapSeconds = .25f;
+    static constexpr float on = .7f, off = .4f, defaultTapSeconds = .25f;
+    float tapSeconds = defaultTapSeconds;
+    static float tapSecondsOf(int ms) {
+        return static_cast<float>(std::clamp(ms, 60, 400)) * .001f;
+    }
     bool out = false;
     bool fired = false; // this push already fired (snap mode)
     float outFor = 0;
@@ -284,6 +301,19 @@ struct SnapRealign {
         out = fired = false;
         outFor = 0;
         sign = 0;
+        pushTurn = 0;
+    }
+    // SNAP FROM THE LIVE VIEW (Nov 17: realign #6 went to 9 with the view on 136): the view a smooth-mode
+    // tap returns to is the live view minus what this push's own smooth turn added - never a yaw latched
+    // at the push's start, which a landing's re-latch (another frame of yaw) makes stale.
+    float pushTurn = 0;
+    void turned(float by) {
+        if (out && std::isfinite(by))
+            pushTurn += by;
+    }
+    void began() { pushTurn = 0; }
+    float from(float viewNow, bool smooth) const {
+        return smooth ? viewNow - pushTurn : viewNow;
     }
 };
 

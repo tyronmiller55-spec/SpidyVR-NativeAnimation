@@ -370,6 +370,24 @@ std::atomic<uint64_t> camMs{};
 std::atomic<int> cameraMode{};
 std::atomic<uint64_t> lastCameraMs{};
 std::atomic<bool> viewOnCamera{};
+// SHOWTIME (showtime.hpp): the outside camera's level frame, published by the XR thread each frame while out. It is "on" while
+// it was refreshed in the last 250 ms, so a thread that stops publishing gives the eyes back to the head within a quarter second.
+std::atomic<float> showFrame[16];
+std::atomic<uint64_t> showMs{};
+// SHOWTIME: his head is shown (the head shrink stands down) while the XR thread keeps saying so (refreshed within 250 ms).
+std::atomic<uint64_t> headShownMs{};
+bool cameraNow(float* out);
+bool showtimeNow(float* out) {
+    const uint64_t t = showMs.load(std::memory_order_acquire);
+    if (!t || GetTickCount64() - t > 250)
+        return false;
+    for (int i = 0; i < 16; ++i)
+        out[i] = showFrame[i].load(std::memory_order_relaxed);
+    for (int i = 0; i < 16; ++i)
+        if (!std::isfinite(out[i]))
+            return false;
+    return true;
+}
 bool cameraNow(float* out) {
     const uint64_t t = camMs.load(std::memory_order_acquire);
     if (!t || GetTickCount64() - t > 500)
@@ -1960,13 +1978,57 @@ bool heroHead(Mat4& head) {
     std::memcpy(head.data(), world, sizeof(world));
     return true;
 }
+void showtimeFrame(const Mat4* frame) {
+    if (!frame) {
+        showMs.store(0, std::memory_order_release);
+        return;
+    }
+    for (int i = 0; i < 16; ++i)
+        showFrame[i].store((*frame)[i], std::memory_order_relaxed);
+    showMs.store(GetTickCount64(), std::memory_order_release);
+}
+void showtimeHead(bool shown) {
+    headShownMs.store(shown ? GetTickCount64() : 0, std::memory_order_release);
+}
+bool showtimeActive() {
+    float f[16];
+    return showtimeNow(f);
+}
+bool stockSeat(Vec3& position, float& yaw) {
+    float cam[16];
+    if (!cameraNow(cam))
+        return false;
+    for (int i = 0; i < 16; ++i)
+        if (!std::isfinite(cam[i]))
+            return false;
+    float ax = cam[8], az = cam[10];
+    if (ax * ax + az * az < .09f) {
+        const float s = cam[9] < 0 ? -1.f : 1.f;
+        ax = s * cam[4];
+        az = s * cam[6];
+    }
+    if (ax * ax + az * az < 1e-6f)
+        return false;
+    position = {cam[12], cam[13], cam[14]};
+    yaw = std::atan2(-ax, -az);
+    return true;
+}
 bool frame(Mat4& head) {
+    // SHOWTIME: the outside camera, as published; never turned by the view yaw lock (that is the head's).
+    if (float showing[16]; showtimeNow(showing)) {
+        std::memcpy(head.data(), showing, sizeof(showing));
+        return true;
+    }
     if (!heroHead(head))
         return false;
     // FULL head lock on the stable heading: gameplay only (a first-person
     // scene, or the scene's own camera, is never turned).
-    if (!wanted.load() && followHeroOn.load(std::memory_order_relaxed))
-        view_yaw_lock::turnHead(head, view_yaw_lock::live());
+    if (!wanted.load() && followHeroOn.load(std::memory_order_relaxed)) {
+        uint32_t action = 0;
+        const auto lock = view_yaw_lock::live(&action);
+        view_yaw_lock::noteUse(0, lock, action);
+        view_yaw_lock::turnHead(head, lock);
+    }
     return true;
 }
 bool sceneYaw(bool level, float& yaw) {
@@ -1977,6 +2039,10 @@ bool sceneYaw(bool level, float& yaw) {
     return std::isfinite(yaw);
 }
 bool frameLevel(Mat4& out) {
+    if (float showing[16]; showtimeNow(showing)) {
+        std::memcpy(out.data(), showing, sizeof(showing));
+        return true;
+    }
     Mat4 head{};
     if (!frame(head))
         return false;
@@ -2066,6 +2132,10 @@ bool shrinkJoints(float* joints, uintptr_t rig, uintptr_t a, uintptr_t b) {
 }
 } // namespace
 bool shrinkHead(float* joints, uintptr_t rig) {
+    // SHOWTIME, seen from outside: the pose job leaves his head as the game posed it. Nothing persists: the next job without
+    // this flag shrinks it again, so a stalled XR thread gives the head back to the view within a quarter second.
+    if (const uint64_t t = headShownMs.load(std::memory_order_acquire); t && GetTickCount64() - t <= 250)
+        return false;
     if (!wanted.load(std::memory_order_relaxed) && !followHeroOn.load(std::memory_order_relaxed))
         return false;
     const uintptr_t a = shrinkObject[0].load(std::memory_order_relaxed),
@@ -2081,6 +2151,9 @@ bool available() {
     if (mode != 2 && t && now - t < holdMs)
         return true;
     return mode != 0 && c && now - c < holdMs;
+}
+void note(const char* text) {
+    say(text);
 }
 bool note(uint32_t& seen, char* out, size_t size) {
     const uint32_t serial = noteSerial.load(std::memory_order_acquire);

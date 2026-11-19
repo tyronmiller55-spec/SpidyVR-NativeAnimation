@@ -156,8 +156,8 @@ int main() {
         check(v.punchViewEaseMs == 250, "default 250 ms");
         check(choose(Item::punchViewEase, 0, v) && v.punchViewEaseMs == 0, "OFF (SNAP)");
         const Row* row = rowFor(Item::punchViewEase);
-        check(row && row->choices.size() == 6 && std::strcmp(row->choices[0], "OFF (SNAP)") == 0 &&
-                  std::strcmp(row->choices[3], "250 MS") == 0,
+        check(row && row->choices.size() == 11 && std::strcmp(row->choices[0], "OFF (SNAP)") == 0 &&
+                  std::strcmp(row->choices[7], "250 MS (DEFAULT)") == 0,
               "choices");
         check(inactiveReason(Item::punchViewEase, v) == nullptr, "always available");
         bool listed = false;
@@ -165,6 +165,109 @@ int main() {
             listed = listed || item == Item::punchViewEase;
         check(listed, "on VR CAMERA & STABILIZATION");
         check(tabOnlyText(v).find("punch_view_ease_ms=0") != std::string::npos, "saved as punch_view_ease_ms");
+    }
+    // HEAD HEIGHT FADE (the owner, Nov 15): the height fades on its own over the longer time, the level part as before.
+    {
+        Ease e;
+        check(e.begin({.3f, .27f, 0}, .25f, .5f) && e.heightSeconds() == .5f && near(e.startHeight(), .27f) &&
+                  near(e.startOffset(), .3f),
+              "a split ease: 0.30 m level, 0.27 m height over 0.5 s");
+        Vec3 o = e.step(dt, {}, 0);
+        check(near(o.x, .3f, 3e-3f) && near(o.y, .27f), "the first frame holds the whole offset");
+        float t = dt;
+        while (t < .26f) {
+            o = e.step(dt, {}, 0);
+            t += dt;
+        }
+        check(e.active() && near(o.x, 0.f) && o.y > .005f && o.y < .27f * .2f,
+              "after the level ease is over, the height is still fading");
+        while (e.active() && t < 1.f) {
+            o = e.step(dt, {}, 0);
+            t += dt;
+        }
+        check(!e.active() && t < .55f && e.lastEnd() == End::finished, "the height is gone by 0.5 s");
+        Ease one;
+        check(one.begin({.3f, .27f, 0}, .25f, 0.f) && one.heightSeconds() == 0 && near(one.startOffset(), length(Vec3{.3f, .27f, 0})),
+              "0: one offset, as before");
+        Ease up;
+        check(up.begin({0, .27f, 0}, .25f, .5f) && finiteVec(up.step(dt, {}, 0)), "a height-only offset still eases");
+    }
+    // PUNCH CAMERA LOCK (the owner, Nov 15): the whole offset held through the hold, then the ease; the cancels still apply.
+    {
+        Ease e;
+        check(e.begin({0, 0, .4f}, .25f, 0.f, .3f) && e.holding() && near(e.holdSeconds(), .3f), "a held ease");
+        float t = 0;
+        Vec3 o{};
+        while (t < .25f) {
+            o = e.step(dt, {t * 3.f, 0, 0}, 0);
+            t += dt;
+        }
+        check(e.holding() && near(o.z, .4f, 1e-5f), "through the hold (moving 3 m/s): the whole offset, no bleed");
+        while (e.holding())
+            o = e.step(dt, {}, 0), t += dt;
+        o = e.step(dt, {}, 0);
+        check(e.active() && o.z < .4f && o.z > .3f, "after the hold, the ease begins");
+        while (e.active() && t < 2.f)
+            e.step(dt, {}, 0), t += dt;
+        check(!e.active() && e.lastEnd() == End::finished && t < .65f, "and ends within the ease after the hold");
+        Ease turned;
+        turned.begin({0, 0, .4f}, .25f, 0.f, .3f);
+        turned.step(dt, {}, 0);
+        turned.step(dt, {}, 1.f);
+        check(!turned.active() && turned.lastEnd() == End::turn, "a large turn in the hold still cancels");
+        Ease none;
+        check(none.begin({0, 0, .4f}, .25f) && !none.holding(), "no hold: as before");
+    }
+    // HANDOFF EASE CURVE (handoff_ease_curve 1): at rest at both ends, no jolt in, no motion bleed; ends on time.
+    {
+        check(near(remainingGentle(0, .25f), 1.f) && near(remainingGentle(.25f, .25f), 0.f) &&
+                  near(remainingGentle(.125f, .25f), .5f),
+              "gentle: 1 at the start, 0 at the end, half at half time");
+        Ease g, q;
+        g.begin({0, 0, .32f}, .25f, 0, 0, true);
+        q.begin({0, 0, .32f}, .25f);
+        g.step(dt, {}, 0);
+        q.step(dt, {}, 0);
+        const float g1 = g.step(dt, {}, 0).z, q1 = q.step(dt, {}, 0).z;
+        check(g.gentle() && !q.gentle(), "the curve is kept");
+        check(.32f - g1 < .005f && .32f - q1 > .02f, "the first frame of the glide: gentle moves under 5 mm, quick over 2 cm");
+        Ease moving;
+        moving.begin({0, 0, .32f}, .25f, 0, 0, true);
+        float t = 0, worst = 0, last = .32f;
+        Vec3 feet{};
+        while (moving.active() && t < 1.f) {
+            feet.x += 20.f * dt;
+            const float z = moving.step(dt, feet, 0).z;
+            worst = std::max(worst, std::abs(last - z) / dt);
+            last = z;
+            t += dt;
+        }
+        check(t > .24f && t < .27f, "gentle at 20 m/s: no bleed, ends on its own time");
+        check(worst < 1.875f * .32f / .25f + .05f, "its peak speed: 1.875 x average (smootherstep)");
+    }
+    // HANDOFF GLIDE SPEED: retime before the first frame keeps the offset, hold and curve; refused once it ran.
+    {
+        Ease e;
+        e.begin({.3f, .4f, 0}, .25f, .5f, 0, true);
+        check(e.retime(.5f, .8f) && near(e.duration(), .5f) && near(e.heightSeconds(), .8f) && e.gentle() &&
+                  near(e.startOffset(), .3f) && near(e.startHeight(), .4f),
+              "retimed: same offset and curve, new lengths");
+        e.step(dt, {}, 0);
+        check(!e.retime(1.f, 1.f), "not after the first frame");
+        Ease n;
+        n.begin({.3f, .4f, 0}, .25f, .5f);
+        check(n.retime(.6f, .5f) && n.heightSeconds() == 0 && near(n.startOffset(), .5f), "a level glide past the fade: one offset");
+    }
+    // HANDOFF SOFT PLACE (2 AM log, Nov 18): 3.9-11.2 m takeovers had no ease; now the last farKeep eases.
+    {
+        Ease e;
+        check(!e.begin({9.74f, 0, 0}, .25f), "9.7 m without farKeep: none (the old way)");
+        check(e.begin({9.74f, 0, 0}, .25f, 0, 0, true, 1.25f), "9.7 m with farKeep 1.25: an ease");
+        check(near(e.startOffset(), 1.25f) && near(e.farPlaced(), 8.49f), "the last 1.25 m eases, 8.49 m placed");
+        check(e.retime(.45f, 0) && near(e.farPlaced(), 8.49f) && near(e.startOffset(), 1.25f), "retime keeps it");
+        check(e.begin({2.f, 0, 0}, .25f, 0, 0, true, 1.25f) && near(e.startOffset(), 2.f) && e.farPlaced() == 0,
+              "under 3 m: all of it eases");
+        check(!e.begin({70.f, 0, 0}, .25f, 0, 0, true, 1.25f), "past 60 m: a teleport, none");
     }
     std::printf("punch view ease: %d checks passed\n", passed);
     return 0;

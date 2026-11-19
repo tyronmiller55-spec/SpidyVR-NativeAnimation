@@ -5,6 +5,7 @@
 #include "spidy/upper_frame.hpp"
 #include "spidy/tracking.hpp"
 #include "spidy/game_fp.hpp"
+#include "spidy/guard_pose.hpp"
 #include "spidy/hybrid_handoff.hpp"
 #include "spidy/arm_frame.hpp"
 #include "spidy/view_yaw_lock.hpp"
@@ -16,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <vector>
 #include <windows.h>
@@ -81,6 +83,7 @@ std::array<float, 2> overlayArmWeight{};
 bool overlayTorsoAssist{};
 Quat yieldTiltBody{}, yieldTiltHands{}; // ANIMATED AIR SPIN (setYieldTilt), world axes
 bool viewSoftlock{}; // midair softlock / headbone remap player frame
+float overlayTorsoTwist = body::Config{}.overlayTorsoYawMax; // setTorsoTwist
 SRWLOCK anchorLock = SRWLOCK_INIT;
 upper_frame::Anchor originalHead{};
 Quat actionJobTurn{};
@@ -100,6 +103,16 @@ bool airTuckHeld{};
 bool legControlOn{};
 std::array<body::Targets::LegAngles, 2> legControlAngles{};
 float legControlAmount = 1.f; // PASSIVE LEGS' shown share (setLegControl)
+// TORSO CHANNEL (setTorsoControl): mapped onto Targets::torsoControl when airborne.
+bool torsoControlOn{};
+body::Targets::TorsoAngles torsoControlAngles{};
+float torsoControlAmount = 1.f;
+// GROUND KICKS (setGroundKick): the standing kick's leg, mapped onto Targets::groundKick in the armsOnly path.
+bool groundKickOn{};
+int groundKickLeg{};
+Vec3 groundKickFoot{};
+float groundKickShare{};
+float heroArmsShare{}; // SHOWTIME ARMS (setHeroArms)
 // ANIMATED HYBRID jump / air adopt (beginJumpAdopt): wanted since this tick (0 none), the live
 // pose snapshot taken at the first bodyOn job, and that first frame's result.
 uint64_t adoptWantedTick{};
@@ -208,10 +221,10 @@ bool toModel(float* out, uintptr_t local, uintptr_t joints, uint32_t count) {
 // Reads the rig's joints and builds its rest pose with the game's own
 // conversion. A root (parent -1) is placed from the matrix before the first
 // joint, which must be the identity.
-bool readRig(uintptr_t rig, RigData& out) {
+bool readRig(uintptr_t rig, RigData& out, uint32_t most = native_body::maxJoints) {
     uint16_t count{};
     const auto joints = pointer(rig + 8), rest = pointer(rig + 0x18);
-    if (!read(rig + 2, &count, 2) || !count || count > native_body::maxJoints || !joints || !rest)
+    if (!read(rig + 2, &count, 2) || !count || count > most || !joints || !rest)
         return false;
     std::vector<uint8_t> table(count * 16ull);
     if (!read(joints, table.data(), table.size()))
@@ -536,7 +549,10 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
         trackingYaw = wanted.trackingYaw;
         trackingYawSet = true;
     }
-    const bool armsBlend = !on && !armsOverlayOn && (state.armWeight[0] > .001f || state.armWeight[1] > .001f);
+    const bool groundKickLive = live && !on && groundKickOn;
+    const bool armsBlend = !on && !armsOverlayOn &&
+                           (state.armWeight[0] > .001f || state.armWeight[1] > .001f || groundKickLive ||
+                            state.groundKickWeight > .001f);
     if (!problem && (on || armsOverlayOn || armsBlend || spinOn || state.weight > 0)) {
         if (on) {
             // World axes relative to the feet into the hero's model space.
@@ -612,6 +628,10 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
             t.legControl = airLegs && legControlOn;
             t.legAngles = legControlAngles;
             t.legAmount = legControlAmount;
+            t.torsoControl = airLegs && torsoControlOn;
+            t.torso = torsoControlAngles;
+            t.torsoAmount = torsoControlAmount;
+            t.heroArms = heroArmsShare;
             t.eyes = toModel.rotate(wanted.eyes);
             t.facing = toModel * wanted.facing;
             if (const Quat tilt = wanted.tilt; tilt.x != 0 || tilt.y != 0 || tilt.z != 0)
@@ -637,6 +657,11 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
             }
             t.viewSoftlock = viewSoftlock;
             t.up = toModel.rotate(Vec3{0, 1, 0});
+            t.groundKick = groundKickLive && finite(groundKickFoot);
+            t.groundKickLeg = groundKickLeg;
+            t.groundKickAt = t.groundKick ? toModel.rotate(groundKickFoot) : Vec3{};
+            t.groundKickWeight = groundKickShare;
+            t.heroArms = heroArmsShare;
             t.eyes = toModel.rotate(wanted.eyes);
             t.facing = toModel * wanted.facing;
             for (int i = 0; i < 2; ++i) {
@@ -666,6 +691,7 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
                     lock.heroYaw = view.lockHero;
                     lock.ride = view.lockRide;
                     lock.limit = view.lockLimit;
+                    view_yaw_lock::noteUse(2, lock, view.lockAction);
                     view_yaw_lock::turnModel(anchor, toWorld, lock);
                 }
                 if (valid) {
@@ -713,6 +739,7 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
         config.hideHead = upper_frame::hideHead((wanted.flags & native_body::hideHead) != 0,
             armsOverlayOn, game_fp::followingHero());
         config.handOrientation = wanted.flags & native_body::handTurn;
+        config.overlayTorsoYawMax = overlayTorsoTwist;
         // The player's size: their T-pose calibration's eye height and arm,
         // or the headset's running height and the hero's own arms.
         heroProportions = body_calibration::proportions(cache.ik);
@@ -885,7 +912,20 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
         overlayTrackingSample.playerYaw = state.overlayPlayerYaw;
         overlayTrackingSample.remapped = armsOverlayOn && !lastTargets.viewMapped ? 1u : 0u;
         overlayTrackingSample.softlock = state.overlaySoftlock ? 1u : 0u;
+        overlayTrackingSample.chestTwist = state.overlayTorsoYaw;
+        overlayTrackingSample.twistWanted = state.overlayTwistWanted;
+        overlayTrackingSample.twistCap = state.overlayTwistCap;
+        overlayTrackingSample.twistShare = state.overlayTwistShare;
+        overlayTrackingSample.armScale[0] = state.overlayArmScale[0];
+        overlayTrackingSample.armScale[1] = state.overlayArmScale[1];
     }
+    if (result.solved)
+        for (int i = 0; i < 2; ++i) {
+            overlayTrackingSample.armFactor[i] = state.armFactor[i];
+            overlayTrackingSample.elbowDeg[i] = state.elbow[i].degrees;
+            overlayTrackingSample.elbowFlips[i] = state.elbow[i].flips;
+            overlayTrackingSample.elbowHeld[i] = state.elbow[i].held;
+        }
     if (probing) {
         // And as the body left it, then published (its own lock, a copy).
         probe.solved = result.solved && (on || armsOverlayOn || armsBlend || spinOn);
@@ -922,6 +962,108 @@ void solveHero(float* out, uintptr_t job, uintptr_t instance) {
         d.solveMs += static_cast<double>(finished.QuadPart - started.QuadPart) * 1000 / frequency.QuadPart;
     });
 }
+// ---- the guarding enemy's pose (guard_pose.hpp)
+// ----------------------------------------------------------------- The headset side posts what each enemy is
+// doing (native_body::guardPose); every pose job whose joints are an enemy's with a cue puts his arms up /
+// swings his arm after the game has written them. The cues are few and short.
+SRWLOCK guardLock = SRWLOCK_INIT;
+guard_pose::Table guardTable;      // under guardLock
+std::atomic<uint32_t> guardLive{}; // cues with something to show: the check every pose job makes first
+std::atomic<uint32_t> guardPosts{}, guardMatched{}, guardPosed{}, guardWarned{};
+// The rigs the cues' enemies have been read as (under guardLock): the key is what the rig's table pointers
+// said when it was read. A rig that could not be posed stays in, with its reason, so it is not read again
+// every job.
+struct GuardRig {
+    uintptr_t rig{}, table{}, restTable{};
+    uint32_t count{};
+    uint64_t used{};
+    std::shared_ptr<const guard_pose::Rig> data;
+};
+std::array<GuardRig, 8> guardRigs;
+uint64_t guardRigUses{};
+
+double secondsNow() {
+    static const double hz = [] {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return static_cast<double>(f.QuadPart);
+    }();
+    LARGE_INTEGER t{};
+    QueryPerformanceCounter(&t);
+    return hz > 0 ? static_cast<double>(t.QuadPart) / hz : 0.;
+}
+// The enemy's rig as the pose needs it: null when it cannot be posed (the reason goes to the log once).
+std::shared_ptr<const guard_pose::Rig> guardRigOf(uintptr_t rig) {
+    uint16_t count{};
+    read(rig + 2, &count, sizeof(count));
+    const uintptr_t table = pointer(rig + 8), restTable = pointer(rig + 0x18);
+    AcquireSRWLockShared(&guardLock);
+    for (const auto& g : guardRigs)
+        if (g.rig == rig && g.table == table && g.restTable == restTable && g.count == count) {
+            auto found = g.data;
+            ReleaseSRWLockShared(&guardLock);
+            return found;
+        }
+    ReleaseSRWLockShared(&guardLock);
+    RigData data;
+    std::shared_ptr<const guard_pose::Rig> made;
+    guard_pose::Why why = guard_pose::Why::shape;
+    if (readRig(rig, data, 1024)) {
+        auto fresh = std::make_shared<guard_pose::Rig>();
+        why = guard_pose::prepare(*fresh, data.parent, data.hash, data.rest);
+        if (why == guard_pose::Why::ok)
+            made = fresh;
+    }
+    char line[160];
+    std::snprintf(line, sizeof(line), "guard pose: a rig of %u joints %s", static_cast<unsigned>(count),
+                  made ? "can be posed" : guard_pose::whyName(why));
+    game_fp::note(line);
+    AcquireSRWLockExclusive(&guardLock);
+    GuardRig* slot = &guardRigs[0];
+    for (auto& g : guardRigs)
+        if (g.used < slot->used)
+            slot = &g;
+    *slot = {rig, table, restTable, count, ++guardRigUses, made};
+    ReleaseSRWLockExclusive(&guardLock);
+    return made;
+}
+bool poseGuarded(float* joints, const guard_pose::Rig* rig, const guard_pose::Eval& eval) {
+    __try {
+        return guard_pose::apply(joints, *rig, eval);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// A pose job: if its joints are those of an enemy with a cue, pose them.
+void guardPoseJob(float* out, uintptr_t job) {
+    if (!guardLive.load(std::memory_order_relaxed))
+        return;
+    const double now = secondsNow();
+    std::array<guard_pose::Table::Slot, guard_pose::Table::slots> cues;
+    AcquireSRWLockShared(&guardLock);
+    const size_t n = guardTable.live(now, cues);
+    ReleaseSRWLockShared(&guardLock);
+    if (!n) {
+        AcquireSRWLockExclusive(&guardLock);
+        guardLive = static_cast<uint32_t>(guardTable.prune(now));
+        ReleaseSRWLockExclusive(&guardLock);
+        return;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const uintptr_t entity = pointer(cues[i].record);
+        if (!entity || pointer(entity + 0xd8) != reinterpret_cast<uintptr_t>(out))
+            continue;
+        guardMatched.fetch_add(1, std::memory_order_relaxed);
+        const uintptr_t rigAt = pointer(job + 0x28);
+        if (!rigAt)
+            return;
+        const auto rig = guardRigOf(rigAt);
+        const guard_pose::Eval eval = guard_pose::evaluate(cues[i].cue, now);
+        if (rig && eval.any() && poseGuarded(out, rig.get(), eval))
+            guardPosed.fetch_add(1, std::memory_order_relaxed);
+        return; // a job is one skeleton
+    }
+}
 float writer(float* out, void* job) {
     const float moved = originalWriter(out, job);
     if (!enabled.load(std::memory_order_relaxed))
@@ -933,6 +1075,8 @@ float writer(float* out, void* job) {
         solveHero(out, reinterpret_cast<uintptr_t>(job), instance);
     // A first-person scene: the head of the character the view is on shrinks away, as the player's does.
     game_fp::shrinkHead(out, pointer(reinterpret_cast<uintptr_t>(job) + 0x28));
+    // An enemy with a cue (a guard, a counter) is posed.
+    guardPoseJob(out, reinterpret_cast<uintptr_t>(job));
     return moved;
 }
 } // namespace
@@ -997,6 +1141,21 @@ uint32_t native_body::start(uintptr_t gameBase) {
 }
 void native_body::retarget(uintptr_t heroRecord) {
     record = heroRecord;
+}
+void native_body::guardPose(uint64_t enemyRecord, uint32_t move, float strength) {
+    if (!enemyRecord)
+        return;
+    const double now = secondsNow();
+    AcquireSRWLockExclusive(&guardLock);
+    guardTable.post(enemyRecord, move, strength, now);
+    guardLive = static_cast<uint32_t>(guardTable.prune(now));
+    ReleaseSRWLockExclusive(&guardLock);
+    // Several cues and not one pose job has matched an enemy's joints: the layout this reads them by is not
+    // the game's for enemies. Said once, for the log.
+    const uint32_t posts = guardPosts.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (posts >= 4 && !guardMatched.load(std::memory_order_relaxed) && !guardWarned.exchange(1))
+        game_fp::note("guard pose: four cues and no pose job has had an enemy's joints (the body hook may be "
+                      "off, or an enemy's joints are not where a pose job has them)");
 }
 void native_body::resyncAfterYield() {
     AcquireSRWLockExclusive(&solveLock);
@@ -1087,6 +1246,13 @@ void native_body::setYieldTilt(Quat bodyTilt, Quat handTilt) {
     ReleaseSRWLockExclusive(&solveLock);
 }
 
+void native_body::setTorsoTwist(float maxRadians) {
+    AcquireSRWLockExclusive(&solveLock);
+    overlayTorsoTwist = std::isfinite(maxRadians) ? std::clamp(maxRadians, 0.f, 1.5707963f)
+                                                  : body::Config{}.overlayTorsoYawMax;
+    ReleaseSRWLockExclusive(&solveLock);
+}
+
 void native_body::setViewSoftlock(bool on) {
     AcquireSRWLockExclusive(&solveLock);
     viewSoftlock = on;
@@ -1105,6 +1271,25 @@ void native_body::setAirMomentum(const Vec3& worldVelocity) {
     ReleaseSRWLockExclusive(&solveLock);
 }
 
+void native_body::setGroundKick(bool on, int leg, Vec3 foot, float weight) {
+    AcquireSRWLockExclusive(&solveLock);
+    groundKickOn = on && finite(foot);
+    if (groundKickOn) {
+        groundKickLeg = leg == 0 ? 0 : 1;
+        groundKickFoot = foot;
+        groundKickShare = std::isfinite(weight) ? std::clamp(weight, 0.f, 1.f) : 0.f;
+    } else {
+        groundKickShare = 0.f;
+    }
+    ReleaseSRWLockExclusive(&solveLock);
+}
+
+void native_body::setHeroArms(float weight) {
+    AcquireSRWLockExclusive(&solveLock);
+    heroArmsShare = std::isfinite(weight) ? std::clamp(weight, 0.f, 1.f) : 0.f;
+    ReleaseSRWLockExclusive(&solveLock);
+}
+
 void native_body::setTuck(bool held) {
     AcquireSRWLockExclusive(&solveLock);
     airTuckHeld = held;
@@ -1119,6 +1304,23 @@ void native_body::setLegControl(bool on, const std::array<body::Targets::LegAngl
         legControlAmount = std::isfinite(amount) ? std::clamp(amount, 0.f, 1.f) : 1.f;
     }
     ReleaseSRWLockExclusive(&solveLock);
+}
+
+void native_body::setTorsoControl(bool on, const body::Targets::TorsoAngles& torso, float amount) {
+    AcquireSRWLockExclusive(&solveLock);
+    torsoControlOn = on;
+    if (on) {
+        torsoControlAngles = {body::torsoAngle(torso.pitch), body::torsoAngle(torso.roll), body::torsoAngle(torso.yaw)};
+        torsoControlAmount = std::isfinite(amount) ? std::clamp(amount, 0.f, 1.f) : 1.f;
+    }
+    ReleaseSRWLockExclusive(&solveLock);
+}
+
+float native_body::torsoWeight() {
+    AcquireSRWLockShared(&solveLock);
+    const float w = state.torsoWeight;
+    ReleaseSRWLockShared(&solveLock);
+    return w;
 }
 
 float native_body::tuckWeight() {

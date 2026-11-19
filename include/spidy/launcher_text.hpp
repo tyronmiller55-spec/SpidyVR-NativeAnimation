@@ -489,6 +489,10 @@ inline std::wstring quoteArgument(std::wstring_view argument) {
 // them since October 8 (run_game_vr.py's switches still turn them off). So
 // are the swing's own walls and the view standing on them: no "Wall running"
 // since October 25 (--no-wall-run, --no-stand-on-walls).
+// RENDER MEMORY (the ini's render_memory_mb, tools/vr_launcher.py's RENDER_RING_MB): the per-frame graphics
+// memory pool Spidy's module gives the game, megabytes; native_render_memory.cpp takes 128 to 1024.
+inline constexpr int defaultRenderMemoryMb = 512, minimumRenderMemoryMb = 128, maximumRenderMemoryMb = 1024;
+
 struct SessionOptions {
     bool smallWindow = true;
     bool stockMonitorView = false;
@@ -537,6 +541,10 @@ struct SessionOptions {
     // How often the game window gets your left eye in immersive VR: pictures a second, 0 for every frame
     // (monitor_rate.hpp). Each one costs the graphics card time the headset could have.
     int monitorRate = static_cast<int>(defaultMonitorRate);
+    // The game's per-frame graphics memory pool, megabytes (128-1024; the game's own is 128): the ini's
+    // render_memory_mb. 512 by default: the playtests' two frames used at most 95 MB of it (November 2026), too few
+    // heavy fights to go lower yet; a lower pool frees graphics memory, one too small spills frames.
+    int renderMemoryMb = defaultRenderMemoryMb;
     bool operator==(const SessionOptions&) const = default;
 };
 
@@ -552,10 +560,12 @@ inline bool calibrated(const SessionOptions& options) {
 // Arguments after the script for tools/run_game_vr.py, for an untimed session
 // that starts the game itself (or uses the one already running). closeGame:
 // the player agreed to close a running game that already holds Spidy
-// (kCloseGameExit), and the session does that first.
+// (kCloseGameExit), and the session does that first. gameExe: the Spider-Man.exe
+// the launcher found or was shown; the session starts it through the store that
+// installed it (an Epic copy beside a Steam one, GitHub issue #84).
 inline std::vector<std::wstring> sessionArguments(const SessionOptions& options, std::wstring_view report,
                                                   std::wstring_view runtime, std::wstring_view stopEvent,
-                                                  bool closeGame = false) {
+                                                  bool closeGame = false, std::wstring_view gameExe = {}) {
     std::vector<std::wstring> args{L"--auto-launch", L"--seconds", L"0", L"--swing-speed",
                                    std::to_wstring(std::clamp(options.swingSpeed, 1, 65)), L"--output",
                                    std::wstring(report)};
@@ -608,7 +618,9 @@ inline std::vector<std::wstring> sessionArguments(const SessionOptions& options,
         {std::clamp(options.hud, 0, 3), {L"--hud", 2}},
         {std::clamp(options.flipSpeed, 90, 480), {L"--flip-speed", 180}},
         {std::clamp(options.monitorRate, 0, static_cast<int>(maximumMonitorRate)),
-         {L"--monitor-rate", static_cast<int>(defaultMonitorRate)}}};
+         {L"--monitor-rate", static_cast<int>(defaultMonitorRate)}},
+        {std::clamp(options.renderMemoryMb, minimumRenderMemoryMb, maximumRenderMemoryMb),
+         {L"--render-memory-mb", defaultRenderMemoryMb}}};
     for (const auto& [value, flag] : settings)
         if (value != flag.second) {
             args.emplace_back(flag.first);
@@ -624,6 +636,10 @@ inline std::vector<std::wstring> sessionArguments(const SessionOptions& options,
     }
     if (closeGame)
         args.emplace_back(L"--close-game");
+    if (!gameExe.empty()) {
+        args.emplace_back(L"--game-exe");
+        args.emplace_back(gameExe);
+    }
     return args;
 }
 

@@ -61,6 +61,12 @@ bool handValid(const TrackedHand& h) {
     return h.valid && validTrackedPose(h.aim) && validTrackedPose(h.grip) && std::isfinite(h.trigger) &&
            std::isfinite(h.squeeze) && std::isfinite(h.stickX) && std::isfinite(h.stickY);
 }
+// A controller's stick counts whether or not the headset sees the controller:
+// an arm at the side or behind the head loses its pose, not its stick (issue
+// #81). Only what needs where the hand is waits for handValid.
+bool stickValid(const TrackedHand& h) {
+    return std::isfinite(h.stickX) && std::isfinite(h.stickY);
+}
 Mat4 worldPose(Pose pose) {
     const Vec3 x = pose.orientation.rotate({1, 0, 0}), y = pose.orientation.rotate({0, -1, 0}),
                z = pose.orientation.rotate({0, 0, -1}), p = pose.position;
@@ -171,6 +177,8 @@ Quat FlipMotion::update(const Sample& sample) {
     else if (!pushed)
         stickReady_ = true;
 
+    if (launchLeft_ > 0 && (!air || landed || (press && air && !sample.controlled)))
+        launchLeft_ = 0; // a launched turn ends with the landing (or basic flips' A, which uprights)
     if (press && air && !sample.controlled) {
         toLevel();
         returnRate_ = returnRate;
@@ -178,6 +186,14 @@ Quat FlipMotion::update(const Sample& sample) {
         if (phase_ != Phase::level && phase_ != Phase::settling)
             toLevel();
         returnRate_ = 2 * returnRate;
+    } else if (air && launchLeft_ > 0) {
+        // GROUND FLIPS: the launched turn, at its rate, about its axis (as a stick's turn is applied).
+        const float step = std::min(launchLeft_, launchRate_ * dt);
+        launchLeft_ -= step;
+        if (phase_ == Phase::level || phase_ == Phase::settling)
+            phase_ = Phase::held;
+        tilt_ = unit(tilt_ * Quat::around(launchAxis_, step));
+        turned_ += step;
     } else if (air && canSteer && stickReady_ && pushed && !resetHeld_) {
         if (phase_ == Phase::level)
             turned_ = 0;
@@ -238,12 +254,18 @@ Input trackedSwingInput(const XrFrame& f, const Rig& rig, bool triggerWebs) {
         const float reel = triggerWebs ? hand.squeeze : hand.trigger;
         // The hand aims from its web shooter where it points (webShooter),
         // not along the controller's aim pose.
-        if (handValid(hand))
+        if (handValid(hand)) {
             input.hands[i] = {rig.toWorld(webShooter(hand.grip, i)), hand.grip.position - f.head.position,
                               true, std::clamp(reel, 0.f, 1.f), std::clamp(web, 0.f, 1.f)};
+        } else if (std::isfinite(web) && std::isfinite(reel)) {
+            // The headset lost the hand, not its buttons (HandInput::lost).
+            input.hands[i].lost = true;
+            input.hands[i].trigger = std::clamp(reel, 0.f, 1.f);
+            input.hands[i].grip = std::clamp(web, 0.f, 1.f);
+        }
     }
     const auto& move = f.hands[0];
-    if (handValid(move) && std::hypot(move.stickX, move.stickY) > .2f) {
+    if (stickValid(move) && std::hypot(move.stickX, move.stickY) > .2f) {
         // Ahead of the player as they stand, a flip's tilt aside.
         const auto forward = horizontal(Quat::yaw(rig.yaw).rotate(f.head.orientation.rotate({0, 0, -1})));
         input.move = limited(cross(forward, {0, 1, 0}) * move.stickX + forward * move.stickY, 1);
@@ -290,12 +312,14 @@ float GameTrackingRig::lockToFeet(Vec3 feet, Vec3 worldEyes, float worldLookYaw,
         return 0.f;
     return std::hypot(worldEyes.x - feet.x, worldEyes.z - feet.z);
 }
-bool GameTrackingRig::beginViewEase(Vec3 worldEyes, const Pose& head, float seconds) {
+bool GameTrackingRig::beginViewEase(Vec3 worldEyes, const Pose& head, float seconds, float verticalSeconds,
+                                    float holdSeconds, bool gentle, float farKeep) {
     if (!finite(worldEyes) || !validTrackedPose(head) || !finite(rig_.origin) || !std::isfinite(rig_.yaw)) {
         viewEase_.cancel(view_ease::End::handoff);
         return false;
     }
-    return viewEase_.begin(worldEyes - rig_.toWorld(head).position, seconds);
+    return viewEase_.begin(worldEyes - rig_.toWorld(head).position, seconds, verticalSeconds, holdSeconds, gentle,
+                           farKeep);
 }
 float GameTrackingRig::residualAcross(const Pose& head, Vec3 feet) const {
     return hybrid_handoff::residualAcross(rig_.origin, rig_.yaw, head.position, feet);
@@ -361,6 +385,7 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     if (out.inactive) {
         wallRoll_.suspend();
         handCollision_.reset();
+        recoil_.reset();
         handstand_.reset();
         handstandOut_ = {};
         handstandSampled_ = false;
@@ -497,7 +522,7 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     const bool basicFlipAir = flips_ && !controlledFlips_ && !autoSettings_.enabled &&
                               airborne && !holds && !onSurface;
     out.basicFlipControls = basicFlipAir;
-    const float turn = handValid(f.hands[1]) && !legStick_ ? f.hands[1].stickX : 0;
+    const float turn = stickValid(f.hands[1]) && !legStick_ ? f.hands[1].stickX : 0;
     // A stick held into play turns nothing until it is let go: out of a menu,
     // or through a stutter after a snap it already made. A smooth turn goes
     // on through a stutter.
@@ -547,11 +572,11 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     // A flip tilts the tracking space about the head where it began.
     FlipMotion::Sample flip;
     flip.jump = f.jump;
-    flip.airborne = airborne && !holds;
+    flip.airborne = (airborne || (groundFlipOff_ && (groundFlipWait_ > 0 || groundFlipLive_))) && !holds;
     flip.surface = onSurface || holds;
     flip.controlled = controlledFlips_ && !autoSettings_.enabled;
     const auto& flipHand = f.hands[autoSettings_.enabled || controlledFlips_ ? 0 : 1];
-    flip.stickTracked = handValid(flipHand);
+    flip.stickTracked = stickValid(flipHand);
     if (flip.stickTracked) {
         flip.stickX = flipHand.stickX;
         flip.stickY = flipHand.stickY;
@@ -574,6 +599,8 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
         auto flight = flight_;
         RealisticControls controls;
         const bool air = flip.airborne && !flip.surface;
+        if (air && (groundFlipLive_ || groundFlipWait_ > 0))
+            flight.fighting = false; // GROUND FLIPS: a fight does not calm a ground flip's spin (below)
         if (f.jump && !automaticBrakeHeld_)
             automaticBrakeFromAir_ = air;
         if (!f.jump || !air)
@@ -610,6 +637,27 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
             flight.supportTilt = handstand::supportTilt(handstandCatchTilt_, leanLocal, handstandParams_.comHeight);
             flight.supportAngular = {};
         }
+        // GROUND FLIPS: a flip jump's spin, on his first frame off the ground (the flip system from then on).
+        if (groundFlipWait_ > 0) {
+            if (air) {
+                automatic_.release(Quat::yaw(-rig_.yaw).rotate(groundFlipSpin_));
+                automaticHands_.reset();
+                groundFlipWait_ = 0;
+                groundFlipLive_ = true;
+                ++groundFlipsReleased_;
+            } else {
+                groundFlipWait_ -= std::isfinite(f.seconds) ? std::clamp(f.seconds, 0.f, .1f) : .1f;
+                if (groundFlipWait_ <= 0) {
+                    groundFlipWait_ = 0;
+                    ++groundFlipsLapsed_;
+                }
+            }
+        }
+        if (!air)
+            groundFlipLive_ = false;
+        // A ground flip's spin goes on in a fight (the owner, Nov 18): FLIPS IN COMBAT off does not calm it.
+        if (groundFlipLive_)
+            flight.fighting = false;
         rig_.tilt = automatic_.update(flight, flip.airborne, flip.surface, rig_.yaw, f.seconds, autoSettings_,
                                       controls);
         // Where the spin leaves the player facing is the heading: the yaw
@@ -627,11 +675,26 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
             rig_.tilt = automatic_.orientation();
         }
     } else if (flips_ || controlledFlips_) {
+        // GROUND FLIPS with CONTROLLED or basic FLIPS: one full turn at the flip jump's rate from his first frame off the
+        // ground (FlipMotion::launch); the landing uprights it as any flip's tilt.
+        if (groundFlipWait_ > 0) {
+            if (flip.airborne && !flip.surface) {
+                flip_.launch(Quat::yaw(-rig_.yaw).rotate(groundFlipSpin_), 6.2831853f);
+                groundFlipWait_ = 0;
+                ++groundFlipsReleased_;
+            } else {
+                groundFlipWait_ -= std::isfinite(f.seconds) ? std::clamp(f.seconds, 0.f, .1f) : .1f;
+                if (groundFlipWait_ <= 0)
+                    groundFlipWait_ = 0, ++groundFlipsLapsed_;
+            }
+        }
         automatic_.reset();
         automaticHands_.reset();
         rig_.tilt = flip_.update(flip);
         out.controlledFlipControls = controlledFlipAir && flip_.active();
     } else {
+        if (groundFlipWait_ > 0)
+            groundFlipWait_ = 0, ++groundFlipsLapsed_;
         automatic_.reset();
         automaticHands_.reset();
         flip_.reset(f.jump);
@@ -641,14 +704,14 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     // eyes, each frame the short way from where its up is, so a corner's
     // next face turns it on from the wall it is on; back level, what is left
     // is a turn about the vertical, which the tracking space keeps.
-    const bool walks = handValid(f.hands[0]) && std::hypot(f.hands[0].stickX, f.hands[0].stickY) > .2f;
+    const bool walks = stickValid(f.hands[0]) && std::hypot(f.hands[0].stickX, f.hands[0].stickY) > .2f;
     // Crossing the stick's centre to reverse must not restart the camera
     // transition. A sustained release still returns to the close climb view.
     runIdleSeconds_ = walks ? 0.f : std::min(.1f, runIdleSeconds_ + f.seconds);
     // A hold may also describe ground or a walkable slope. Only wall/ceiling
     // contact may align the camera when the left stick starts moving.
     const bool runSurface = holds && held.y < surfaceEnterCos;
-    const bool wallRun = handClimb_ && !ventCrawl && runSurface && handValid(f.hands[0]) && !f.jump &&
+    const bool wallRun = handClimb_ && !ventCrawl && runSurface && stickValid(f.hands[0]) && !f.jump &&
                          (walks || (wallRunning_ && runIdleSeconds_ < .1f));
     if (wallRun && !wallRunning_) {
         // Capture the direction visible BEFORE the wall-floor transition
@@ -929,6 +992,21 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
         placed.tilt = unit(yaw.conjugate() * roll * yaw * placed.tilt);
         placed.origin += unbankedHead.position - placed.toWorld(f.head).position;
     }
+    // VR STABILIZATION (vr_stabilize.hpp): the view tilt levelled by PITCH, ROLL and HORIZON LEVEL and eased
+    // by the bank's ANGLE, about the player's head: the headset's own look, the yaw and where he is are
+    // untouched. A surface's tilt (a wall, a vent) is deliberate: eased, never levelled.
+    {
+        const Pose beforeStabilize = placed.toWorld(f.head);
+        const bool surfaceTilt = onSurface || ventCrawl || rollView || turned;
+        const auto stable =
+            vrTilt_.apply(Quat::yaw(placed.yaw), placed.tilt, f.seconds, vrStab_, surfaceTilt);
+        if (stable.changed) {
+            placed.tilt = stable.tilt;
+            placed.origin += beforeStabilize.position - placed.toWorld(f.head).position;
+        }
+        out.vrTiltRaw = stable.rawDegrees;
+        out.vrTiltShown = stable.shownDegrees;
+    }
     const bool pressing = handClimb_ && holds && !standing_ && !wallRun &&
                           (ventCrawl || std::abs(held.y) < .5f) && !f.jump &&
                           (surface.speed < 3.f || f.hands[0].squeeze > .35f || f.hands[1].squeeze > .35f);
@@ -948,6 +1026,11 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     out.handPush = handCollision_.update(f.seconds, pressing || handstandProbe, placed.toWorld(f.head), rawGrips,
                                          tracked);
     placed.origin += out.handPush;
+    // A blow the guard stopped knocks the view back a little, and it comes home (Recoil). The world's "back"
+    // is not the way on a surface the view stands on or the player is held on, so there a kick in flight
+    // stops pulling and the view eases home; the eyes' clearance below sees the placement as it is with it.
+    out.recoil = recoil_.update(f.seconds, !holds && !standing_);
+    placed.origin += out.recoil;
     // The eyes out of what the world is built of (HeadClearance), and the
     // hands, the webs and the body with them: they stay where the eyes see
     // them.
@@ -1013,7 +1096,7 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
     }
     if (out.releaseWebs)
         for (auto& hand : out.swing.hands)
-            hand.tracked = false;
+            hand.tracked = hand.lost = false;
     const auto head = placed.toWorld(f.head);
     out.head = worldPose(head);
     out.headPose = head;
@@ -1055,6 +1138,9 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
         in.floorKnown = std::isfinite(handstandFloorY_);
         in.floorY = in.floorKnown ? handstandFloorY_ : 0.f;
         in.tracked = validTrackedPose(f.head) && handValid(f.hands[0]) && handValid(f.hands[1]);
+        in.headKnown = validTrackedPose(f.head);
+        if (in.headKnown)
+            in.head = placed.toWorld(f.head).position;
         in.grip = (handValid(f.hands[0]) && f.hands[0].squeeze > .6f) ||
                   (handValid(f.hands[1]) && f.hands[1].squeeze > .6f);
         in.floorPalms = handCollision_.floorContacts(out.grips);
@@ -1062,6 +1148,10 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
         for (unsigned i = 0; i < 2; ++i) {
             in.palms[i] = out.grips[i].position;
             normal += handCollision_.floorNormal(i);
+            // ARMS: the palm from the head as the player holds it (tracking space, the rig's yaw frame).
+            in.palmRelKnown[i] = handValid(f.hands[i]) && validTrackedPose(f.head);
+            if (in.palmRelKnown[i])
+                in.palmRel[i] = f.hands[i].grip.position - f.head.position;
         }
         in.floorNormal = length(normal) > .5f ? normalized(normal) : Vec3{0, 1, 0};
         const Quat world = placed.orientation();
@@ -1090,8 +1180,21 @@ GameMotionFrame GameTrackingRig::update(const XrFrame& f, Vec3 feet, Vec3 gameFo
             in.aim = (yaw.rotate({1, 0, 0}) * f.hands[0].stickX + yaw.rotate({0, 0, -1}) * f.hands[0].stickY) *
                      handstandParams_.stickLean;
         }
+        // LEAP OUT (handstand.hpp): A, the left stick held hard, and where the player looks (the head's level direction in
+        // the world; the rig's heading when it points up or down).
+        in.jump = f.jump;
+        in.stick = handValid(f.hands[0]) ? std::min(std::hypot(f.hands[0].stickX, f.hands[0].stickY), 1.f) : 0.f;
+        {
+            const Vec3 look = placed.toWorld(f.head).orientation.rotate({0, 0, -1});
+            const Vec3 level{look.x, 0.f, look.z};
+            in.viewForward = finite(level) && length(level) > .3f ? normalized(level)
+                                                                  : Quat::yaw(rig_.yaw).rotate({0, 0, -1});
+        }
         const bool wasSupporting = handstandOut_.supporting;
         handstandOut_ = handstand_.update(in, handstandParams_);
+        // The leap's A is the leap: the game and the swing do not also jump (a second, straight-up jump).
+        if (handstandOut_.exitNow == handstand::Exit::leap)
+            out.swing.jump = false;
         if (handstandOut_.caughtNow)
             handstandCatchTilt_ = automatic_.orientation();
         if (wasSupporting && !handstandOut_.supporting) {

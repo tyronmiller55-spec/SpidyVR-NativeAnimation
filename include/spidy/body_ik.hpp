@@ -155,6 +155,9 @@ bool prepare(Rig& rig, std::span<const float> restPose);
 
 // What the player's body should do, in model space (model units).
 struct Targets {
+    // SHOWTIME ARMS (beta polish D4/SA1): 0..1, how far the arms' length factor has eased to 1 (the hero's own
+    // proportions) for the camera outside; 0 in the headset (the player's reach).
+    float heroArms{};
     bool head{};
     // ANIMATED ARMS overlay: solve only the arm chains on top of the game's
     // pose (torso/legs/root/head untouched unless torsoAssist). Requires
@@ -162,6 +165,13 @@ struct Targets {
     bool armsOnly{};
     // Wanted per-arm blend 0..1 while armsOnly (native_body fills from XR).
     std::array<float, 2> armWeight{};
+    // GROUND KICKS (K3), armsOnly only: one leg (0 left, 1 right) kicks out to groundKickAt (model space, a
+    // point in the pose's own frame) over the game's standing pose, at groundKickWeight 0..1; the pelvis, the
+    // other leg and the torso stay on the animation. EXPERIMENTAL and headset-untested.
+    bool groundKick{};
+    int groundKickLeg{};
+    Vec3 groundKickAt{};
+    float groundKickWeight{};
     // ANIMATED TORSO: a mapped/tracked head drives articulated spine/neck
     // rooted at the authored waist, then arm IK. Actor/pelvis/lower joints
     // never move here. Missing mapped head is not a guessed torso target.
@@ -199,6 +209,19 @@ struct Targets {
     // The share of them shown, 0..1 (PASSIVE LEGS' percent; 1 for the stick,
     // the flail and the auto poses; leg_layers.hpp). legControlWeight eases to it.
     float legAmount = 1.f;
+    // TORSO CHANNEL (J1, the owner, Nov 18 1:09 PM: "Build the torso channel next"): the midair poses' upper body,
+    // radians, in the body's frame, spread evenly over the spine's joints after its lean (step 2): pitch curls the
+    // chest forward (+, the tuck) or arches it back (-), roll bends it to the body's left (+), yaw twists the chest
+    // to the left (+). The head still takes the headset afterwards (step 3: the neck takes back the difference) and
+    // the body hangs under the eyes (step 4), so the view never moves. Only while airLegsAllowed; in and out over
+    // torsoBlendSeconds. An in-process call like LEG CONTROL's (native_body::setTorsoControl), not a Command field:
+    // the body command's official layout (version 16) is untouched.
+    struct TorsoAngles {
+        float pitch{}, roll{}, yaw{};
+    };
+    bool torsoControl{};
+    TorsoAngles torso{};
+    float torsoAmount = 1.f;
     // Directional running cycle; head and arms remain tracked.
     bool wallRun{};
     Vec3 runNormal{}, runAhead{};
@@ -301,7 +324,10 @@ struct Config {
     // The neck joints take this share of the head's turn from the chest.
     float neckShare = .5f;
     // The forearm takes this share of the wrist's roll about it.
-    float forearmRoll = .5f;
+    // SA4 (beta polish; the logs: forearm vs controller median 41-50 deg, p90 88-95): the share of the hand's twist
+    // the whole forearm takes from the elbow, the rest at the wrist. 0.5 candy-wrapped the elbow; the rig's twist
+    // helpers are not known (capture list), so less of it goes to the forearm.
+    float forearmRoll = .3f;
     // A closed fist: each finger joint after the one in the palm bends this
     // far from the joint before it (knuckle, middle, tip, radians), about
     // the finger's own hinge. The thumb's last joint bends thumbBend, the
@@ -361,7 +387,9 @@ struct Config {
     float blendSpeed = 4;
     // ANIMATED TORSO: waist yaw cap; pitch uses OG lean/maxLean.
     // overlayTorsoPitchMax retained for config source compatibility.
-    float overlayTorsoYawMax = .6981317f;   // ~40°
+    // (TORSO UPDATE: the cap on the chest's turn toward the player, default ~80 degrees;
+    // vr_settings animated_torso_twist, via native_body::setTorsoTwist. 40 was the old waist cap.)
+    float overlayTorsoYawMax = 1.3962634f;  // ~80°
     float overlayTorsoPitchMax = .4363323f; // ~25°
 };
 struct State {
@@ -375,12 +403,34 @@ struct State {
     bool adoptArms{};
     // Per-arm overlay blend while Targets::armsOnly (separate from weight).
     std::array<float, 2> armWeight{};
+    // GROUND KICKS: the kicking leg's blend (Targets::groundKick), easing in and out.
+    float groundKickWeight{};
     // Actual player torso demand angles for diagnostics (rad).
     float overlayTorsoYaw{};
     float overlayTorsoPitch{};
     // Slice C tracking-lock diag: last armsOnly chest vs player look yaw (rad).
     float overlayChestYaw{};
     float overlayPlayerYaw{};
+    // TORSO UPDATE diag: the yaw the chest needs toward the player (rad, before the cap),
+    // the cap, the share of the capped yaw that kept both wrists reachable, the scale each
+    // overlay arm took and the elbow poles (chest axes) last used.
+    float overlayTwistWanted{};
+    float overlayTwistCap{};
+    float overlayTwistShare{1.f};
+    std::array<float, 2> overlayArmScale{1.f, 1.f};
+    std::array<Vec3, 2> overlayChestPole{};
+    // SHOWTIME ARMS (beta polish SA1-SA3): each arm's elbow as last solved - its bend side (held against a flip,
+    // SA2), how long a new side has been wanted, the bend side's flips past 90 degrees and the ones held off, the
+    // elbow's inside angle (degrees, 180 straight) - and the arm's length factor (bone length, SA1; the full body's
+    // too).
+    struct Elbow {
+        Vec3 bend{};
+        float away{};
+        unsigned flips{}, held{};
+        float degrees = 180.f;
+    };
+    std::array<Elbow, 2> elbow{};
+    std::array<float, 2> armFactor{1.f, 1.f};
     bool overlaySoftlock{};
     float crawlWeight{};
     float crawlTwist{};
@@ -426,12 +476,21 @@ struct State {
     // LEG CONTROL's share, 0..1, in and out over airLegBlendSeconds.
     float legControlWeight{};
     std::array<Targets::LegAngles, 2> legAngles{}; // the last pose given, for the blend out
+    // TORSO CHANNEL's share, 0..1, in and out over torsoBlendSeconds; the last angles given, for the blend out.
+    float torsoWeight{};
+    Targets::TorsoAngles torsoAngles{};
 };
 // PROCEDURAL LEGS ONLY IN THE AIR (the user, November 10 21:03: "procedural
 // legs are only in midair or during swinging"): the momentum trail and the
 // tuck may move the legs only while airborne and on nothing - no kick, wall
 // run, crawl, vent hands, plant or kneel.
 constexpr float airLegBlendSeconds = .2f;
+// TORSO CHANNEL: its blend, and the most any of its angles may turn the spine (radians, ~40 degrees).
+constexpr float torsoBlendSeconds = .2f, torsoMaxRadians = .7f;
+inline float torsoAngle(float a) {
+    return std::isfinite(a) ? (a < -torsoMaxRadians ? -torsoMaxRadians : a > torsoMaxRadians ? torsoMaxRadians : a)
+                            : 0.f;
+}
 template <class T>
 inline bool airLegsAllowed(const T& t) {
     return t.airborne && !t.kick && !t.wallRun && !t.crawl && !t.surfaceHands && !t.plant && !t.kneel;

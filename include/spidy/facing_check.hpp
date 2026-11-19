@@ -11,7 +11,7 @@
 // are compared against it:
 //  - the view more than 45 degrees off what was shown is a turn the player did not make:
 //    it is put back (the anim view's yaw lock, or the tracking rig's yaw in SpidyVR);
-//  - the hero more than 90 degrees off is the game's facing (the actor's own, stale or
+//  - the hero more than 45 degrees off (90 until the G1 playtest) is the game's facing (the actor's own, stale or
 //    the move's), not the player's: the walk stick turns him to it (TURN-IN-PLACE's
 //    closed loop, forced, no facing write).
 // Each logs 'facing check: <event> <view|hero> expected X got Y (ok|corrected|...)'.
@@ -31,19 +31,27 @@ namespace spidy::facing_check {
 using stable_yaw::degrees;
 using stable_yaw::wrap;
 
-enum class Event : uint8_t { landing, pointLaunch, jumpHandoff, animReentry, takeover };
+// realign, dodge: the next pass's hero turns (snap_body_turn, dodge_reface), named for the turn's logs.
+enum class Event : uint8_t { landing, pointLaunch, jumpHandoff, animReentry, takeover, punchTrack, realign, dodge };
 inline const char* eventName(Event e) {
     switch (e) {
     case Event::landing: return "landing";
     case Event::pointLaunch: return "point launch";
     case Event::jumpHandoff: return "jump handoff";
     case Event::animReentry: return "anim re-entry";
+    case Event::punchTrack: return "punch track";
+    case Event::realign: return "snap realign";
+    case Event::dodge: return "dodge re-face";
     default: return "takeover";
     }
 }
 
 inline constexpr float viewTolerance = 45.f * degrees; // past this the view turned without the player
-inline constexpr float heroTolerance = 90.f * degrees; // past this the hero faces the game's way
+inline constexpr float heroTolerance = 45.f * degrees; // past this the hero faces the game's way (was 90: G1 playtest)
+// A calm landing with the view more than this behind him does not spin the hero round onto it (the game turns him at about
+// 142 deg/s by its own walk-turn, 0.78 s for a 90+ degree gap in the b9b2196 session; there is no facing write to ease it): the
+// body stays, the view is yours, and the left stick or the turn in place brings him round when you move. A fight still turns him.
+inline constexpr float rearTurn = 120.f * degrees;
 inline constexpr float launchCone = 90.f * degrees;    // launch direction counts within this of the view
 inline constexpr float windowSeconds = .3f;            // the check's reach after the event
 
@@ -57,13 +65,14 @@ inline float launchExpected(float viewBefore, float launchYaw) {
     return std::abs(wrap(launchYaw - viewBefore)) <= launchCone ? launchYaw : viewBefore;
 }
 
-enum class Verdict : uint8_t { none, ok, corrected, unfixable, missed };
+enum class Verdict : uint8_t { none, ok, corrected, unfixable, missed, kept };
 inline const char* verdictName(Verdict v) {
     switch (v) {
     case Verdict::ok: return "ok";
     case Verdict::corrected: return "corrected";
     case Verdict::unfixable: return "off, not fixable here";
     case Verdict::missed: return "not sampled";
+    case Verdict::kept: return "off, kept (the view is yours)";
     default: return "none";
     }
 }
@@ -72,9 +81,12 @@ struct Sample {
     bool viewOk = false;     // the view this frame is known (after the new owner's first frame)
     float view = 0;          // its yaw (world, rig convention: 0 facing -z)
     bool viewFixable = false; // the view can be turned back (yaw lock on, or SpidyVR's rig)
+    bool viewOwned = false;   // HEADSET FIRST: the view is the player's; it is measured and logged, never put back
     bool heroMatters = false; // the animation owns the hero (his facing shows)
     bool heroOk = false;
     float hero = 0;          // the actor's facing
+    bool fighting = false;   // a fight or a dodge is on: the hero turns onto the view whatever the gap
+    bool rearTurns = false;  // LANDING REAR TURN (landing_rear_turn): a calm landing's rear gap turns him too (no keep)
 };
 struct Report {
     Verdict verdict = Verdict::none;
@@ -120,6 +132,8 @@ struct Check {
             out.view.got = wrap(s.view);
             if (std::abs(err) <= viewTolerance) {
                 out.view.verdict = Verdict::ok;
+            } else if (s.viewOwned) {
+                out.view.verdict = Verdict::kept;
             } else if (s.viewFixable) {
                 out.view.verdict = Verdict::corrected;
                 out.viewFix = err;
@@ -134,6 +148,9 @@ struct Check {
             out.hero.got = wrap(s.hero);
             if (std::abs(wrap(expected - s.hero)) <= heroTolerance) {
                 out.hero.verdict = Verdict::ok;
+            } else if (event == Event::landing && !s.fighting && !s.rearTurns &&
+                       std::abs(wrap(expected - s.hero)) > rearTurn) {
+                out.hero.verdict = Verdict::kept;
             } else {
                 out.hero.verdict = Verdict::corrected;
                 out.heroTurn = true;

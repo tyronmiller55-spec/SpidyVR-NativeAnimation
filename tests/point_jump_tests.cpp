@@ -385,11 +385,13 @@ void ownership() {
     // Landing on the feet: back to the animation.
     f.state.grounded = true;
     check(o.update(f, t += frame) == Domain::anim && o.lastEnterAnim == EnterAnim::land, "landing snaps back");
-    // Without the hold, a ground VR goes back at once (the old rule stands).
+    // Without the hold, a ground VR goes back (the old rule stands) once the minimum stint is past (beta polish H1).
+    f.velY = 0;
     f.pointJump = true;
     o.update(f, t += frame);
     f.pointJump = false;
-    check(o.update(f, t += frame) == Domain::anim, "no hold: the ground returns");
+    check(o.update(f, t += frame) == Domain::vr, "no hold: the minimum stint holds the ground a moment");
+    check(o.update(f, t += hybrid_owner::landMinStintNs) == Domain::anim, "no hold: the ground returns");
     // Not in a cutscene.
     HybridOwner c;
     Frame g = f;
@@ -414,20 +416,20 @@ void bridge() {
 void settings() {
     using namespace vr_settings;
     Values v;
-    check(!v.pointJump && v.pointJumpTrigger == 0 && v.pointJumpMinSpeed == 9 && v.pointJumpMaxSpeed == 22 &&
+    check(v.pointJump && v.pointJumpTrigger == 0 && v.pointJumpMinSpeed == 9 && v.pointJumpMaxSpeed == 22 &&
               v.pointJumpFullMs == 1000 && v.pointJumpNormalBias == 25 && v.pointJumpTapMs == 150 &&
-              v.pointJumpChordMs == 50 && v.pointJumpCoyoteMs == 120 && v.pointJumpBufferMs == 150 &&
+              v.pointJumpChordMs == 50 && v.pointJumpCoyoteMs == 120 && v.pointJumpBufferMs == 200 &&
               v.pointJumpCooldownMs == 250 && v.pointJumpKeep == 25 && v.pointJumpMinOutDegrees == 10 &&
               v.pointJumpInCombat,
-          "the plan's defaults, off by default");
+          "the plan's defaults, on by default");
     const auto p = paramsOf(v);
-    check(!p.enabled && near(p.minSpeed, 9) && near(p.maxSpeed, 22) && near(p.normalBias, .25f) &&
+    check(p.enabled && near(p.minSpeed, 9) && near(p.maxSpeed, 22) && near(p.normalBias, .25f) &&
               near(p.keep, .25f) && near(p.chordSeconds, .05f),
           "params from the values");
     const Item rowsWanted[] = {Item::pointJump, Item::pointJumpTrigger, Item::pointJumpMinSpeed,
                                Item::pointJumpMaxSpeed, Item::pointJumpFull, Item::pointJumpPush};
     const auto& tab = screens()[static_cast<size_t>(Category::pointJump)];
-    check(std::strcmp(tab.tabTitle, "VR POINT JUMP") == 0, "its own, clearly named tab");
+    check(std::strcmp(tab.tabTitle, SPIDY_NA_TAB_PREFIX "POINT JUMP") == 0, "its own, clearly named tab");
     for (Item item : rowsWanted) {
         const Row* row = rowFor(item);
         check(row && row->place == Place::tab && row->help && std::strlen(row->help) <= 80, "an in-game row");
@@ -437,19 +439,20 @@ void settings() {
                 on += i == item;
         check(on == 1, "on exactly one tab");
     }
-    check(choose(Item::pointJump, 1, v) && v.pointJump, "POINT JUMP ON");
-    check(inactiveReason(Item::pointJumpTrigger, Values{}) && !inactiveReason(Item::pointJumpTrigger, v),
+    check(v.pointJump && choose(Item::pointJump, 0, v) && !v.pointJump, "POINT JUMP OFF");
+    check(inactiveReason(Item::pointJumpTrigger, v) && !inactiveReason(Item::pointJumpTrigger, Values{}),
           "the rows say they need POINT JUMP");
+    check(choose(Item::pointJump, 1, v) && v.pointJump, "POINT JUMP ON");
     check(choose(Item::pointJumpTrigger, 1, v) && v.pointJumpTrigger == 1, "HOLD B, THEN A");
     check(choose(Item::pointJumpMaxSpeed, 0, v) && v.pointJumpMaxSpeed == 14, "MAX SPEED 14");
     check(choose(Item::pointJumpMinSpeed, 6, v) && v.pointJumpMinSpeed == 14 && v.pointJumpMaxSpeed >= 14,
           "TAP SPEED never above MAX SPEED");
     const std::string text = tabOnlyText(Values{});
-    for (const char* key : {"point_jump=0\n", "point_jump_trigger=0\n", "point_jump_chord_ms=50\n",
+    for (const char* key : {"point_jump=1\n", "point_jump_trigger=0\n", "point_jump_chord_ms=50\n",
                             "point_jump_tap_ms=150\n", "point_jump_full_ms=1000\n", "point_jump_min_speed=9\n",
                             "point_jump_max_speed=22\n", "point_jump_curve=0\n", "point_jump_normal_bias=25\n",
                             "point_jump_min_out_degrees=10\n", "point_jump_keep=25\n", "point_jump_coyote_ms=120\n",
-                            "point_jump_buffer_ms=150\n", "point_jump_cooldown_ms=250\n",
+                            "point_jump_buffer_ms=200\n", "point_jump_cooldown_ms=250\n",
                             "point_jump_zip_guard_ms=400\n", "point_jump_dodge_hold_ms=250\n",
                             "point_jump_in_combat=1\n"})
         check(text.find(key) != std::string::npos, key);
@@ -468,6 +471,51 @@ void settings() {
 }
 } // namespace
 
+// POINT JUMP FIRES AT FULL CHARGE and the press buffer's new default (the owner, Nov 16).
+void fullCharge() {
+    using spidy::point_jump::Chord;
+    const auto hold = [](float fireAt, int frames, bool& full, float& held) {
+        Chord c;
+        Chord::Input in;
+        in.seconds = 1.f / 72;
+        in.allowed = true;
+        in.a = in.b = true;
+        in.fireAt = fireAt;
+        bool released = false;
+        full = false;
+        for (int i = 0; i < frames && !released; ++i) {
+            const auto o = c.update(in);
+            released = o.released;
+            full = o.fullFire;
+            held = o.held;
+            if (released)
+                check(!o.a && !o.b, "a full-charge fire sends neither button to the game");
+        }
+        // still held after the fire: swallowed until both are let go of
+        const auto after = c.update(in);
+        check(!after.a && !after.b && !after.released, "the held buttons after a full-charge fire stay swallowed");
+        return released;
+    };
+    bool full{};
+    float held{};
+    check(hold(1.f, 100, full, held) && full && held >= 1.f && held < 1.03f, "held to the charge time: fires by itself");
+    check(!hold(0.f, 100, full, held), "off: no fire while held");
+    const spidy::vr_settings::Values v{};
+    check(v.pointJumpFireFull && spidy::point_jump::paramsOf(v).fireAtFull, "full-charge fire on by default");
+    check(v.pointJumpBufferMs == 200 && std::abs(spidy::point_jump::paramsOf(v).bufferSeconds - .2f) < 1e-6f,
+          "press buffer 0.2 s");
+    spidy::vr_settings::Values old;
+    old.pointJumpBufferMs = 150;
+    check(spidy::vr_settings::withMovementDefaults(old, "movement_defaults=3\n").pointJumpBufferMs == 200,
+          "an untuned 150 ms buffer moves to 200");
+    old.pointJumpBufferMs = 180;
+    check(spidy::vr_settings::withMovementDefaults(old, "movement_defaults=3\n").pointJumpBufferMs == 180,
+          "a tuned buffer stays");
+    old.pointJumpBufferMs = 150;
+    check(spidy::vr_settings::withMovementDefaults(old, "movement_defaults=4\n").pointJumpBufferMs == 150,
+          "a file that has seen revision 4 keeps its own");
+}
+
 int main() {
     chordTogether();
     chordHoldB();
@@ -479,6 +527,7 @@ int main() {
     ownership();
     bridge();
     settings();
+    fullCharge();
     std::printf("%d point jump checks passed\n", passed);
     return 0;
 }

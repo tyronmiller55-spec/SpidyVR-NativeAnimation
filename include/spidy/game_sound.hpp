@@ -52,7 +52,7 @@ struct Blow {
 };
 // SpidySoundData, for the headset and the session report.
 struct Data {
-    uint32_t magic = 0x53534e44, version = 1, bytes = sizeof(Data), status{}; // 0 off, 2 running, 3 another build
+    uint32_t magic = 0x53534e44, version = 2, bytes = sizeof(Data), status{}; // 0 off, 2 running, 3 another build
     int64_t sequence{};
     // Blows that asked for a sound; those the game played; those it gave no
     // sound back for; those dropped before it (a full queue, a victim gone,
@@ -68,8 +68,13 @@ struct Data {
     // The switches the latest blow set (five on each sound source, when each
     // took).
     uint32_t switches{};
+    // Version 2 (beta polish R4): the blows asked for by intensity (Light, Medium, Heavy, Extreme); the hero's cues
+    // played (game_sound::cue: grunts, jump sounds, whooshes), those skipped because the game's own was already
+    // sounding (the double-play guard) and those dropped (a full queue, the module not live).
+    uint32_t byIntensity[4]{};
+    uint32_t cues{}, cuesGuarded{}, cuesDropped{}, reserved{};
 };
-static_assert(sizeof(Data) == 72);
+static_assert(sizeof(Data) == 104);
 // The game's id for a name of its sound engine's: FNV-1 of the lowercased
 // name (1bb8a10).
 inline uint32_t audioId(const char* name) {
@@ -104,6 +109,13 @@ void blow(uint64_t damager, uint64_t victim, Blow blow);
 void tracing(bool on);
 // The player's actor record, for the trace's hero flag (his handle).
 void hero(uint64_t record);
+// One of the game's own sounds (`hash`) played on `emitter` (an actor record)
+// in the next frame(), not a blow and not counted with them. Any thread;
+// false when the module is not live or the queue is full. Whatever BLOW
+// SOUNDS is set to. For the swing kick's grunt (swing_kick_grunt) and, from
+// the headset's module, SpidySoundCue (on the player).
+// `guarded` (sound_guard.hpp): skipped (counted in Data::cuesGuarded) while the game's own jump set sounds.
+bool cue(uint64_t emitter, uint32_t hash, bool guarded = false);
 // The game's main thread: the blows since the last frame, sounded.
 void frame();
 Data data();

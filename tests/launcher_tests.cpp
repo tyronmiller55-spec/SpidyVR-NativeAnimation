@@ -2,6 +2,11 @@
 #include "spidy/launcher_presets.hpp"
 #include "spidy/launcher_text.hpp"
 #include "spidy/launcher_update.hpp"
+#include "spidy/text_read.hpp"
+#include "spidy/vr_settings.hpp"
+#include <cstdio>
+#include <algorithm>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -173,6 +178,10 @@ int main() {
                                                  L"--output", L"r.json", L"--xr-runtime", L"vd.json",
                                                  L"--stop-event", L"Local\\Stop"};
         check(args == defaults, "defaults");
+        // The game the launcher uses goes last, so the session starts it through its own store (#84).
+        args = sessionArguments(options, L"r.json", L"", L"", false, LR"(D:\Epic\Spider-Man.exe)");
+        check(args.size() == 9 && args[7] == L"--game-exe" && args[8] == LR"(D:\Epic\Spider-Man.exe)",
+              "the launcher's game");
         options = {false, true, 2048, 90, false, false};
         args = sessionArguments(options, L"r.json", L"", L"");
         const std::vector<std::wstring> changed{L"--auto-launch", L"--seconds", L"0", L"--swing-speed", L"65",
@@ -206,7 +215,11 @@ int main() {
         check(args.size() == 9 && args[7] == L"--upscale" && args[8] == L"100", "no upscaling");
         options.upscale = 20;
         args = sessionArguments(options, L"r.json", L"", L"");
-        check(args.size() == 9 && args[7] == L"--upscale" && args[8] == L"50", "the upscale at least 50%");
+        check(args.size() == 7, "the upscale at least 50%, which is the default and goes unsaid");
+        options.upscale = 67;
+        args = sessionArguments(options, L"r.json", L"", L"");
+        check(args.size() == 9 && args[7] == L"--upscale" && args[8] == L"67", "the old default is passed now");
+        check(options.upscale != static_cast<int>(spidy::defaultEyeUpscale) && spidy::defaultEyeUpscale == 50, "the default is 50%");
         options.renderScale = 125;
         options.upscale = 58;
         args = sessionArguments(options, L"r.json", L"", L"");
@@ -220,6 +233,15 @@ int main() {
         options.monitorRate = 999;
         args = sessionArguments(options, L"r.json", L"", L"");
         check(args.size() == 9 && args[7] == L"--monitor-rate" && args[8] == L"240", "the monitor at most 240");
+        // RENDER MEMORY (render_memory_mb): 512 MB goes unsaid, another is passed, within 128..1024.
+        options = {};
+        check(options.renderMemoryMb == 512, "render memory 512 MB by default");
+        options.renderMemoryMb = 384;
+        args = sessionArguments(options, L"r.json", L"", L"");
+        check(args.size() == 9 && args[7] == L"--render-memory-mb" && args[8] == L"384", "a smaller render memory");
+        options.renderMemoryMb = 5000;
+        args = sessionArguments(options, L"r.json", L"", L"");
+        check(args.size() == 9 && args[8] == L"1024", "render memory at most 1024 MB");
         options = {};
         options.weight = 999;
         args = sessionArguments(options, L"r.json", L"", L"");
@@ -714,7 +736,10 @@ int main() {
                                  row.item == Item::animYawSway || row.item == Item::turnInPlace ||
                                  (row.item >= Item::passiveLegs && row.item <= Item::legReachSpread) ||
                                  // MOVEMENT MODE, REAR SNAP TURN (November 12): the player's own.
-                                 row.item == Item::movementMode || row.item == Item::rearSnap;
+                                 row.item == Item::movementMode || row.item == Item::rearSnap ||
+                                 // TORSO TWIST, ARM AIM FALLBACK (November 13 torso update), and what follows
+                                 // (the stability pass): the player's own feel and comfort, not shared.
+                                 (row.item >= Item::animatedTorsoTwist && row.item != Item::enemyTypes);
             check(std::count_if(begin, end, [&](const ProfileSetting& s) { return s.item == row.item; }) ==
                       (leftOut ? 0 : 1),
                   row.title);
@@ -741,16 +766,116 @@ int main() {
                 key == "punch_view_ease_ms" ||
                 // MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE (November 12): the player's own.
                 key == "move_haptics_pct" || key == "view_yaw_source" || key == "sound_trace" ||
+                // LOG LEVEL (beta polish G4): diagnostics, the player's own.
+                key == "log_level" ||
                 // JUMP TO SPIDYVR, AIR VIEW EASE (November 12): the player's own.
                 key == "jump_handoff_ms" || key == "air_view_ease_ms" || key == "anim_yaw_sway_pct" ||
                 key == "turn_in_place_deg" || key.rfind("passive_", 0) == 0 || key == "movement_mode" ||
-                key == "rear_snap_turn_ms")
+                key == "rear_snap_turn_ms" ||
+                // TORSO TWIST, ARM AIM FALLBACK (November 13): the player's own feel.
+                key == "animated_torso_twist" || key == "anim_forearm_fallback_deg")
+                continue;
+            // NEXT PASS (November 15): the player's own feel.
+            if (key == "target_scan_idle_ms")
+                continue;
+            if (key == "point_jump_fire_full")
+                continue;
+            if (key == "web_zip_instant")
+                continue;
+            if (key == "landing_body_hold_turn")
+                continue;
+            if (key == "turn_push_pct")
+                continue;
+            if (key == "handoff_place_cm")
+                continue;
+            // MIDAIR POSES, DIRECTIONAL FLIPS (Nov 18): the player's own feel, as the rows after TORSO TWIST.
+            if (key == "air_poses" || key == "directional_flips")
+                continue;
+            // WALL JUMP SOUND (beta polish A5): the player's own, as JUMP SOUNDS (point_jump_sound).
+            if (key == "wall_jump_sound" || key == "attack_sound")
+                continue;
+            if (key == "punch_track_by_look")
+                continue;
+            if (key == "handstand_grace_before_ms")
+                continue;
+            if (key == "handstand_grace_after_ms")
+                continue;
+            if (key == "handstand_tip_in")
+                continue;
+            if (key == "handstand_tip_in_deg")
+                continue;
+            if (key == "handstand_tip_in_reach_cm")
+                continue;
+            if (key == "marker_twist_steady")
+                continue;
+            if (key == "marker_turn_rate_dps")
+                continue;
+            if (key == "marker_switch_hold_ms")
+                continue;
+            if (key == "handstand_arms_over_head_cm")
+                continue;
+            if (key == "head_seat_glide_ms")
+                continue;
+            if (key == "landing_blend_ms")
+                continue;
+            if (key == "handoff_angle_ms")
+                continue;
+            if (key == "handoff_head_leads")
+                continue;
+            if (key == "handoff_glide_max_ms")
+                continue;
+            if (key == "handoff_glide_cm_s")
+                continue;
+            if (key == "handoff_ease_curve")
+                continue;
+            if (key == "landing_rear_turn")
+                continue;
+            if (key == "landing_body_ease_ms")
+                continue;
+            if (key == "landing_body_to_view")
+                continue;
+            if (key == "dodge_reface")
+                continue;
+            if (key == "snap_tap_ms")
+                continue;
+            if (key == "snap_body_turn")
+                continue;
+            if (key == "view_relatch_fix")
+                continue;
+            if (key == "handoff_one_blend")
+                continue;
+            if (key == "head_height_fade_ms")
+                continue;
+            if (key == "takeover_view_ease")
+                continue;
+            // SHOWTIME (November 14): experimental, the player's own.
+            if (key.rfind("showtime", 0) == 0)
                 continue;
             // HANDSTAND (H1, November 12): experimental, the player's own.
             if (key.rfind("handstand", 0) == 0)
                 continue;
+            // SWING KICK (K1, November 14): experimental, the player's own.
+            if (key.rfind("swing_kick", 0) == 0)
+                continue;
+            // WALL BRAKE and GRIP FLING (G1, November 14): experimental, the player's own.
+            if (key.rfind("wall_brake", 0) == 0 || key.rfind("grip_fling", 0) == 0 || key == "grip_stop_pct")
+                continue;
+            // AIR TAKEOVER (November 14): the player's own feel (upright time, fall handoff, landing blend and release).
+            if (key == "air_correct_ms" || key == "fall_handoff_ms" || key.rfind("air_landing", 0) == 0)
+                continue;
+            // HAND GRAB (G2, November 14): experimental, the player's own.
+            if (key.rfind("hand_grab", 0) == 0 || key == "enemy_hold_cost")
+                continue;
+            // AIR KICKS (K2, November 14): experimental, the player's own.
+            if (key == "kicks" || key.rfind("kick_", 0) == 0 || key == "ground_kicks" ||
+                key == "enemy_joints" || key == "enemy_limb_zones")
+                continue;
+            // PHYSICAL WEB TETHERS (W1, November 14): experimental, the player's own.
+            if (key == "physical_tethers" || key.rfind("tether_", 0) == 0)
+                continue;
             // CAMERA MODES (November 13): the player's own comfort, not in shared profiles.
-            if (key == "anim_head_ride" || key == "shoulder_limit" || key == "snap_realign")
+            if (key == "anim_head_ride" || key == "shoulder_limit" || key == "snap_realign" || key == "headset_first" ||
+                key.rfind("punch_", 0) == 0 || key.rfind("jump_pull", 0) == 0)
                 continue;
             ++lines;
             check(at(key) < std::size(profileSettings) &&
@@ -853,6 +978,7 @@ int main() {
         t.joystickRunCamera = false;
         t.halfPunchDamage = true;
         t.airFists = false;
+        t.enemyTypes = true; // off by default
         t.webTie = true;
         t.webLines = true;
         t.singleHandYankPercent = 200;
@@ -944,12 +1070,13 @@ int main() {
                   "aim_markers=1\nair_webs=1\nsmart_anchor=0\nweb_range_m=100\nweb_speed=0\nswing_speed=32\n"
                   "weight=100\nelastic_web=0\n"
                   "soft_release=0\nswing_assist=0\nweb_slingshot=0\nslingshot_speed=0\n"
-                  "better_climbing=0\nsingle_hand_yank_percent=100\ntwo_hand_zip=0\nrope_steering=0\nwall_run=1\nsnap_turn=30\n"
+                  "better_climbing=0\nsingle_hand_yank_percent=100\ntwo_hand_zip=0\nrope_steering=0\nwall_"
+                  "run=1\nsnap_turn=30\n"
                   "smooth_turn=0\nhaptics=100\nreel_haptics=0\nswing_haptics=0\nblow_sounds=0\npc_media=0\n"
                   "body_haptics=100\nbody_haptics_webs=1\nbody_haptics_wind=1\n"
                   "body_haptics_combat=1\nbody_haptics_movement=1\nscreen_size=1\nscreen_depth=2\nhud=2\n"
                   "ui_style=0\ncombat_visuals=1\nnear_clip_mm=20\nseated=0\nflips=0\ncontrolled_flips=0\nflip_speed=180\nhand_climb=0\n"
-                  "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\nair_fists=1\nweb_tie=0\nnative_run=1\n"
+                  "joystick_wall_run_camera=1\nwall_run_camera_tilt=1\nhalf_punch_damage=0\nair_fists=1\nenemy_types=0\nweb_tie=0\nnative_run=1\n"
                   "air_slingshot=0\nweb_angle_degrees=0\nwrist_shooters=0\ndodge_tumble=0\n"
                   "run_curve=1\nnative_run_at_percent=70\nrun_logs=0\nrunning_leap=0\nearly_jump=1\nsoft_landing=0\nspidy_run=1\nspidy_run_from_standing=0\nweb_aim_source=0\nforearm_blend=100\nweb_landing_smooth=0\nweb_landing_impact_speed=24\nsteady_states=0\ncombat_responsive=0\nspidy_run_jump=1\nforearm_aim_limit=180\npalm_shooters=0\nhead_probe=0\nanimated_moves=1\nanimated_head=2\nanimated_headset_smooth=0\nrun_speed_percent=100\nslow_motion_seconds=12\nsoft_lock_metres=15\nanimated_air=0\nanimated_steering=0\nanimated_arms=1\nanimated_torso=1\nanimated_model_yaw=1\nanimated_only=0\nanimated_air_spin=0\nanimated_hybrid=1\nanimated_hybrid_speed_ms=200\n"
                   "web_lines=0\n"
@@ -1228,6 +1355,79 @@ int main() {
                 check(i && summary[i - 1] == '\xC3', "the other half");
         const size_t last = summary.find("\nLast session: ") + 15, error = summary.find("\nLast error: ");
         check(error - last >= 50 && summary.size() - error >= 50, "room for both of the session's lines");
+    });
+    test("spidy_vr.ini is read whole: a file over 8 KB keeps its last keys, and the movement defaults run once", [] {
+        namespace vs = spidy::vr_settings;
+        vs::Values chosen;
+        // The last rows (vr_settings.cpp's tabOnly, its end) away from their defaults, and RUN CURVE off: the
+        // movement defaults' first revision would turn it back on.
+        chosen.runCurve = false;
+        chosen.turnPushPct = 40;
+        chosen.webZipInstant = !vs::Values{}.webZipInstant;
+        chosen.pointJumpFireFull = !vs::Values{}.pointJumpFireFull;
+        chosen.targetScanIdleMs = 750;
+        const std::string saved = vs::tabOnlyText(chosen);
+        // November 17: the defaults alone are past the 4096 bytes the game used to read.
+        check(vs::tabOnlyText(vs::Values{}).size() > 4096, "the defaults' text is past 4 KB");
+        size_t cut = 0, keys = 0;
+        for (size_t at = 0; at < saved.size();) {
+            const size_t end = std::min(saved.find('\n', at), saved.size());
+            ++keys;
+            if (end >= 4096)
+                ++cut;
+            at = end + 1;
+        }
+        std::cout << "  spidy_vr.ini: " << saved.size() << " bytes, " << keys << " keys; " << cut
+                  << " were past the old 4096-byte read\n";
+        check(cut > 0, "the old read lost keys");
+        // Over 8 KB: lines no setting has, before the settings, so they end the file.
+        std::string padded;
+        while (padded.size() < 8192)
+            padded += "# padding: no setting has this line, and the reader passes it over\n";
+        padded += saved;
+        check(padded.size() > 8192, "the file is over 8 KB");
+        const char* name = "spidy_vr_whole_read_test.ini";
+        std::FILE* out = std::fopen(name, "wb");
+        check(out != nullptr, "the test file is written");
+        std::fwrite(padded.data(), 1, padded.size(), out);
+        std::fclose(out);
+        std::FILE* in = std::fopen(name, "rb");
+        const auto read = spidy::text_read::readAll(in);
+        std::fclose(in);
+        std::remove(name);
+        check(!read.failed && !read.truncated && read.text == padded, "read whole");
+        const vs::Values back = vs::withMovementDefaults(vs::withTabOnly({}, read.text), read.text);
+        check(back.turnPushPct == 40 && back.webZipInstant == chosen.webZipInstant &&
+                  back.pointJumpFireFull == chosen.pointJumpFireFull && back.targetScanIdleMs == 750,
+              "the last keys apply");
+        check(back.movementDefaults == vs::movementDefaultsRevision, "the revision is seen");
+        check(!back.runCurve, "the movement defaults do not run again: RUN CURVE stays off");
+        check(vs::tabOnlyText(back) == saved, "saved again unchanged");
+        // What the old read did: the first 4096 bytes, the revision unseen, RUN CURVE back on at every launch.
+        const std::string old = saved.substr(0, 4096);
+        const vs::Values cutBack = vs::withMovementDefaults(vs::withTabOnly({}, old), old);
+        check(cutBack.runCurve && cutBack.targetScanIdleMs != 750, "the old read's loss, as it was");
+        // A chunked read never assumes a size: one byte at a time, and the cap.
+        size_t at = 0;
+        const auto slow = spidy::text_read::readAll([&](char* buffer, size_t) -> long long {
+            if (at == padded.size())
+                return 0;
+            *buffer = padded[at++];
+            return 1;
+        });
+        check(slow.text == padded, "a byte at a time");
+        at = 0;
+        const auto capped = spidy::text_read::readAll(
+            [&](char* buffer, size_t capacity) -> long long {
+                const size_t n = std::min(capacity, padded.size() - at);
+                std::memcpy(buffer, padded.data() + at, n);
+                at += n;
+                return static_cast<long long>(n);
+            },
+            1000);
+        check(capped.truncated && capped.text == padded.substr(0, 1000), "the cap holds and says so");
+        const auto broken = spidy::text_read::readAll([](char*, size_t) -> long long { return -1; });
+        check(broken.failed && broken.text.empty(), "a failed read says so");
     });
     std::cout << (total - failed) << '/' << total << " launcher checks passed\n";
     return failed ? 1 : 0;
