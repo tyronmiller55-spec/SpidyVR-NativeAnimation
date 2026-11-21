@@ -800,6 +800,24 @@ int main() {
                 continue;
             if (key == "handstand_grace_after_ms")
                 continue;
+            if (key == "handstand_sticky")
+                continue;
+            if (key == "handstand_sticky_grace_ms")
+                continue;
+            if (key == "showtime_ray_fan")
+                continue;
+            if (key == "swing_line_full_length")
+                continue;
+            if (key == "showtime_speed_lead_pct")
+                continue;
+            if (key == "air_dodge")
+                continue;
+            if (key == "air_dodge_speed")
+                continue;
+            if (key == "air_dodge_chord_ms")
+                continue;
+            if (key == "air_dodge_cooldown_ms")
+                continue;
             if (key == "handstand_tip_in")
                 continue;
             if (key == "handstand_tip_in_deg")

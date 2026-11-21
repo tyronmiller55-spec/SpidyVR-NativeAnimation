@@ -3,8 +3,56 @@
 Every build, newest first, with what changed, why, and what was measured.
 Per-check results are in [VALIDATION.md](VALIDATION.md).
 
+**0.8.7-na-beta2 (November 19-21, branch feat/087-beta2 from 9e8d7cb): the owner's t79u pass,** now the testers'
+**CURRENT** after the owner's Nov 21 session (t86u: "it feels good, the polish is there") ([headset checklist](NA_BETA2.md)). One change per commit, every
+feature on, migration rev 15 (AIR DODGE, SHOWTIME RAY FAN and STICKY HANDSTANDS come on once). No existing
+numeric default changed, WALL JUMP SOUND stays SOUND A, and no new game address.
+
+- **Point jump sounds.** The beta1 log had our grunt (`dab33491`) on nearly every point jump, yet the owner heard
+  nothing: a grunt is a voice line, and the game added its own launch sounds (`a442c255`/`050553e7`) on only
+  about a fifth to a third of them. A point jump now plays the game's whole jump set, as a ground flip does, and
+  `jump sounds: ... result: N of M played` says what the game's sound call gave back.
+- **Finishers on Y+B stay the game's.** All 11 combat finishers in the log came from B (often the prompt's
+  `0xa000`) then Y; the game runs them. SpidyVR builds no finisher of its own: the log names each one
+  (`finisher: the game's own finisher on Y+B`), and the grip cancel waits until it ends (one had cut a
+  finisher at t=971.7 s).
+- **Air dodge on B** (NA · KICKS & COMBAT). In SpidyVR's own air, B alone dodges the way the left stick points
+  from the view's heading (at rest: backward), 9 m/s, two an air, 0.5 s apart, with a pulse and a log line.
+  B waits 50 ms for A, X or Y, so the point jump, Showtime and finishers keep their chords; the ground's B is
+  unchanged.
+- **Showtime ray fan** (NA · SHOWTIME). While the camera is out, the head's clearance slots of the 8 native
+  world rays carry a fan from Spidey to the camera's place; the nearest wall pulls it in fast and lets it out
+  slowly. At swing speed the pivot is carried with him (`showtime_speed_lead_pct`, 60), so the logged ~3.5 m
+  lag shrinks. See [SHOWTIME_CAMERA_COLLISION.md](SHOWTIME_CAMERA_COLLISION.md).
+- **Sticky handstands** (NA · BODY & LEGS). The arms-up test is 5 cm easier and needs 0.08 s; a tracking loss is
+  held 0.4 s (beta1's t=657.9 catch dropped after 0.26 s when the rig re-placed hands and head together, now
+  taken as a move); once caught the hands may lift 1.5x higher and for 0.15 s before it ends. Arms up stays
+  required.
+- **Wrist shooters the right way round (Nov 20, t80u).** With LOCKED TO ARM, the line had taken the wrist's learned
+  resting angle (beta1 log: 22-38 deg; the beta2 sessions: median 28 L / 32 R), so it sat off the forearm at rest
+  and in a back-of-hand tilt and came in line on a palm-side tilt - the owner's "inverted". Now the line stays on
+  the forearm at rest and tilted toward the back of the hand, and a palm-side tilt offsets it toward the palm (up
+  to 45 deg, eased), both hands (`spherical_aim::ArmLine`, a core test pins the direction).
+- **Full-length swing lines** (NA · WEB SHOOTERS, `swing_line_full_length`, on; migration rev 16; Nov 20, t81u).
+  Swing webs had been drawn straight from the hand to the anchor, so they shortened as he swung in (the swing
+  takes its rope in, SwingConfig::taut; the beta2 session's ropes lost a median 71% between catch and release).
+  Now the drawn line keeps the length it had when the web caught; the length it does not need hangs as slack,
+  laid by the combat webs' rope (tether::Rope: 24 particles, 8 substeps, gravity, no world collision) through the
+  game rope's 6 hand points, or a sag curve if that cannot run. Only the trigger's reel shortens it, one-for-one;
+  past the drawn length (taut) it is the line; a new web starts again; slack past 30 m is not drawn. Looks only:
+  the swing's physics is unchanged. Not over edges, in flight, on a grab's tether or with one web in both hands.
+  Log: `swing line: L caught|reel drawn X m, line Y m (slack S m), swing rope R m, reeled in N m, laid by ...`.
+- **NA Help** pages for each, **version** 0.8.7-na-beta2 (the version resource stays 0.8.7).
+- **Locked to the forearm, wrist bends keep the web on the real arm (Nov 20, afe6a39).** The Nov 20 session
+  (d482497) showed the palm side right on both hands, but a normal wrist bend cut the solved arm's trust to
+  0.14-0.30, so the web followed the learned forearm that turns with the hand; bent back past 60 deg the left
+  web fell to the controller (reach-around) in 50 of 75 samples. Trust is now judged across the bend only, and
+  bent back the reach-around ignores the bend (core test, session 031344).
+- **Known issues at CURRENT:** wrist shooters still not perfectly aligned; the head can briefly part from the
+  neck during some handoffs; handstands rarely catch; the game may report 0xC0000409 as it exits.
+
 **0.8.7-na-beta1 (November 19, branch feat/087-beta1 from 966a812): the beta polish pass,**
-now the testers' **CURRENT** after the owner's Nov 19 session on `81fc830`
+the testers' CURRENT until Nov 21 after the owner's Nov 19 session on `81fc830`
 ([headset and zip checklist](NA_BETA1.md)). One change per commit; the owner's decisions
 D1-D11. Settings files from before get migration rev 14: features that were on in that session
 and off by default come on once (Showtime, AUTO: FINISHERS, AUTO: DODGES at PERFECT ONLY, air kicks,

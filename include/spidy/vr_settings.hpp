@@ -302,7 +302,7 @@ struct Values {
     // from before it gets RUN CURVE on and EARLY JUMP QUICK TAP once (the
     // user: "movement fixes will be defaults"); after that the player's own
     // choice stands. Not a row. movement_defaults.
-    int movementDefaults = 14; // movementDefaultsRevision: a new file has seen them
+    int movementDefaults = 16; // movementDefaultsRevision: a new file has seen them
     // SOFT LANDING (the tab's SOFT LANDING; Swing::allowSoftLanding,
     // run_update::softLandVertical): a fall the swing flies, with no web
     // holding, eases to 9 m/s down over its last 3 m (or 0.35 s), its speed
@@ -725,14 +725,41 @@ struct Values {
     // POINT JUMP BULLET (the user, Nov 14 t71u, t73s656; point_jump_bullet, default on): the body takes the RAW look on a point
     // jump, any angle, eased over about 120 ms (point_bullet.hpp). The launch velocity is unchanged (10 degree out-of-surface fix).
     bool pointJumpBullet = true;
-    // JUMP SOUNDS (beta polish A4, the owner's D6; point_jump_sound, on): the game's jump grunt (sound_guard.hpp) on
-    // Spidey at every point jump (the game already adds its own a442c255/050553e7 there), and the grunt with the rest
-    // of the game's jump set at a ground flip or handstand leap; skipped when the game's own grunt already sounds
-    // (300 ms guard).
+    // JUMP SOUNDS (beta polish A4, the owner's D6; point_jump_sound, on): the game's jump grunt with the rest
+    // of its jump set (sound_guard.hpp) on Spidey at every point jump, ground flip or handstand leap; skipped
+    // when the game's own grunt already sounds (300 ms guard). Until beta2 a point jump had the grunt alone,
+    // and the owner heard nothing on 0.8.7-na-beta1 (Nov 19): the game added its own a442c255/050553e7 on
+    // only 22-37% of them.
     bool pointJumpSound = true;
     // WALL JUMP SOUND (beta polish A5; wall_jump_sound): 0 off (silent as before), 1 d321a6f9 (default), 2 110d202b,
     // the Nov 19 trace's two candidates (sound_guard.hpp) for a headset A/B.
     int wallJumpSound = 1;
+    // AIR DODGE (beta2, air_dodge.hpp; the owner, Nov 19 t79u: "Air dodge is fine on B"): in SpidyVR's own
+    // air, B is a burst of air_dodge_speed (9 m/s) the way the left stick points from the view's heading (at
+    // rest: backward), after waiting air_dodge_chord_ms (50, the point jump's window) for A, X or Y;
+    // air_dodge_cooldown_ms (500) between, two an air. The ground's B (dodge, sidestep, point jump) is
+    // untouched. On by default (movement_defaults revision 15).
+    bool airDodge = true;
+    int airDodgeSpeed = 9;
+    int airDodgeChordMs = 50;
+    int airDodgeCooldownMs = 500;
+    // SHOWTIME RAY FAN (beta2, showtime_fan.hpp; the owner, Nov 19 t79u: "ray fan for Showtime is a good call"): while
+    // SHOWTIME's camera is out, the head's clearance slots of the native rays carry a fan from his pelvis to the camera's
+    // place; the nearest hit limits the distance (fast in, slow out). showtime_speed_lead_pct (60): the share of his
+    // velocity the pivot is carried by at 25 m/s (none below 8 m/s), for less lag at swing speed; 0: as before.
+    bool showtimeRayFan = true;
+    int showtimeSpeedLeadPct = 60;
+    // STICKY HANDSTANDS (beta2, handstand.hpp Params::sticky; the owner, Nov 19 t79u: "making handstands \"sticky\" or
+    // easy to get into would help"): the arms-up tests 5 cm easier and held 0.08 s, a tracking loss held
+    // handstand_sticky_grace_ms (400; was 250), the rig's re-placement taken as a move, not a loss, and the hold's
+    // floor line 1.5 x HANDSTAND HOLD with 0.15 s off the floor before it ends. The arms still have to be up.
+    bool handstandSticky = true;
+    int handstandStickyGraceMs = 400;
+    // FULL-LENGTH SWING LINES (beta2, swing_line.hpp; the owner, Nov 20 t81u: "Yes, reel should shorten one-for-one,
+    // the line should stay full. Let's add this as a toggle option."): a swing web is drawn as long as it was when it
+    // caught, its slack hanging (the combat webs' rope), shortened only by the reel. Visual only: the swing is as
+    // before. Off: the straight line from the hand to the anchor.
+    bool swingLineFullLength = true;
     // HERO ATTACK SOUND (beta polish A2; attack_sound, spidy_vr.ini only, no menu row): one of the game's sounds played
     // on Spidey as a punch is thrown or a kick starts (at most one a hand every 250 ms, hit_sound.hpp): the id's 32
     // bits as a signed decimal. 0 (the default): none - the game's own whoosh and effort ids are not captured yet
@@ -1170,6 +1197,14 @@ enum class Item : uint8_t {
     // JUMP SOUNDS and WALL JUMP SOUND (beta polish A4/A5, POINT JUMP's tab).
     pointJumpSound,
     wallJumpSound,
+    // AIR DODGE (beta2).
+    airDodge,
+    // SHOWTIME RAY FAN (beta2).
+    showtimeRayFan,
+    // STICKY HANDSTANDS (beta2).
+    handstandSticky,
+    // FULL-LENGTH SWING LINES (beta2).
+    swingLineFullLength,
     // NA HELP (beta polish M5, na_help.hpp): the NA · HELP tab's pages, one item for all of them (a page has no
     // value: one choice, READ). Its rows are the catalog's last.
     helpPage,
@@ -1204,8 +1239,8 @@ struct Row {
     Place place{};
 };
 // Stable row/setting numbers; categories below determine presentation order.
-// The catalog: the settings' rows (235), then NA HELP's pages.
-inline constexpr size_t settingRowCount = 235;
+// The catalog: the settings' rows (239), then NA HELP's pages.
+inline constexpr size_t settingRowCount = 239;
 inline constexpr size_t rowTotal = settingRowCount + na_help::pageCount;
 const std::array<Row, rowTotal>& rows();
 const Row* rowFor(Item);
@@ -1272,7 +1307,7 @@ std::string tabOnlyText(const Values&);
 // key, or whose value is no whole number, is passed over.
 Values withTabOnly(Values, std::string_view text);
 // The movement defaults' revision (Values::movementDefaults) this build has.
-inline constexpr int movementDefaultsRevision = 14;
+inline constexpr int movementDefaultsRevision = 16;
 // November 12 movement cleanup: a settings file (that text) older than
 // movementDefaultsRevision gets the new movement defaults once - RUN CURVE
 // on, EARLY JUMP at least QUICK TAP - and is marked as having seen them; a
