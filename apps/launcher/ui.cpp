@@ -2716,6 +2716,13 @@ void App::options(ImVec2 origin, ImVec2 size) {
                 "In Native Animation, webs aim along your controller once his forearm is this far off it "
                 "(his arm is deformed there). Off: always the forearm. 60 degrees by default.",
                 S(150), [&] { tabCombo("##animforearmfallback", Item::animForearmFallback); });
+            settingOption(
+                Item::swingLineFullLength, "Full-length swing lines",
+                "A swing web keeps the length it had when it caught: as you swing in close to the anchor the "
+                "extra hangs as slack (the combat webs' rope sim, gravity sag), and only reeling in with the "
+                "trigger shortens it, one for one. Looks only: the swing itself is unchanged. Off: the straight "
+                "line from your hand to the anchor, as before. On by default.",
+                S(42), [&] { tabToggle("##swinglinefulllength", Item::swingLineFullLength); });
         });
         group(shootersPage, 1, "Replaced settings", [&] {
             ImGui::PushTextWrapPos(0);
@@ -2880,6 +2887,14 @@ void App::options(ImVec2 origin, ImVec2 size) {
                 "How far your view comes down toward the floor when you are upside down (0 to 120 cm). 90 "
                 "by default. Needs Realistic flips.",
                 S(150), [&] { tabCombo("##handstandeye", Item::handstandEyeDrop); });
+            settingOption(
+                Item::handstandSticky, "Sticky handstands",
+                "Easier to get into and harder to drop: the hands-over-head test is 5 cm easier and needs "
+                "0.08 s, "
+                "a tracking loss is held for 0.4 s (spidy_vr.ini: handstand_sticky_grace_ms), the headset "
+                "re-placing your hands and head together is no loss, and once caught the hands may lift a "
+                "little higher and for 0.15 s before it ends. Your arms still have to be up. On by default.",
+                S(42), [&] { tabToggle("##handstandsticky", Item::handstandSticky); });
         });
         // BODY & LEGS / KICKS & COMBAT (beta polish M4): the NA rows that lived on MOVEMENT and FLIPS.
         group(legsPage, 0, "Flips (Native Animation)", [&] {
@@ -2991,6 +3006,16 @@ void App::options(ImVec2 origin, ImVec2 size) {
                 "default; needs Hand grab on.",
                 S(42), [&] { tabToggle("##handgrabclassrules", Item::handGrabClassRules); });
         });
+        group(kicksPage, 1, "Air dodge", [&] {
+            settingOption(
+                Item::airDodge, "Air dodge",
+                "In SpidyVR's own air (no web held), B is a quick dodge the way your left stick points, from "
+                "where you look; with the stick at rest it dodges backward. A, X or Y pressed with B inside "
+                "50 ms keeps the point jump, Showtime and finishers as they were. The ground's B (dodge, "
+                "sidestep) is unchanged. Two dodges an air, half a second apart. On by default. spidy_vr.ini: "
+                "air_dodge_speed (9 m/s), air_dodge_chord_ms (50), air_dodge_cooldown_ms (500).",
+                S(42), [&] { tabToggle("##airdodge", Item::airDodge); });
+        });
         group(pointJumpPage, 0, "Point jump (experimental)", [&] {
             settingOption(Item::pointJump, "Point jump",
                    "Whenever you touch a surface (the ground, a perch, a wall you run on), press A and B "
@@ -3021,12 +3046,12 @@ void App::options(ImVec2 origin, ImVec2 size) {
                    "a tenth of a second, and comes upright when you land, web, press A or slow down. Your view "
                    "never turns for it. On by default.",
                    S(42), [&] { tabToggle("##pointjumpbullet", Item::pointJumpBullet); });
-            settingOption(Item::pointJumpSound, "Jump sounds",
-                   "Every jump SpidyVR launches plays Spidey's own jump grunt from the game: a point jump (the "
-                   "game already adds its own point-jump sounds), and a ground flip or handstand leap with the "
-                   "rest of the game's jump sounds. Skipped when the game's own grunt is already playing, so "
-                   "you never hear it twice. On by default.",
-                   S(42), [&] { tabToggle("##pointjumpsound", Item::pointJumpSound); });
+            settingOption(
+                Item::pointJumpSound, "Jump sounds",
+                "Every jump SpidyVR launches plays Spidey's own jump sounds from the game: his grunt and the "
+                "game's launch sounds, on a point jump, a ground flip and a handstand leap. Skipped when the "
+                "game's own jump is already playing them, so you never hear them twice. On by default.",
+                S(42), [&] { tabToggle("##pointjumpsound", Item::pointJumpSound); });
             settingOption(Item::wallJumpSound, "Wall jump sound",
                    "SpidyVR's wall jump plays one of two sounds the game makes around its own wall jumps "
                    "(Sound A by default, Sound B to compare). Tell us which fits better. Off: wall jumps stay "
@@ -3082,6 +3107,13 @@ void App::options(ImVec2 origin, ImVec2 size) {
                    "Darkens the edges of the view as the camera itself moves fast (a swing, a zip): Light 25%, "
                    "Strong 45%. It follows the camera's speed, never your head.",
                    S(150), [&] { tabCombo("##showtimevignette", Item::showtimeVignette); });
+            settingOption(
+                Item::showtimeRayFan, "Ray fan",
+                "While Showtime's camera is out, the native world rays the head uses in play go from Spidey "
+                "to where the camera wants to sit; the nearest wall pulls it in fast and lets it out slowly, "
+                "so it stays out of walls. At swing speed the camera is also carried with him, so it trails "
+                "less (spidy_vr.ini: showtime_speed_lead_pct, 60; 0: as before). On by default.",
+                S(42), [&] { tabToggle("##showtimerayfan", Item::showtimeRayFan); });
             settingOption(Item::showtimeSlowMo, "Slow motion in Showtime",
                    "While you are outside, a click of the left stick starts slow motion as it does in play, "
                    "drains the same meter and ends the same way. Off: the click does nothing out there.",

@@ -1092,6 +1092,14 @@ template <class V> auto switchOf(Item item, V& v) -> decltype(&v.aimMarkers) {
         return &v.pointJumpBullet;
     case Item::pointJumpSound:
         return &v.pointJumpSound;
+    case Item::airDodge:
+        return &v.airDodge;
+    case Item::showtimeRayFan:
+        return &v.showtimeRayFan;
+    case Item::handstandSticky:
+        return &v.handstandSticky;
+    case Item::swingLineFullLength:
+        return &v.swingLineFullLength;
     case Item::airLandingBlend:
         return &v.airLandingBlend;
     case Item::airLandingRelease:
@@ -1271,6 +1279,11 @@ Values sanitized(Values v) {
     v.showtimeFadeMs = std::clamp(v.showtimeFadeMs, 0, 400);
     v.showtimeBody = std::clamp(v.showtimeBody, 0, 3);
     v.wallJumpSound = std::clamp(v.wallJumpSound, 0, 2);
+    v.handstandStickyGraceMs = std::clamp(v.handstandStickyGraceMs, 250, 1000);
+    v.showtimeSpeedLeadPct = std::clamp(v.showtimeSpeedLeadPct, 0, 100);
+    v.airDodgeSpeed = std::clamp(v.airDodgeSpeed, 3, 20);
+    v.airDodgeChordMs = std::clamp(v.airDodgeChordMs, 0, 200);
+    v.airDodgeCooldownMs = std::clamp(v.airDodgeCooldownMs, 100, 3000);
     v.showtimeChord = std::clamp(v.showtimeChord, 0, 1);
     v.showtimeAutoDodge = std::clamp(v.showtimeAutoDodge, 0, 2);
     v.showtimeDistanceCm = std::clamp(v.showtimeDistanceCm, 150, 400);
@@ -2042,9 +2055,25 @@ const std::array<Row, rowTotal>& rows() {
         {Item::handGrabClassRules, "HAND GRAB CLASS RULES",
          "Heavies and bosses resist throws unless stunned or webbed up. Off: all alike.", {}, Place::launcher},
         {Item::pointJumpSound, "JUMP SOUNDS",
-         "The game's jump grunt on every point jump, ground flip and handstand leap.", {}},
+         "The game's jump grunt and launch sounds on point jumps, flips and leaps.", {}},
         {Item::wallJumpSound, "WALL JUMP SOUND",
          "Two of the game's sounds to try on a wall jump. Tell us which fits. OFF: none.", wallJumpSoundChoices},
+        {Item::airDodge,
+         "AIR DODGE",
+         "In SpidyVR's air, B dodges the way the left stick points. Stick at rest: back.",
+         {}},
+        {Item::showtimeRayFan,
+         "SHOWTIME RAY FAN",
+         "SHOWTIME's camera pulls in before walls and keeps up with him at speed.",
+         {}},
+        {Item::handstandSticky,
+         "STICKY HANDSTANDS",
+         "Handstands catch more easily and ride out a short tracking loss. Arms still up.",
+         {}},
+        {Item::swingLineFullLength,
+         "FULL-LENGTH SWING LINES",
+         "Swing webs keep the length they caught at; the slack hangs. Reel shortens them.",
+         {}},
     }};
     static const std::array<Row, rowTotal> all = [] {
         std::array<Row, rowTotal> a{};
@@ -2187,6 +2216,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::shooterMode,   Item::shooterLock,  Item::webAngle,
         Item::webAimSource,  Item::forearmBlend, Item::forearmAimLimit,
         Item::wristShooters, Item::palmShooters, Item::animForearmFallback,
+        Item::swingLineFullLength,
     };
     // NA · BODY & LEGS (LEGS (ADVANCED) since November 11): shown even while unavailable, the help saying why
     // (shownWhenInactive); the flips' NA rows and the handstand with it.
@@ -2196,7 +2226,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::directionalFlips, Item::airCorrect,
         Item::handstand, Item::handstandAssist, Item::handstandGrace, Item::handstandFall, Item::handstandSupport,
         Item::handstandDamping, Item::handstandLeap, Item::handstandPushGain,
-        Item::handstandPushMax, Item::handstandHeight, Item::handstandGain, Item::handstandEyeDrop,
+        Item::handstandPushMax, Item::handstandHeight, Item::handstandGain, Item::handstandEyeDrop, Item::handstandSticky,
         Item::wallBrake, Item::gripFling, Item::physicalTethers, Item::tetherParticles, Item::tetherSubsteps,
     };
     // NA · KICKS & COMBAT (beta polish M4): the kicks, the punch and jump assists, the hand grab.
@@ -2205,7 +2235,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::enemyJoints, Item::enemyLimbZones,
         Item::punchTrackCone, Item::punchTrackRange, Item::jumpPull, Item::punchAutotarget, Item::punchViewSnap,
         Item::jumpPullGaze, Item::jumpPullStick, Item::jumpPullRange, Item::jumpPullCap,
-        Item::handGrab, Item::handGrabForce, Item::enemyHoldCost, Item::handGrabClassRules,
+        Item::handGrab, Item::handGrabForce, Item::enemyHoldCost, Item::handGrabClassRules, Item::airDodge,
     };
     // POINT JUMP (November 11): its switch, trigger and feel.
     static constexpr Item pointJump[] = {
@@ -2227,7 +2257,7 @@ const std::array<Screen, categoryCount>& screens() {
         Item::showtimeFollow,
         Item::showtimeVignette,
         Item::showtimeSlowMo,
-        Item::showtimeLatch,
+        Item::showtimeLatch, Item::showtimeRayFan,
     };
     // HANDOFF TIMING (Nov 18, the owner: "give me smaller increments to set"): the handoff and landing glides'
     // times, speed and distance, a tab of their own (NATIVE ANIMATION's holds 20 rows already).
@@ -2301,6 +2331,7 @@ const char* inactiveReason(Item item, const Values& v) {
     case Item::handstand:
         return !v.realisticFlips ? "Handstands need REALISTIC FLIPS on." : nullptr;
     case Item::handstandAssist:
+    case Item::handstandSticky:
     case Item::handstandFall:
     case Item::handstandPushGain:
     case Item::handstandPushMax:
@@ -3214,6 +3245,15 @@ constexpr TabOnly tabOnly[] = {
     {"marker_twist_steady", &Values::markerTwistSteady, nullptr},
     {"marker_turn_rate_dps", nullptr, &Values::markerTurnRateDps},
     {"marker_switch_hold_ms", nullptr, &Values::markerSwitchHoldMs},
+    {"air_dodge", &Values::airDodge, nullptr},
+    {"air_dodge_speed", nullptr, &Values::airDodgeSpeed},
+    {"air_dodge_chord_ms", nullptr, &Values::airDodgeChordMs},
+    {"air_dodge_cooldown_ms", nullptr, &Values::airDodgeCooldownMs},
+    {"showtime_ray_fan", &Values::showtimeRayFan, nullptr},
+    {"showtime_speed_lead_pct", nullptr, &Values::showtimeSpeedLeadPct},
+    {"handstand_sticky", &Values::handstandSticky, nullptr},
+    {"handstand_sticky_grace_ms", nullptr, &Values::handstandStickyGraceMs},
+    {"swing_line_full_length", &Values::swingLineFullLength, nullptr},
     {"log_level", nullptr, &Values::logLevel},
     {"movement_defaults", nullptr, &Values::movementDefaults},
 };
@@ -3392,6 +3432,19 @@ Values withMovementDefaults(Values v, std::string_view text) {
         v.gripFling = true;
         v.airLandingRelease = true;
         v.pointJump = true;
+    }
+    if (seen < 15) {
+        // Revision 15 (0.8.7-na-beta2; the owner, Nov 19 t79u: "Let's go for it", all features left on for
+        // testing): the beta2 features come on once. They are new keys, so an older file has none of them;
+        // this only makes the rule the same as revision 14's (a 0 chosen after this revision stays).
+        v.airDodge = true;
+        v.showtimeRayFan = true;
+        v.handstandSticky = true;
+    }
+    if (seen < 16) {
+        // Revision 16 (beta2; the owner, Nov 20 t81u: "Let's add this as a toggle option", all features left on for
+        // testing): FULL-LENGTH SWING LINES comes on once. A new key; a 0 chosen after this revision stays.
+        v.swingLineFullLength = true;
     }
     v.movementDefaults = movementDefaultsRevision;
     return sanitized(v);

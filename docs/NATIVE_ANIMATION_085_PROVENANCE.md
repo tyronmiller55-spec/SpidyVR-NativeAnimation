@@ -1,6 +1,53 @@
 # Native Animation cumulative 0.8.5 source provenance
 
-## Current user-approved cumulative integration — Nov 19, 2026 (9e8d7cb)
+## Current user-approved cumulative integration — Nov 21, 2026 (1418992)
+
+Authoritative working source:
+`1418992a8fda6a2f6044c75abafb52940814000e`
+https://github.com/tyronmiller55-spec/SpidyVR/commit/1418992a8fda6a2f6044c75abafb52940814000e
+
+Branch `feat/087-beta2`: 0.8.7-na-beta2, the testers' CURRENT. The owner played
+beta2 on Nov 21, 2026, in a session of about 41 minutes from 8:09 AM PT (stamp
+`game-vr-20261121-080924`, build line `0.8.7-na-beta2 (commit d48249762e)`),
+said "it feels good, the polish is there" and asked for beta2 to become the
+CURRENT release immediately (`t86u`). The branch tip adds to `d482497` the
+full-length swing lines (`ab3c566`, looks only, a toggle), their docs
+(`05718dd`), the shooter check log line (`4748216`), the forearm trust fix
+(`afe6a39`, core-tested against the Nov 20 session) and the CURRENT docs
+(`1418992`).
+
+Beta2 since the previous CURRENT (`9e8d7cb`): point jump sounds, Y+B finishers
+kept the game's, air dodge on B, Showtime ray fan, sticky handstands, wrist
+shooters LOCKED TO ARM fixed (palm side and trust across wrist bends), and
+full-length swing lines. Settings migrations 15 and 16 turn the new features on
+once; a saved off stays off.
+
+Publication starts from live NativeAnimation main
+`fa7dd4f011572d27ab2694c5f4e54b2902931531` (after PR #6), preserving history.
+The owner explicitly authorized this CURRENT release.
+
+Exact tree parity policy (same as before, verified with Git blob IDs and modes):
+- All tracked files other than the two below match the working source exactly.
+- `README.md` is publication-specific documentation.
+- This provenance document is additional publication-only documentation.
+- `.github/workflows/release.yml` remains deliberately omitted. No workflow, rule
+  change or automatic publication is added.
+- The existing `test logs` directory is unchanged from main and matches
+  `1418992`.
+
+Windows build of `1418992` (core tests 964/964 locally; CI CTest and Python
+protocol tests):
+https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/44929126698
+Release asset `Spidy-0.8.7-na-beta2-win64-1418992.zip` (unpacks to
+`Spidy-0.8.7-player-torso-1418992`), SHA256
+`20acec3fc47fe9aa172730015c88a23f846ef6ae431a2efd01bdb38d88abb4cd`,
+18,542,403 bytes.
+
+Known limits going into this CURRENT (see the README): wrist shooters not yet
+perfectly aligned; the head can briefly part from the neck during some
+handoffs; handstands rarely catch; the game's 0xC0000409 in long sessions.
+
+## Earlier integration — Nov 19, 2026 (9e8d7cb)
 
 Authoritative working source:
 `9e8d7cb50b39fbc6903ff5071e9f07dd9ddc9fea`

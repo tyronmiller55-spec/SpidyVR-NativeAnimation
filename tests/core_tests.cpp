@@ -1,4 +1,12 @@
 #include "spidy/aim_steady.hpp"
+#include "spidy/finisher_handoff.hpp"
+#include "spidy/air_dodge.hpp"
+#include "spidy/showtime_fan.hpp"
+#include "spidy/showtime_rig.hpp"
+#include "spidy/handstand.hpp"
+#include "spidy/spherical_aim.hpp"
+#include "spidy/swing_line.hpp"
+#include "spidy/swing.hpp"
 #include "spidy/lab_world.hpp"
 #include "spidy/native_view.hpp"
 #include "spidy/game_tracking.hpp"
@@ -11298,7 +11306,7 @@ int main() {
                            "the row is not the launcher's switch");
                  }
              check(found == 1, "the row is not there once");
-             check(static_cast<unsigned>(Item::enemyTypes) + 4 == static_cast<unsigned>(Item::helpPage) &&
+             check(static_cast<unsigned>(Item::enemyTypes) + 8 == static_cast<unsigned>(Item::helpPage) &&
                        vr_settings::lastItem == Item::helpPage,
                    "enemy types is not the last setting (NA HELP's pages follow it)");
              vr_settings::Values on;
@@ -24946,7 +24954,7 @@ int main() {
         // then (still November 14) HAND GRAB STRENGTH and HOLD COST, then AIR KICKS, AIM and SPIN.
         // then (still November 14) WEB TETHERS, TETHER POINTS and TETHER STEPS, then GROUND KICKS, ENEMY JOINTS and ENEMY LIMB ZONES.
         // Polish pass: HEADSET FIRST, ANIM HEAD RIDE and SHOULDER LIMIT (launcher rows) after those.
-        constexpr size_t rowsAfter = 79 + na_help::pageCount; // + HAND GRAB CLASS RULES, JUMP SOUNDS, WALL JUMP SOUND and NA HELP's pages (beta polish) // + the handoff tune's seven (Nov 18), + DIRECTIONAL FLIPS and MIDAIR POSES (Nov 18 1:09 PM)
+        constexpr size_t rowsAfter = 83 + na_help::pageCount; // + HAND GRAB CLASS RULES, JUMP SOUNDS, WALL JUMP SOUND and NA HELP's pages (beta polish) // + the handoff tune's seven (Nov 18), + DIRECTIONAL FLIPS and MIDAIR POSES (Nov 18 1:09 PM) (Nov 19: + AIR DODGE, SHOWTIME RAY FAN, STICKY HANDSTANDS) (Nov 20: + FULL-LENGTH SWING LINES)
         // // (Nov 14: + AIR UPRIGHT TIME, POINT JUMP BULLET, FALL TO SPIDYVR, AIR LANDING BLEND, AIR LANDING RELEASE) + PUNCH AUTO-TARGET (4 rows), JUMP PULL (5 rows) and the handstand balance (4 rows), SHOWTIME (3 rows, then 8, Nov 14)
         check(all.size() == firstRealistic + std::size(realistic) + rowsAfter,
               "the realistic flips' rows are not the last but the appended ones");
@@ -25123,7 +25131,7 @@ int main() {
                   "the movement defaults overrode a choice made after them");
             check(withMovementDefaults(withTabOnly({}, ""), "").runCurve,
                   "no file: not the movement defaults");
-            check(tabOnlyText(migrated).find("movement_defaults=14\n") != std::string::npos,
+            check(tabOnlyText(migrated).find("movement_defaults=16\n") != std::string::npos,
                   "the migration is not remembered");
         }
         {
@@ -25219,8 +25227,10 @@ int main() {
                 (row.item >= Item::animatedTorsoTwist && row.item < Item::showtime) ||
                 // November 14 (air takeover): launcher rows; HANDOFF TIMING's seven (Nov 18), the game's own tab.
                 (row.item >= Item::airCorrect && !(row.item >= Item::landingBlend && row.item <= Item::airPoses) &&
-                 // Beta polish A4/A5: JUMP SOUNDS and WALL JUMP SOUND, NA · POINT JUMP's in-game rows.
-                 row.item != Item::pointJumpSound && row.item != Item::wallJumpSound);
+                 // Beta polish A4/A5: JUMP SOUNDS and WALL JUMP SOUND, NA · POINT JUMP's in-game rows; AIR DODGE (beta 2).
+                 row.item != Item::pointJumpSound && row.item != Item::wallJumpSound && row.item != Item::airDodge &&
+                 row.item != Item::showtimeRayFan &&
+                 row.item != Item::handstandSticky && row.item != Item::swingLineFullLength);
             check(row.place == (row.item == Item::view ? Place::page
                                 : row.item == Item::helpPage ? Place::tab
                                 : naRetired(row.item)    ? Place::launcher
@@ -25230,7 +25240,7 @@ int main() {
                   "a row in the wrong place");
         }
         check(std::count_if(all.begin(), all.end(), [](const Row& r) { return r.place == Place::tab; }) ==
-                  174 + na_help::pageCount, // (beta polish A4/A5: +2 JUMP SOUNDS, WALL JUMP SOUND) (beta polish M5: + NA HELP's pages) (beta polish M4: +9 NA rows players tune in the headset, -4 retired legacy rows hidden) (Nov 18 1:09 PM: +2 DIRECTIONAL FLIPS, MIDAIR POSES) (Nov 18: +7 HANDOFF TIMING) (Nov 14: +15 SHOWTIME) November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE, +3 MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE, +2 JUMP TO SPIDYVR, AIR VIEW EASE, +2 ANIM YAW SWAY, TURN-IN-PLACE ANGLE, +4 PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD
+                  178 + na_help::pageCount, // (beta 2: +4 AIR DODGE, SHOWTIME RAY FAN, STICKY HANDSTANDS, FULL-LENGTH SWING LINES) (beta polish A4/A5: +2 JUMP SOUNDS, WALL JUMP SOUND) (beta polish M5: + NA HELP's pages) (beta polish M4: +9 NA rows players tune in the headset, -4 retired legacy rows hidden) (Nov 18 1:09 PM: +2 DIRECTIONAL FLIPS, MIDAIR POSES) (Nov 18: +7 HANDOFF TIMING) (Nov 14: +15 SHOWTIME) November 11: +8 (SHOOTERS, LOCK STRENGTH, CAMERA MOTION, PITCH, ROLL, BOB x2, HEAD ANGLE), -5 old wrist rows; +6 POINT JUMP; November 12: +1 PUNCH VIEW EASE, +3 MOVE HAPTICS, VIEW YAW SOURCE, SOUND TRACE, +2 JUMP TO SPIDYVR, AIR VIEW EASE, +2 ANIM YAW SWAY, TURN-IN-PLACE ANGLE, +4 PASSIVE LEGS, PASSIVE COUPLING, AIR CROUCH, REACH SPREAD
               "the tab's own rows");
         check(all[1].item == Item::webStyle && std::strcmp(all[1].title, "WEB STYLE") == 0 &&
                   all[1].choices.size() == 2 && std::strcmp(all[1].choices[0], "REALISTIC") == 0 &&
@@ -25580,8 +25590,12 @@ int main() {
                   "marker_twist_steady=1\n"
                   "marker_turn_rate_dps=360\n"
                   "marker_switch_hold_ms=150\n"
+                  "air_dodge=1\nair_dodge_speed=9\nair_dodge_chord_ms=50\nair_dodge_cooldown_ms=500\n"
+                  "showtime_ray_fan=1\nshowtime_speed_lead_pct=60\n"
+                  "handstand_sticky=1\nhandstand_sticky_grace_ms=400\n"
+                  "swing_line_full_length=1\n"
                   "log_level=1\n"
-                  "movement_defaults=14\n",
+                  "movement_defaults=16\n",
               "the defaults' text");
         Values changed = defaults;
         changed.recordingFov = 140;
@@ -33070,7 +33084,7 @@ int main() {
     test("Native Animation: combined menu inventory and upstream-compatible v39 settings packet", [] {
         using namespace vr_settings;
         const auto& all = rows();
-        check(all.size() == 235 + na_help::pageCount && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
+        check(all.size() == 239 + na_help::pageCount && static_cast<unsigned>(lastItem) < 256, "row/Item bounds");
         std::array<unsigned, 256> seen{};
         size_t start = all.size();
         for (size_t i = 0; i < all.size(); ++i) {
@@ -33323,6 +33337,563 @@ int main() {
         check(!hold.update(0, true, 1, hz) && !hold.update(stamp, true, stamp, 0), "no stamp or no clock is not live");
         // The raw rule it replaces: a 231 ms stall (the G1 playtest's worst) is carried whole.
         check(at(.01) && at(.231) && at(.01) && hold.take().held == 1, "the 231 ms stall was not carried");
+    });
+    test("finishers: Y+B before a fight scene is the game's own finisher, held until it ends", [&] {
+        using namespace finisher_handoff;
+        const float dt = 1.f / 72.f;
+        // The beta1 log's pattern: B, then Y 0.25 s later, the scene 0.19 s after the Y.
+        Watch w;
+        for (int i = 0; i < 20; ++i)
+            w.update(dt, false, false, false);
+        for (int i = 0; i < 18; ++i)
+            w.update(dt, false, true, false); // B held 0.25 s
+        w.update(dt, true, true, false);      // then Y
+        for (int i = 0; i < 13; ++i)
+            w.update(dt, true, false, false);
+        auto s = w.started(true);
+        check(s.finisher && w.active() && !s.named, "B then Y 0.25 s apart was not a finisher");
+        check(std::abs(s.gap - .25f) < .03f && s.since < .25f, "the ask's gap and lead were not measured");
+        for (int i = 0; i < 144; ++i)
+            w.tick(dt);
+        check(std::abs(w.ended() - 2.f) < .05f && !w.active(), "the finisher's 2 s were not told at its end");
+        // The prompt's Y+B (a B press the game names as Y+B) counts on its own.
+        Watch n;
+        n.update(dt, false, true, true);
+        check(n.started(true).named && n.active(), "the prompt's Y+B was not a finisher's ask");
+        // Not a finisher: no fight, too late, or Y and B too far apart.
+        Watch calm;
+        calm.update(dt, true, true, false);
+        check(!calm.started(false).finisher && !calm.active(), "a scene out of a fight was a finisher");
+        Watch late;
+        late.update(dt, true, true, false);
+        for (int i = 0; i < 120; ++i)
+            late.update(dt, false, false, false); // 1.67 s
+        check(!late.started(true).finisher, "a scene 1.7 s after Y+B was a finisher");
+        Watch apart;
+        apart.update(dt, false, true, false);
+        for (int i = 0; i < 60; ++i)
+            apart.update(dt, false, false, false); // 0.83 s
+        apart.update(dt, true, false, false);
+        check(!apart.started(true).finisher, "Y 0.8 s after B was a finisher's ask");
+        Watch none;
+        check(!none.started(true).finisher && none.ended() == 0.f, "a scene with no ask was a finisher");
+    });
+    test("air dodge: B in SpidyVR's air waits the chord window, then dodges; A, X or Y keep their chords",
+         [&] {
+             using namespace air_dodge;
+             const float dt = 1.f / 72.f;
+             const Params p;
+             Trigger::Input air;
+             air.seconds = dt;
+             air.freeAir = air.vrOwns = true;
+             const auto step = [&](Trigger& t, bool b, bool others = false) {
+                 Trigger::Input in = air;
+                 in.b = b;
+                 in.others = others;
+                 return t.update(in, p);
+             };
+             // B alone: held back for the 50 ms window (3 frames at 72 Hz), then the dodge; the game gets
+             // none of it.
+             Trigger t;
+             auto o = step(t, true);
+             check(!o.b && !o.fire && o.waiting, "B was not held back for the chord window");
+             o = step(t, true);
+             check(!o.b && !o.fire, "the dodge fired inside the window");
+             bool fired = false, leaked = false;
+             for (int i = 0; i < 4; ++i) {
+                 o = step(t, true);
+                 fired = fired || o.fire;
+                 leaked = leaked || o.b;
+             }
+             check(fired && !leaked && t.used() == 1,
+                   "B held past the window was not a dodge, or reached the game");
+             o = step(t, false);
+             check(!o.b && !o.fire, "letting go after a dodge did something");
+             // A tap inside the window is a dodge too, after the cooldown.
+             Trigger tap;
+             step(tap, true);
+             o = step(tap, false);
+             check(o.fire && !o.b, "a tap of B was not a dodge");
+             // A inside the window (the point jump's A+B): no dodge, B goes on to the game with it.
+             Trigger chord;
+             step(chord, true);
+             o = step(chord, true, true);
+             check(!o.fire && o.b && o.passed == Why::chord, "A+B in the window became a dodge");
+             o = step(chord, true, true);
+             check(o.b && !o.fire, "B stopped reaching the game during the chord");
+             // Y or X held first (a finisher's Y+B, Showtime's X+B): B passes at once.
+             Trigger first;
+             o = step(first, true, true);
+             check(o.b && !o.fire && o.passed == Why::chord, "Y+B or X+B held back B");
+             // The ground, the animation's air, a web, a warning, a prompt: B is the game's at once, as
+             // before.
+             const auto passes = [&](auto set, Why why) {
+                 Trigger g;
+                 Trigger::Input in = air;
+                 set(in);
+                 in.b = true;
+                 const auto r = g.update(in, p);
+                 return r.b && !r.fire && !r.waiting && r.passed == why;
+             };
+             check(passes([](Trigger::Input& i) { i.freeAir = false; }, Why::ground),
+                   "the ground's B was held back");
+             check(passes([](Trigger::Input& i) { i.vrOwns = false; }, Why::owner),
+                   "the animation's B was held back");
+             check(passes([](Trigger::Input& i) { i.webbed = true; }, Why::web), "a web's B was held back");
+             check(passes([](Trigger::Input& i) { i.warning = true; }, Why::warning),
+                   "a warned B lost its perfect dodge");
+             check(passes([](Trigger::Input& i) { i.blocked = true; }, Why::blocked),
+                   "a prompt's B was held back");
+             Params off;
+             off.enabled = false;
+             Trigger d;
+             Trigger::Input in = air;
+             in.b = true;
+             check(d.update(in, off).b, "AIR DODGE off held B back");
+             // Cooldown, and two an air: the third waits for a touch.
+             Trigger c;
+             step(c, true);
+             step(c, false);
+             o = step(c, true);
+             check(o.b && o.passed == Why::cooldown, "a second dodge inside the cooldown");
+             step(c, false);
+             for (int i = 0; i < 40; ++i)
+                 step(c, false);
+             step(c, true);
+             o = step(c, false);
+             check(o.fire && c.used() == 2, "the second dodge of the air did not fire");
+             for (int i = 0; i < 40; ++i)
+                 step(c, false);
+             o = step(c, true);
+             check(o.b && o.passed == Why::spent, "a third dodge in one air");
+             step(c, false);
+             Trigger::Input touch = air;
+             touch.contact = true;
+             touch.freeAir = false;
+             c.update(touch, p);
+             step(c, true);
+             o = step(c, false);
+             check(o.fire, "touching a surface did not give the dodges back");
+             // The way: from the view's heading with the stick, backward at rest; the velocity keeps some,
+             // stalls a fall.
+             bool stick = true;
+             const Vec3 look{0, -.3f, -1};
+             Vec3 w = way(look, 0, 0, p, &stick);
+             check(!stick && std::abs(w.z - 1.f) < 1e-3f && std::abs(w.y) < 1e-6f,
+                   "the stick at rest was not backward");
+             w = way(look, 1, 0, p, &stick);
+             check(stick && std::abs(w.x - 1.f) < 1e-3f, "the stick's right was not the view's right");
+             w = way({1, 0, 0}, 0, 1, p);
+             check(std::abs(w.x - 1.f) < 1e-3f, "the stick's forward did not follow the view's heading");
+             const Vec3 v = velocity({1, 0, 0}, {0, -12, -10}, p);
+             check(std::abs(v.x - p.speed) < 1e-3f && std::abs(v.z + 10 * p.keep) < 1e-3f &&
+                       std::abs(v.y - p.lift) < 1e-3f,
+                   "the dodge's velocity: speed along, keep across, a fall stalled with the lift");
+             // The swing takes it in the air only.
+             spidy::Swing swing;
+             swing.airDodge({5, 0, 0});
+             check(swing.airDodges() == 0, "queued is not taken");
+         });
+    test("showtime ray fan: the head's free slots, the nearest hit less a margin, fast in and slow out, less "
+         "lag at speed",
+         [&] {
+             using namespace showtime_fan;
+             // The slots: aim 2 + hands 2 + roof leave three; no hands, five; never more than five, none when
+             // full.
+             check(room(2, 2, true) == 3 && room(2, 0, true) == 5 && room(0, 0, false) == 5 &&
+                       room(6, 2, true) == 0,
+                   "the fan's room among the eight slots");
+             std::array<native_rays::Ray, maxRays> fan{};
+             const Vec3 from{0, 1, 0}, to{0, 1.3f, 2.5f};
+             unsigned n = rays(from, to, 3, fan);
+             check(n == 3 && fan[0].tag == 40 && fan[2].tag == 42, "three rays, tags 40 on");
+             check(std::abs(fan[0].distance - length(to - from)) < 1e-4f &&
+                       length(fan[0].direction - normalized(to - from)) < 1e-4f,
+                   "the centre ray goes to the camera's place");
+             const Vec3 end1 = fan[1].origin + fan[1].direction * fan[1].distance;
+             check(std::abs(length(end1 - to) - ring) < 1e-3f, "the ring's rays end 0.25 m from the place");
+             check(rays(from, from + Vec3{0, 0, .1f}, 5, fan) == 0 && rays(from, to, 0, fan) == 0,
+                   "no fan too close or none");
+             // The nearest hit, less 0.25 m, as a share; misses and other tags change nothing.
+             native_rays::Hit hits[4]{};
+             hits[0].ray = {from, 2.f, {0, 0, 1}, 40};
+             hits[0].count = 0; // a miss
+             hits[1].ray = {from, 2.f, {0, 0, 1}, 41};
+             hits[1].count = 1;
+             hits[1].fraction = .5f; // 1 m
+             hits[2].ray = {from, 4.f, {0, 0, 1}, 42};
+             hits[2].count = 1;
+             hits[2].fraction = .5f;                  // 2 m of 4
+             hits[3].ray = {from, 2.f, {0, 0, 1}, 3}; // the head's, not the fan's
+             hits[3].count = 1;
+             hits[3].fraction = .01f;
+             auto l = select(hits, 4);
+             check(l.ok && l.rays == 3 && l.hits == 2 && std::abs(l.ratio - .375f) < 1e-4f && l.tag == 41,
+                   "the nearest fan hit less the margin");
+             hits[1].fraction = .05f;
+             check(select(hits, 4).ratio == 0.f, "a hit inside the margin: as close as it goes");
+             check(!select(hits + 3, 1).ok, "no fan rays, no limit");
+             check(speedLead(5, .6f) == 0 && std::abs(speedLead(25, .6f) - .6f) < 1e-5f &&
+                       speedLead(30, 2) == 1 && speedLead(NAN, .6f) == 0,
+                   "the speed lead's ramp from 8 to 25 m/s");
+             // The rig: a fan limit pulls in fast, and its going lets out slowly.
+             using namespace showtime;
+             RigParams p;
+             OrbitRig rig;
+             rig.begin({0, 0, 0}, 0, p);
+             OrbitRig::Input in;
+             in.seconds = 1 / 72.f;
+             in.feet = {0, 0, 0};
+             OrbitRig::Output o;
+             for (int i = 0; i < 72; ++i)
+                 o = rig.update(in, p);
+             const auto away = [&](const OrbitRig::Output& out) {
+                 return std::hypot(out.position.x, out.position.z);
+             };
+             check(std::abs(away(o) - p.distance) < .05f, "open space: the full distance");
+             check(length(o.fanTo - Vec3{o.position.x, o.position.y, o.position.z}) < .05f &&
+                       std::abs(o.fanFrom.y - 1) < 1e-4f,
+                   "the fan goes from his pelvis to the wanted place");
+             in.raysOk = true;
+             in.rayRatio = .4f;
+             for (int i = 0; i < 11; ++i)
+                 o = rig.update(in, p); // 0.15 s
+             check(away(o) < p.distance * .4f + .1f && o.rayLimit > 0,
+                   "a wall pulled the camera in within 0.15 s");
+             in.rayRatio = 1.f;
+             for (int i = 0; i < 11; ++i)
+                 o = rig.update(in, p);
+             check(away(o) < p.distance * .75f, "the camera let out slowly, not at once");
+             for (int i = 0; i < 216; ++i)
+                 o = rig.update(in, p);
+             check(std::abs(away(o) - p.distance) < .05f, "and back to the full distance in time");
+             // SPEED LEAD: at 25 m/s the lag shrinks; at 6 m/s it is as before.
+             const auto lagAt = [&](float v, float lead) {
+                 RigParams q;
+                 q.speedLead = lead;
+                 OrbitRig r;
+                 r.begin({0, 0, 0}, 0, q);
+                 OrbitRig::Input k;
+                 k.seconds = 1 / 72.f;
+                 OrbitRig::Output out;
+                 for (int i = 0; i < 720; ++i) {
+                     k.feet = {v * static_cast<float>(i) / 72.f, 0, 0};
+                     out = r.update(k, q);
+                 }
+                 return out.lag;
+             };
+             check(lagAt(25, .6f) < lagAt(25, 0) - 1.5f,
+                   "the speed lead cut the lag at 25 m/s by over 1.5 m");
+             check(std::abs(lagAt(6, .6f) - lagAt(6, 0)) < 1e-4f, "slow, the lead does nothing");
+         });
+    test("sticky handstands: the rig's re-placement is no loss, 0.4 s grace, a hold that does not drop at once, an easier entry", [&] {
+        using namespace handstand;
+        const float hdt = 1.f / 90;
+        const auto params = [](bool sticky) {
+            Params p;
+            p.enabled = true;
+            p.leap = false;
+            p.tipIn = false;
+            p.sticky = sticky;
+            if (sticky)
+                p.trackingGrace = std::max(p.trackingGrace, p.stickyGrace);
+            return p;
+        };
+        const auto pose = [&] {
+            Handstand::Input in;
+            in.seconds = hdt;
+            in.vrAir = true;
+            in.tracked = true;
+            in.floorPalms = 3;
+            in.palms[0] = {-.2f, 0, 0};
+            in.palms[1] = {.2f, 0, 0};
+            in.headKnown = true;
+            in.head = {0, .45f, .05f};
+            in.bodyUp = {0, -1, 0};
+            return in;
+        };
+        const auto caught = [&](Handstand& h, const Params& p) {
+            auto in = pose();
+            bool c = h.update(in, p).caughtNow;
+            for (int i = 0; i < 9; ++i) h.update(in, p);
+            return c;
+        };
+        // The logged t=657.9 catch: palms and head moved together by 1.2 m in a frame (the rig re-placed).
+        for (const bool sticky : {false, true}) {
+            const Params p = params(sticky);
+            Handstand h;
+            check(caught(h, p), "the catch");
+            auto moved = pose();
+            const Vec3 shift{.3f, -1.2f, .4f};
+            moved.palms[0] = moved.palms[0] + shift;
+            moved.palms[1] = moved.palms[1] + shift;
+            moved.head = moved.head + shift;
+            const auto o = h.update(moved, p);
+            if (sticky)
+                check(o.rigMoved && !o.glitch && o.exitNow == Exit::none, "sticky: the rig's move is taken, no glitch");
+            else
+                check(o.glitch && !o.rigMoved, "not sticky: a glitch, as before");
+            if (sticky) {
+                // The palms alone jumping (the head still) is still a glitch.
+                auto alone = moved;
+                alone.palms[0] = alone.palms[0] + Vec3{0, 0, 2.f};
+                alone.palms[1] = alone.palms[1] + Vec3{0, 0, 2.f};
+                check(h.update(alone, p).glitch, "sticky: palms jumping without the head are a glitch");
+            }
+        }
+        // A real loss of 0.30 s (the log's 0.26 s and a little): sticky holds it, the old grace (0.25 s) lets go.
+        const auto lossExit = [&](bool sticky, float seconds) {
+            const Params p = params(sticky);
+            Handstand h;
+            caught(h, p);
+            auto lost = pose();
+            lost.tracked = false;
+            Exit why = Exit::none;
+            for (int i = 0; i < static_cast<int>(seconds / hdt + .5f) && why == Exit::none; ++i)
+                why = h.update(lost, p).exitNow;
+            if (why == Exit::none)
+                why = h.update(pose(), p).exitNow;
+            return why;
+        };
+        check(lossExit(false, .30f) == Exit::tracking, "not sticky: 0.30 s lost lets go");
+        check(lossExit(true, .30f) == Exit::none, "sticky: 0.30 s lost is held and the hands come back");
+        check(lossExit(true, .50f) == Exit::tracking, "sticky: 0.5 s lost still lets go");
+        // The hold's hysteresis: palms off the floor for a frame or two is no step-down; 0.15 s is.
+        const auto offExit = [&](bool sticky, int frames) {
+            const Params p = params(sticky);
+            Handstand h;
+            caught(h, p);
+            for (int i = 0; i < 60; ++i) h.update(pose(), p); // into the balance
+            auto off = pose();
+            off.floorPalms = 0;
+            Exit why = Exit::none;
+            for (int i = 0; i < frames && why == Exit::none; ++i)
+                why = h.update(off, p).exitNow;
+            if (why == Exit::none)
+                why = h.update(pose(), p).exitNow;
+            return why;
+        };
+        check(offExit(false, 1) == Exit::stepDown, "not sticky: a palm lift steps down at once");
+        check(offExit(true, 9) == Exit::none, "sticky: 0.1 s off the floor and back holds");
+        check(offExit(true, 20) == Exit::stepDown, "sticky: 0.2 s off the floor steps down");
+        // The entry from the settings: 5 cm easier, held 0.08 s, the grace 0.4 s; off, as before. Arms up stays.
+        vr_settings::Values v;
+        const auto on = paramsOf(v);
+        check(on.sticky && std::abs(on.armsOverHead - .05f) < 1e-6f && std::abs(on.armsHoldSeconds - .08f) < 1e-6f &&
+                  std::abs(on.trackingGrace - .4f) < 1e-6f && std::abs(on.armsBelowHead - .2f) < 1e-6f,
+              "sticky's entry and grace from the defaults");
+        v.handstandSticky = false;
+        const auto off = paramsOf(v);
+        check(!off.sticky && std::abs(off.armsOverHead - .10f) < 1e-6f && std::abs(off.armsHoldSeconds - .12f) < 1e-6f &&
+                  std::abs(off.trackingGrace - .25f) < 1e-6f,
+              "STICKY HANDSTANDS off: as before");
+        v.handstandSticky = true;
+        v.handstandArmsOverHeadCm = 3;
+        check(std::abs(paramsOf(v).armsOverHead - .02f) < 1e-6f, "the arms-up test never below 2 cm");
+        v.handstandArmsOverHeadCm = 0;
+        check(paramsOf(v).armsOverHead == 0.f && std::abs(paramsOf(v).armsBelowHead - .15f) < 1e-6f,
+              "ARMS OVER HEAD 0 stays the world test, 5 cm easier");
+    });
+    test("locked to arm: a palm-side tilt offsets the web line, a tilt toward the back of the hand keeps it on the forearm", [&] {
+        namespace sa = spherical_aim;
+        const float d2r = 3.14159265f / 180;
+        const sa::ForearmModel none; // the palm-side rule needs no learned model
+        for (int hand = 0; hand < 2; ++hand) {
+            // The controller pointing along -Z of its aim pose; the hand's palm axis is aim +X (left) / -X (right).
+            const Quat base = Quat::yaw(.3f);
+            const Vec3 forearm = base.rotate({0, 0, -1});
+            const Vec3 palmAxis = base.rotate({hand == 0 ? 1.f : -1.f, 0, 0});
+            // Wrist flexion (toward the palm) turns the controller's line toward the palm axis; extension away.
+            const auto tilted = [&](float degrees) {
+                // Rotating about the aim's up turns -Z toward +X for a negative angle (yaw left is +).
+                const float toward = hand == 0 ? -degrees : degrees;
+                return base * Quat::yaw(toward * d2r);
+            };
+            const Quat flexed = tilted(30), extended = tilted(-30);
+            check(dot(flexed.rotate({0, 0, -1}), palmAxis) > .4f && dot(extended.rotate({0, 0, -1}), palmAxis) < -.4f,
+                  "the test's tilts go toward the palm and toward the back");
+            sa::ArmLine palm, back, rest;
+            Vec3 p{}, b{}, r{};
+            for (int i = 0; i < 90; ++i) {
+                p = palm.update(forearm, none, flexed, 1.f / 90, hand);
+                b = back.update(forearm, none, extended, 1.f / 90, hand);
+                r = rest.update(forearm, none, base, 1.f / 90, hand);
+            }
+            check(std::abs(sa::angleBetween(p, forearm) / d2r - 30) < 1 && std::abs(palm.offsetDegrees - 30) < 1,
+                  hand ? "R: a palm-side tilt did not offset the line by the tilt"
+                       : "L: a palm-side tilt did not offset the line by the tilt");
+            check(dot(p, palmAxis) > .4f, hand ? "R: the offset is not toward the palm" : "L: the offset is not toward the palm");
+            check(sa::angleBetween(b, forearm) < 1e-3f && back.offsetDegrees == 0,
+                  hand ? "R: a tilt toward the back of the hand moved the line off the forearm"
+                       : "L: a tilt toward the back of the hand moved the line off the forearm");
+            check(sa::angleBetween(r, forearm) < 1e-3f, "along the arm: on the forearm");
+            // The palm-side follow is capped at 45 degrees (offsetCapDegrees).
+            sa::ArmLine far;
+            for (int i = 0; i < 90; ++i) far.update(forearm, none, tilted(55), 1.f / 90, hand);
+            check(std::abs(far.offsetDegrees - sa::offsetCapDegrees) < .5f, "the palm-side follow's cap");
+        }
+    });
+    test("full-length swing lines: the drawn length stays as he closes in, the reel shortens it one-for-one", [&] {
+        namespace sl = swing_line;
+        using sl::DrawnLength, sl::Change, sl::Line, sl::sagPoints;
+        using SlInput = sl::Input;
+        // Caught 20 m from the anchor (the swing rope 20 m too), then swung in to 8 m: the swing takes its rope in
+        // (SwingConfig::taut), the drawn line keeps 20 m.
+        DrawnLength d;
+        Change c;
+        SlInput in{true, true, 7, 20.f, 20.f, false, false};
+        check(std::abs(d.update(in, &c) - 20.f) < 1e-4f && c.attached, "caught: the distance at the catch");
+        for (float dist = 19.f; dist >= 8.f; dist -= 1.f) {
+            in.distance = dist;
+            in.ropeLength = dist; // taken in by the swing
+            d.update(in, &c);
+        }
+        check(std::abs(d.drawn() - 20.f) < 1e-4f && !c.reeled, "closing in shortened the drawn line");
+        // Holding there a while: it does not shrink by itself.
+        for (int i = 0; i < 300; ++i)
+            d.update(in);
+        check(std::abs(d.drawn() - 20.f) < 1e-4f, "the drawn line shrank while hanging close");
+        // The reel takes 3 m in: the drawn line 3 m shorter, one-for-one.
+        in.reeling = true;
+        for (int i = 0; i < 3; ++i) {
+            in.ropeLength -= 1.f;
+            in.distance -= 1.f;
+            d.update(in, &c);
+        }
+        check(std::abs(d.drawn() - 17.f) < 1e-3f && c.reeled && std::abs(d.reeledIn() - 3.f) < 1e-3f,
+              "the reel did not shorten it one-for-one");
+        // Taut: past the drawn length, it is the distance.
+        in.reeling = false;
+        in.distance = 25.f;
+        in.ropeLength = 25.f;
+        check(std::abs(d.update(in) - 25.f) < 1e-4f, "a line longer than drawn is drawn as long as it is");
+        // On the ground the swing pays out: the drawn line grows by as much.
+        in.distance = 10.f;
+        in.ropeLength = 25.f;
+        d.update(in);
+        in.grounded = true;
+        in.ropeLength = 27.f;
+        check(std::abs(d.update(in) - 27.f) < 1e-3f, "the ground's payout did not lengthen it");
+        // A new web: the length again from the distance.
+        in = {true, true, 8, 6.f, 6.f, false, false};
+        check(std::abs(d.update(in, &c) - 6.f) < 1e-4f && c.attached, "a new web did not start again");
+        // Off: the distance (the straight line, as before).
+        in.enabled = false;
+        in.distance = 4.f;
+        check(std::abs(d.update(in) - 4.f) < 1e-4f && !d.started(), "off: not the straight line");
+        // Let go: the next catch starts again even with the same key.
+        DrawnLength e;
+        e.update({true, true, 9, 15.f, 15.f, false, false});
+        e.update({true, false, 9, 5.f, 5.f, false, false});
+        check(std::abs(e.update({true, true, 9, 5.f, 5.f, false, false}) - 5.f) < 1e-4f, "a let-go web kept its length");
+    });
+    test("full-length swing lines: the slack hangs below the line (the combat rope), straight when taut or off", [&] {
+        namespace sl = swing_line;
+        using sl::DrawnLength, sl::Change, sl::Line, sl::sagPoints;
+        using SlInput = sl::Input;
+        const Vec3 anchor{0, 20, 0};
+        Line line;
+        SlInput in{true, true, 3, 0, 20.f, false, false};
+        Vec3 wrist{20, 20, 0};
+        auto o = line.update(in, wrist, anchor, 1.f / 72);
+        check(o.change.attached && std::abs(o.drawn - 20.f) < 1e-3f && o.count == 0, "caught taut: straight");
+        // Swung in to 10 m: 10 m of slack, laid by the rope below the line.
+        wrist = {10, 20, 0};
+        in.ropeLength = 10.f;
+        for (int i = 0; i < 144; ++i)
+            o = line.update(in, wrist, anchor, 1.f / 72);
+        check(std::abs(o.drawn - 20.f) < 1e-3f && std::abs(o.distance - 10.f) < 1e-3f, "the drawn length");
+        check(o.simulated && o.count > 0 && o.count <= tether::maxDrawn, "the combat rope did not lay the slack");
+        float lowest = 20.f;
+        for (int k = 0; k < o.count; ++k)
+            lowest = std::min(lowest, o.points[k].y);
+        check(lowest < 20.f - 2.f, "the slack does not hang (gravity)");
+        // The sag curve: as long as drawn, below the line.
+        Vec3 pts[6]{};
+        const int n = sagPoints({10, 20, 0}, anchor, 20.f, 6, pts);
+        check(n == 6 && pts[2].y < 18.f && pts[3].y < 18.f, "the fallback sag");
+        check(sagPoints({10, 20, 0}, anchor, 10.02f, 6, pts) == 0, "no slack: no fallback points");
+        // Off: straight, as before.
+        in.enabled = false;
+        o = line.update(in, wrist, anchor, 1.f / 72);
+        check(o.count == 0 && std::abs(o.drawn - 10.f) < 1e-3f, "off: not straight");
+        // The toggle's default and its migration (revision 16): on, and a 0 chosen after it stays.
+        using vr_settings::Values, vr_settings::withMovementDefaults, vr_settings::withTabOnly;
+        check(Values{}.swingLineFullLength, "FULL-LENGTH SWING LINES is on by default");
+        const std::string old = "movement_defaults=15\n";
+        check(withMovementDefaults(withTabOnly({}, old), old).swingLineFullLength, "an older file did not get it");
+        const std::string chosen = "swing_line_full_length=0\nmovement_defaults=16\n";
+        check(!withMovementDefaults(withTabOnly({}, chosen), chosen).swingLineFullLength, "a 0 chosen after it moved");
+    });
+    test("shooter check: the logged forearm sign and the palm-side rule read the same palm, both hands", [&] {
+        const float d2r = 3.14159265f / 180;
+        for (int hand = 0; hand < 2; ++hand)
+            for (float yaw = -60; yaw <= 60; yaw += 15)
+                for (float pitch = -30; pitch <= 30; pitch += 30) {
+                    const Quat base = Quat::yaw(.4f);
+                    const Vec3 arm = base.rotate({0, 0, -1});
+                    const Quat aim = base * Quat::yaw(yaw * d2r) * Quat::around({1, 0, 0}, pitch * d2r);
+                    const float logged = web_aim::signedPalmAngle(arm, aim, hand);
+                    const float rule = spherical_aim::palmSideRadians(arm, aim, hand);
+                    check(std::abs(logged - rule) < 1e-3f, "the log and the rule disagree on the palm side");
+                    // The left palm faces the aim's +X, the right -X (OpenXR's grip: +X away from the left palm,
+                    // into the right one): a yaw toward +X is palm-side for the left hand only.
+                    if (std::abs(yaw) >= 15 && pitch == 0)
+                        check((logged > 0) == ((yaw < 0) == (hand == 0)), "the palm side's sign per hand");
+                }
+    });
+    test("locked to arm: a wrist bent toward the palm or the back keeps trusting the solved arm (session 031344)", [&] {
+        namespace sa = spherical_aim;
+        const float d2r = 3.14159265f / 180;
+        for (int hand = 0; hand < 2; ++hand) {
+            // The controller at rest 25 deg off the forearm toward the back of the hand, as in the session.
+            const Quat rest = Quat::yaw(.3f);
+            // The forearm 25 deg toward the palm from the controller (yaw + turns -Z toward -X; the left palm is +X).
+            const float towardPalm = hand == 0 ? -25.f : 25.f;
+            const Vec3 forearm = (rest * Quat::yaw(towardPalm * d2r)).rotate({0, 0, -1});
+            sa::ForearmModel model;
+            for (int k = 0; k < 900; ++k)
+                model.learn(forearm, rest, 1.f / 90);
+            check(model.ready(), "the model learned");
+            // Bent toward the palm (about the aim's Y): the solve is right and stays trusted. 60 deg from the usual
+            // angle: the full off-model angle distrusted it (the bug); across the bend nothing is off.
+            const Quat far = rest * Quat::yaw((hand == 0 ? -60.f : 60.f) * d2r);
+            const float full = sa::angleBetween(forearm, model.world(far)) / d2r;
+            check(full > 55 && sa::trust(0, full, true) < .5f, "the full angle distrusts a bent wrist (the bug)");
+            check(sa::trust(0, sa::offModelAcrossBendDegrees(forearm, model, far), true) > .99f,
+                  "a 60 deg bend cut the solve's trust");
+            // 45 deg from the usual angle: 20 deg past the forearm toward the palm.
+            const float palm = hand == 0 ? -45.f : 45.f;
+            const Quat flexed = rest * Quat::yaw(palm * d2r);
+            const float across = sa::offModelAcrossBendDegrees(forearm, model, flexed);
+            check(across >= 0 && across < 1 && sa::trust(0, across, true) > .99f,
+                  hand ? "R: a palm-side bend cut the solve's trust" : "L: a palm-side bend cut the solve's trust");
+            // So the web keeps the solved arm and the palm-side rule offsets it toward the palm.
+            sa::Blend blend;
+            sa::ArmLine line;
+            Vec3 web{};
+            for (int k = 0; k < 90; ++k)
+                web = line.update(blend.update(forearm, model.world(flexed), sa::trust(0, across, true), 1.f / 90),
+                                  model, flexed, 1.f / 90, hand);
+            const float side = sa::palmSideRadians(forearm, flexed, hand) / d2r;
+            check(side > 15 && std::abs(line.offsetDegrees - side) < 1.5f,
+                  hand ? "R: the palm-side bend did not offset the line" : "L: the palm-side bend did not offset the line");
+            // Bent 60 deg toward the back: trusted, and the line stays on the forearm.
+            const Quat extended = rest * Quat::yaw(-palm * d2r);
+            sa::Blend blend2;
+            sa::ArmLine line2;
+            const float across2 = sa::offModelAcrossBendDegrees(forearm, model, extended);
+            for (int k = 0; k < 90; ++k)
+                web = line2.update(
+                    blend2.update(forearm, model.world(extended), sa::trust(0, across2, true), 1.f / 90), model,
+                    extended, 1.f / 90, hand);
+            check(sa::angleBetween(web, forearm) < 1.5f * d2r && line2.offsetDegrees == 0,
+                  hand ? "R: a back-of-hand bend moved the line off the forearm"
+                       : "L: a back-of-hand bend moved the line off the forearm");
+            // A turn the wrist's bend cannot make (about the aim's palm axis, 50 deg) still counts.
+            const Quat twisted = rest * Quat::around({1, 0, 0}, 50 * d2r);
+            check(sa::offModelAcrossBendDegrees(forearm, model, twisted) > 40, "a turn across the bend still counts");
+        }
     });
     std::cout << total - failed << '/' << total << " tests passed\n";
     return failed ? 1 : 0;

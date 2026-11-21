@@ -8,11 +8,11 @@ Insomniac's own animations play your body on the ground; SpidyVR owns the air. Y
 
 ## TRY THE BETA
 
-This build has every current feature on so you can try them. Topics are below. Showtime (X+B), kicks (Y+X then a flick), hand grab, tethers, point jump (A+B). Wall brake, grip fling, mid-air landings, a handstand and a swing kick. If something feels off, post the newest reports folder files on Discord.
+This build has every current feature on so you can try them. Topics are below. Showtime (X+B), kicks (Y+X then a flick), hand grab, tethers, point jump (A+B). Wall brake, grip fling, mid-air landings, air dodge (B), handstands, swing kick. If something feels off, post the newest reports folder files on Discord.
 
 ## JUMPS & POINT JUMP
 
-A jumps: the game's own jump. Hold A to charge it. A + B together (or hold B, then A) charges a POINT JUMP where you look. Tap for a hop, hold up to 1 s for a leap. A grip cancels the charge.
+A jumps: the game's own jump. Hold A to charge it. A + B together (or hold B, then A) charges a POINT JUMP where you look. Tap for a hop, hold up to 1 s for a leap. A grip cancels the charge. In SpidyVR's air, B alone dodges the way the left stick points (rest: back).
 
 ## FLIPS (A TAPS)
 
@@ -40,7 +40,7 @@ Y + X with a slow push poses the legs: tuck, starfish, dive, superhero. MIDAIR P
 
 ## PUNCHES
 
-Punch for real. PUNCH TRACK steers a blow onto the enemy in its cone (120 deg). A punch hands the body to SpidyVR briefly; the view eases back after.
+Punch for real. PUNCH TRACK steers a blow onto the enemy in its cone (120 deg). A punch hands the body to SpidyVR briefly; the view eases back after. Y + B when the game offers it is the game's finisher; SpidyVR waits it out.
 
 ## X: THROW & INTERACT
 
@@ -48,7 +48,7 @@ X sends the game's LB + RB where the game shows it: throw, pick up, rip. X and Y
 
 ## WEBS & WEB CANCEL
 
-Shoot a web on the ground or a perch to cancel the animation into SpidyVR. Not in fights, cutscenes, dodges or your own wall run. A zip cancels at once. Y + X cuts a zip. SHOOTERS: LOCKED TO ARM fires from your wrist.
+Shoot a web on the ground or a perch to cancel the animation into SpidyVR. Not in fights, cutscenes, dodges or your own wall run. A zip cancels at once. Y + X cuts a zip. SHOOTERS: LOCKED TO ARM fires from your wrist. FULL-LENGTH SWING LINES: webs keep their length, slack hangs; the reel shortens.
 
 ## HAND GRAB
 
@@ -56,11 +56,11 @@ HAND GRAB: a palm on an enemy or prop holds it. Heavies and bosses resist throws
 
 ## HANDSTAND
 
-Fall inverted onto both palms (REALISTIC FLIPS on): you balance on your hands. Lean to walk, push off to leap, let go or lean past FALL ANGLE to drop. BALANCE ASSIST steadies you; SWAY TIME is how long you may be off balance.
+Fall inverted onto both palms (REALISTIC FLIPS on): you balance on your hands. Lean to walk, push off to leap, let go or lean past FALL ANGLE to drop. BALANCE ASSIST steadies you; SWAY TIME is how long you may be off balance. STICKY HANDSTANDS: easier to catch (arms still up), short tracking drops held.
 
 ## SHOWTIME
 
-SHOWTIME: hold X + B for 200 ms to step outside Spider-Man. The right stick orbits; let go to return. WATCH ONLY keeps your hands still.
+SHOWTIME: hold X + B for 200 ms to step outside Spider-Man. The right stick orbits; let go to return. WATCH ONLY keeps your hands still. SHOWTIME RAY FAN pulls the camera in before walls and trails less at speed.
 
 ## CAMERA & STABILIZATION
 
@@ -188,6 +188,7 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | HANDSTAND BALANCE HEIGHT | 95 CM | launcher |
 | HANDSTAND BALANCE GAIN | 500% | launcher |
 | HANDSTAND VIEW DROP | 90 CM | launcher |
+| STICKY HANDSTANDS | ON | game and launcher |
 | WALL BRAKE (EXPERIMENTAL) | ON | launcher |
 | GRIP FLING (EXPERIMENTAL) | ON | launcher |
 | WEB TETHERS (EXPERIMENTAL) | ON | launcher |
@@ -219,6 +220,7 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | HAND GRAB STRENGTH | 1200 N | launcher |
 | HAND GRAB HOLD COST | 1 (DEFAULT) | launcher |
 | HAND GRAB CLASS RULES | ON | launcher |
+| AIR DODGE | ON | game and launcher |
 
 ### NA · WEB SHOOTERS
 
@@ -233,6 +235,7 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | WRIST SHOOTERS (OLD) | OFF | launcher |
 | PALM SHOOTERS (OLD) | OFF | launcher |
 | ARM AIM FALLBACK | 60 DEG | launcher |
+| FULL-LENGTH SWING LINES | ON | game and launcher |
 
 ### NA · POINT JUMP
 
@@ -267,3 +270,4 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | VIGNETTE | LIGHT (DEFAULT) | game and launcher |
 | SLOW-MO IN SHOWTIME | ON | game and launcher |
 | LATCH | OFF (DEFAULT) | game and launcher |
+| SHOWTIME RAY FAN | ON | game and launcher |
