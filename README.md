@@ -8,27 +8,34 @@ Insomniac, Sony or Marvel. Original authorship, support links and notices remain
 
 ## ⬇️ Download (players start here)
 
-**Get the current build from [Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)**, the release marked **✅ CURRENT** (0.8.7-na-beta2, Nov 21): `Spidy-0.8.7-na-beta2-win64-1418992.zip`. Releases and builds marked **OLD** or superseded (including the 0.8.7-na-beta1 CURRENT `9e8d7cb`) are replaced by it.
+**Get the current build from [Releases → Latest](https://github.com/tyronmiller55-spec/SpidyVR-NativeAnimation/releases/latest)**, the release marked **✅ CURRENT** (0.8.7-na-beta3p, Nov 26): `Spidy-0.8.7-na-beta3p-win64-b426479.zip`. Releases and builds marked **OLD** or superseded (including the 0.8.7-na-beta2 CURRENT `1418992` and every beta3 test zip) are replaced by it.
+
+**Don't press the launcher's Update button:** it installs official Spidy 0.8.8 over Native Animation.
 
 1. Under **Assets**, download the `Spidy-…-win64-….zip` file (not "Source code").
-2. Extract the **entire** ZIP into a **new writable folder outside the game's install** (for example your Desktop). It unpacks to `Spidy-0.8.7-player-torso-1418992`. Never copy files into the Marvel's Spider-Man Remastered folder or mix them with an older Spidy folder.
+2. Extract the **entire** ZIP into a **new writable folder outside the game's install** (for example your Desktop). It unpacks to `Spidy-0.8.7-player-torso-b426479`. Never copy files into the Marvel's Spider-Man Remastered folder or mix them with an older Spidy folder.
 3. Run **Spidy Launcher.exe** from that folder, open the **Native Animation** tab, and start VR, with the headset on and Meta Quest Link (or Virtual Desktop) running.
 
 Your own `spidy_vr.ini` carries over. Current features are on by default so you can try them (a switch you already turned off stays off). X and Y stay instant. No settings are required.
 
-## What's new in this build (1418992, Nov 21)
+## What's new in this build (b426479, Nov 26)
 
-Since the previous CURRENT build (`9e8d7cb`, 0.8.7-na-beta1):
+Since the previous CURRENT build (`1418992`, 0.8.7-na-beta2):
 
-- **Point jump sounds:** a point jump plays the game's whole jump sound set, the same as a ground flip.
-- **Y+B finishers stay the game's own,** and a grip no longer cancels one partway through.
-- **Air dodge on B (on):** in SpidyVR's air with no web held, tap **B** to dodge the way the left stick points (stick at rest: backward), two per jump. A+B, X+B and Y+B keep their chords; B on the ground is unchanged.
-- **Showtime ray fan (on):** the Showtime camera casts a fan of the game's own collision rays and pulls in before walls, and trails less at swing speed.
-- **Sticky handstands (on):** a little easier to get into with the arms up, and short tracking drops no longer end them.
-- **Wrist shooters, LOCKED TO ARM:** the web stays on your forearm when the wrist is straight or bent back, and offsets toward the palm when bent palm-side. Bending the wrist no longer hands the web to a learned guess or to the controller.
-- **Full-length swing lines (on):** a swing web keeps the length it caught at; the extra hangs as rope slack, and reeling in shortens it one-for-one. Looks only: the swing physics is unchanged. Toggle: NA · WEB SHOOTERS, FULL-LENGTH SWING LINES.
+- **Crash fix (beta3m):** the 0xC00000FD crash 20 to 30 s in, on Meta Quest Link 1.210 and SteamVR alike, is fixed. The VR thread now starts with a 16 MB reserved stack and the eye-frame history moved to the heap. (beta3j to beta3l also start the GPU bridge before the OpenXR session begins.)
+- **HEAD LEVEL is the default, and LEVEL keeps him with you (on):** with HYBRID and HEADSET FIRST (the defaults), LEVEL uses FULL's head lock. The view stays level and turns only with you (headset, right stick, snap realign, recenter), and after a dodge, roll, turn-around or landing the game turns Spider-Man back under your view. A fast dive no longer re-latches the view, and a steep look up no longer freezes it facing the wrong way. A saved FULL becomes LEVEL once; FULL is still a choice. Toggle: launcher Native Animation, Level keeps him with you.
+- **Smoothing clock fix:** the animated view's smoothing is timed on a precise clock and steps once a frame, and the eyes and hands read one shared level frame.
+- **Wall running is back (on):** near one of SpidyVR's walls you slide; push the stick toward the wall to blend into a wall run (WALL RUN PUSH). **Wall fling any way**, **sticky palms** (an open palm slows a slide or strokes you along), a **wall slide pose** for the legs, and **grip locks the wall jump** (A is held back while you grip; the A+B point jump still goes through).
+- **Grip-held handstands (on):** upside down near the floor, a squeezed grip locks the handstand; let go to push off or leap.
+- **The web in your fist (on):** a held line starts in the closed fist's channel, and the hand closes fully around it with the thumb tucked (rope grip).
+- **The thick white swing line is removed**; swings show only the game's own web.
+- **Webs:** full-length swing lines wrap round edges, work in both hands and while climbing, and pull on the swing with rope physics, with ROPE WEIGHT and ROPE DRAG sliders. Double tap and hold the reel trigger to pay a web out (REEL OUT). Air systems work while swinging.
+- **Walls and jumps:** the point jump cancels wall grabs; walls no longer stick you until you grip them (GRIP TO STICK); double-tap A turns you upside down.
+- **Showtime:** the automatic camera is split by kind (finishers, the game's web strikes), with how-often controls; SpidyVR's own punches no longer trigger it.
+- **Kicks:** an air kick at an enemy just out of reach lunges you at him; kicks chamber, lean and carry your travel, with a target ring, a ground lunge, a rebound, a rope assist and a controller tick when one starts.
+- **Crime Run** is in the package, **off by default**.
 
-Everything from beta1 is still in (headset-first view, SpidyVR's air, NA · tabs and Help, Showtime, point jump, kicks, hand grab, wall brake, grip fling, tethers). Wall jump sound stays SOUND A.
+Every new piece has its own switch, on by default; a switch you already turned off stays off. Everything from beta2 is still in (headset-first view, SpidyVR's air, NA · tabs and Help, Showtime, point jump, kicks, air dodge, hand grab, wall brake, grip fling, tethers). Wall jump sound stays SOUND A.
 
 ## Controls (new and changed)
 
@@ -43,7 +50,12 @@ Everything from beta1 is still in (headset-first view, SpidyVR's air, NA · tabs
 | Left stick, front half | ground, HYBRID | run freely; a 30° cone follows where you look |
 | Left stick to the rear | ground, HYBRID | rear snap turn |
 | Right-stick tap left/right | SNAP REALIGN on | snap the heading from where you look and realign (full 360) |
-| Grip, palm on a wall / pull and let go / palm on an enemy | wall brake / grip fling / hand grab | brake a slide; launch the other way; hold, punch, throw or slam |
+| Grip, palm on a wall / pull and let go / palm on an enemy | wall brake / grip fling / hand grab | brake a slide; launch the other way (any way off a wall); hold, punch, throw or slam |
+| Left stick toward the wall | sliding on SpidyVR's wall, WALL RUN PUSH on | blend into a wall run |
+| Open palm on the wall | sliding or running, STICKY PALMS on | hold still to slow; sweep to stroke along |
+| Grip, upside down near the floor | GRIP HOLDS THE HANDSTAND on | lock the handstand; let go to push off |
+| **A** (double tap) | midair | turn upside down |
+| Reel trigger (double tap and hold) | on a web, REEL OUT on | pay the web out |
 | **Left stick click** | anywhere | slow-mo |
 | Left stick or grip | in a game jump | break the animation into SpidyVR's air |
 
@@ -51,31 +63,32 @@ Everything from beta1 is still in (headset-first view, SpidyVR's air, NA · tabs
 
 - In the headset: the **NA ·** tabs, including **NA · HELP**. Y RESET ALL on an NA tab resets only that tab.
 - In the launcher: the **Native Animation** tab (NA rows marked in cyan), with the same Help pages.
-- Details: [NA Help](docs/NA_HELP.md) · [beta2 checklist](docs/NA_BETA2.md) · [Showtime](docs/SHOWTIME.md) · [Showtime camera](docs/SHOWTIME_CAMERA_COLLISION.md) · [Point jump](docs/POINT_JUMP.md) · [Air kicks](docs/AIR_KICKS.md) · [Grip, fling and hand grab](docs/GRIP.md) · [Tethers](docs/TETHERS.md) · [Handstand](docs/HANDSTAND.md) · [Ownership](docs/OWNERSHIP.md) · [Changelog](docs/CHANGELOG.md).
+- Details: [NA Help](docs/NA_HELP.md) · [beta3 checklist](docs/NA_BETA3.md) · [Showtime](docs/SHOWTIME.md) · [Showtime camera](docs/SHOWTIME_CAMERA_COLLISION.md) · [Point jump](docs/POINT_JUMP.md) · [Air kicks](docs/AIR_KICKS.md) · [Grip, fling and hand grab](docs/GRIP.md) · [Tethers](docs/TETHERS.md) · [Handstand](docs/HANDSTAND.md) · [Ownership](docs/OWNERSHIP.md) · [Changelog](docs/CHANGELOG.md).
 
 ## Known limits
 
-- The owner played beta2 for about 41 minutes from 8:09 AM PT on Nov 21, 2026 (build `d482497`) and called it ready for testers. This package adds the full-length swing lines and the wrist shooter trust fix on top (`1418992`); those two have passed the automated tests but are new to the headset. It is still a beta; if something feels off, post the newest files from the reports folder on the Spidy Discord.
-- **Wrist shooters are not yet perfectly aligned** with LOCKED TO ARM. CONTROLLER aim is unaffected.
-- **During some handoffs the head can briefly part from the neck** for a few frames. A fix is the next job.
-- **Handstands still rarely catch;** the body has to be tipped well over.
+- The owner played beta3p on Nov 26, 2026 and approved it as CURRENT ("Ok, this is fine"). Earlier the same day he confirmed beta3m's crash fix ("No MDMP, game ran fine"). It is still a beta; if something feels off, press **Copy for Discord** above the launcher's session log and post it with the newest files from the reports folder on the Spidy Discord.
+- **Kicks rarely land on enemies in the logs so far.** They fire and animate; a session kicking real thugs will show why.
+- **The wall pieces work on SpidyVR's own walls only;** the game's own wall crawl and wall run are unchanged. The wall slide pose is an approximation of the classic crouch.
+- **In LEVEL, dodges don't roll the view** (the view stays level by design). The turn-back after moves needs HYBRID and HEADSET FIRST, the defaults.
 - The game may report a crash (**0xC0000409**) during or at the end of long sessions. DLSS can fail under video-memory pressure (lower the DLSS quality or the texture budget).
-- **Not in this build:** ragdoll and trigger-squeeze cancel from animation.
+- **Not in this build:** ragdoll, trigger-squeeze cancel from animation, and a dodge tilt in LEVEL.
 
 ## Current integrated source
 
 This cumulative snapshot contains working source
-[`1418992a8fda6a2f6044c75abafb52940814000e`](https://github.com/tyronmiller55-spec/SpidyVR/commit/1418992a8fda6a2f6044c75abafb52940814000e)
-(branch `feat/087-beta2`), the testers' CURRENT 0.8.7-na-beta2 build. Runtime, tests and
-build tools match `1418992` exactly. Only this README,
+[`b4264797406743020969c19bdc7ddb42f2e2b475`](https://github.com/tyronmiller55-spec/SpidyVR/commit/b4264797406743020969c19bdc7ddb42f2e2b475)
+(branch `feat/087-next`), the testers' CURRENT 0.8.7-na-beta3p build. Runtime, tests and
+build tools match `b426479` exactly. Only this README,
 [publication provenance](docs/NATIVE_ANIMATION_085_PROVENANCE.md)
 and the deliberate omission of the release workflow differ. Publication history
 is retained.
 
-The released ZIP was built from `1418992` by
-[this Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/44929126698)
-(core tests 964/964 locally; CI CTest and Python protocol tests passed); SHA256
-`20acec3fc47fe9aa172730015c88a23f846ef6ae431a2efd01bdb38d88abb4cd` (18,542,403 bytes).
+The released ZIP was built from `b426479` by
+[this Windows run](https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/45896082078)
+(CI CTest and Python protocol tests passed; core tests 995/997 locally under Wine, the two
+misses being Wine-only target-scan checks); SHA256
+`3e725db0fd5f5161f5ea50087dd23c193c6c874c90afcd16326add37a471221f` (18,640,598 bytes).
 
 ### Native Animation foundation (from earlier builds, still included)
 

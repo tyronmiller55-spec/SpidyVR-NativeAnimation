@@ -148,7 +148,9 @@ class Fade {
 };
 
 // ---- The machine ----
-enum class Why : uint8_t { none, chord, finisher, dodge };
+// strike: the game's own animated web strike (its web rush; since 0.8.7-na-beta3d), punch: SpidyVR's manual
+// punch that flies him to an enemy (WebStrike; until beta3d this was "web strike").
+enum class Why : uint8_t { none, chord, finisher, dodge, strike, punch };
 inline const char* whyName(Why w) {
     switch (w) {
     case Why::chord:
@@ -157,6 +159,10 @@ inline const char* whyName(Why w) {
         return "finisher";
     case Why::dodge:
         return "dodge";
+    case Why::strike:
+        return "web strike";
+    case Why::punch:
+        return "punch";
     default:
         return "none";
     }
@@ -357,8 +363,12 @@ class Latch {
 class Auto {
   public:
     static constexpr float tailSeconds = .3f, giveUpSeconds = .5f, capSeconds = 4.f;
-    void trigger(Why why) {
+    // AUTO: FINISHERS (showtime_auto_finisher, 0.8.7-na-beta3): a Y+B finisher plays up
+    // to 6.3 s (the Nov 19-21 logs), so its moment may last this long; the tail and the give-up are the same.
+    static constexpr float finisherCapSeconds = 10.f;
+    void trigger(Why why, float cap = capSeconds) {
         why_ = why;
+        cap_ = std::isfinite(cap) && cap > 0.f ? cap : capSeconds;
         on_ = true;
         t_ = tail_ = 0;
         seen_ = false;
@@ -379,7 +389,7 @@ class Auto {
                 return false;
             }
         }
-        if (t_ > capSeconds) {
+        if (t_ > cap_) {
             on_ = false;
             return false;
         }
@@ -397,8 +407,116 @@ class Auto {
 
   private:
     Why why_ = Why::dodge;
-    float t_{}, tail_{};
+    float t_{}, tail_{}, cap_ = capSeconds;
     bool on_{}, seen_{};
+};
+
+// HOW OFTEN (showtime_auto_<kind>_every / _cooldown_ms, 0.8.7-na-beta3b; the owner, Nov 21 t88u: "different
+// timings for how often it fires"): one gate per kind of moment. Every event of the kind counts; the camera
+// goes out on the Nth (every 1: each one) once at least cooldownMs have passed since that kind last took it
+// out (0: no wait). An event held back by the cooldown leaves the count full, so the first one after the wait
+// goes out.
+struct AutoGate {
+    int count{};
+    int64_t lastMs = -1;
+    enum class Result : uint8_t { fire, counting, cooling };
+    Result event(int64_t nowMs, int every, int cooldownMs) {
+        const int n = std::clamp(every, 1, 10);
+        count = (std::min)(count + 1, n);
+        if (count < n)
+            return Result::counting;
+        if (cooldownMs > 0 && lastMs >= 0 && nowMs - lastMs < cooldownMs)
+            return Result::cooling;
+        count = 0;
+        lastMs = nowMs;
+        return Result::fire;
+    }
+    bool fire(int64_t nowMs, int every, int cooldownMs) {
+        return event(nowMs, every, cooldownMs) == Result::fire;
+    }
+};
+
+// What keeps an automatic moment going (Auto::update's `live`): the dodge while it dodges, the game's
+// finisher while its scene plays (finisher_handoff::Watch::active), the game's web strike while its web rush
+// is the hero's dodge (WebRush::live), a punch while SpidyVR's WebStrike is not idle.
+inline bool autoLive(Why why, bool dodging, bool finisher, bool strike, bool punch = false) {
+    switch (why) {
+    case Why::dodge:
+        return dodging;
+    case Why::finisher:
+        return finisher;
+    case Why::strike:
+        return strike;
+    case Why::punch:
+        return punch;
+    default:
+        return false;
+    }
+}
+
+// Where the camera may go out (game_xr's stOk), and the first thing that keeps it in (for the log). AUTO:
+// FINISHERS (autoScene: its automatic moment is on): the Y+B finisher is a first-person scene, not play - the
+// game's follow camera is not the one in use, so neither gameplay nor the tracking rig is (GameTrackingRig:
+// Inactive notPlaying, "a menu, a scene, the game's own camera"). Until 0.8.7-na-beta3d the moment got past
+// `gameplay` but not `rigActive`: the first frame of the scene cleared the trigger it had just been given and
+// the camera never went out (the beta3b log: finishers at 1033.984 s and 1052.234 s, the head probe "combat
+// -> cutscene" across them, no "showtime: enter (finisher)"). Now it gets past both.
+struct OkInput {
+    bool enabled{}, body{}, flatScreen{}, viewing{}, gameplay{}, rigActive{}, spiderMan{}, calibrating{},
+        phone{}, padLatched{}, autoScene{};
+};
+inline const char* heldBackBy(const OkInput& in) {
+    if (!in.enabled)
+        return "Showtime off";
+    if (!in.body)
+        return "the body off";
+    if (in.flatScreen)
+        return "the flat screen";
+    if (!in.viewing)
+        return "no view";
+    if (!in.gameplay && !in.autoScene)
+        return "not in play";
+    if (!in.rigActive && !in.autoScene)
+        return "the tracking rig off";
+    if (!in.spiderMan)
+        return "not Spider-Man";
+    if (in.calibrating)
+        return "calibrating";
+    if (in.phone)
+        return "the phone open";
+    if (in.padLatched)
+        return "the pad layer latched";
+    return nullptr;
+}
+inline bool ok(const OkInput& in) {
+    return heldBackBy(in) == nullptr;
+}
+
+// AUTO: STRIKES vs AUTO: PUNCHES (0.8.7-na-beta3d; the owner, Nov 21 t93u: "Let's only have it on animation
+// web strikes, not manual SpidyVR punches. Or, if we do, let's give it a toggle"). The game's own web strike
+// is HeroStateWebRush (docs/REFERENCE.md), which runs as a dodge of kind 8 in the hero's dodge manager
+// (game_dodge.hpp: "8 the web rush"; SpidyDodgeLive, the hook DODGE TUMBLE reads; the beta3b log: "the game's
+// dodge began (kind 8)" at each web strike). SpidyVR's manual punch is its own WebStrike
+// (game_punch::Strikes::opened), which never runs a kind 8 dodge. WebRush reads SpidyDodgeLive once a frame:
+// began() is true for the frame a web rush starts (the manager's count of dodges moved on and the latest is
+// of kind 8, not Spidy's own web dodge); the first sample only takes the count.
+struct WebRush {
+    static constexpr uint32_t kind = 8;
+    uint64_t seen = ~0ull;
+    bool began(uint64_t starts, uint32_t lastKind, uint32_t ours) {
+        if (seen == ~0ull || starts < seen) {
+            seen = starts;
+            return false;
+        }
+        if (starts == seen)
+            return false;
+        seen = starts;
+        return lastKind == kind && !ours;
+    }
+    // The rush goes on: the dodge on now is of kind 8.
+    static bool live(uint32_t kindNow) {
+        return kindNow == kind;
+    }
 };
 
 // ---- The outside camera's frame ----

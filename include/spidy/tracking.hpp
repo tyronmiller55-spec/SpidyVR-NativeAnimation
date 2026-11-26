@@ -78,6 +78,37 @@ inline Pose webShooter(Pose grip, unsigned hand) {
     const float palm = hand == 0 ? .01f : -.01f;
     return compose(grip, {{palm, .105f, 0}, {-.70710678f, 0, 0, .70710678f}});
 }
+// The knuckles, 15.5 cm along the hand from the web shooter (docs/BODY.md
+// "How punching works"; game_punch.cpp's fistAhead). The shooter's -Z looks
+// from the wrist out past the knuckles, so this point sits inside a closed
+// fist. A held web's line starts here; a shot still leaves from webShooter.
+constexpr float fistAhead = .155f;
+inline Vec3 webHoldPoint(Pose shooter) {
+    return shooter.position + shooter.orientation.rotate({0, 0, -fistAhead});
+}
+// Where a web's drawn line leaves the hand: the nozzle while it is shot or
+// free, the fist once that hand holds the line (WEB IN HAND).
+inline Vec3 webLineStart(Pose grip, unsigned hand, bool held) {
+    const Pose shooter = webShooter(grip, hand);
+    return held ? webHoldPoint(shooter) : shooter.position;
+}
+// WEB IN HAND's fist channel (beta3o, body::solvedFistChannel): a held line starts in the closed fist's loop,
+// `fistLocal` in the drawn grip's own frame as the last solve measured it from the bones. With none (no solved
+// body, a rig without the fingers) it starts at the grip's own point, the OpenXR grip pose's centre of the grasp.
+// Not held: the web shooter, as before.
+inline Vec3 webLineStart(Pose grip, unsigned hand, bool held, const Vec3* fistLocal) {
+    if (!held)
+        return webShooter(grip, hand).position;
+    if (fistLocal && finite(*fistLocal))
+        return grip.position + grip.orientation.rotate(*fistLocal);
+    return grip.position;
+}
+// A fist channel farther than this from the grip point is no measure of this hand (a stale or broken solve).
+// A bound for refusing, not a place: the wrist itself is 9 cm from it (body::Config::wristFromGrip).
+constexpr float fistChannelReach = .15f;
+inline bool fistChannelOk(Vec3 local) {
+    return finite(local) && length(local) <= fistChannelReach;
+}
 // When the arms overlay has mapped a hand onto the head-bone frame, the
 // mapped grip is in world axes RELATIVE TO THE FEET, as published by
 // native_body::OverlayTracking. Action inputs/queries need absolute world

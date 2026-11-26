@@ -194,7 +194,10 @@ constexpr uint32_t commandBytesV2 = 168, commandBytesV3 = 184, commandBytesV4 = 
 // attached: 0 none, else bits: 1 a web; 2 both hands hold it (Swing::shared:
 // the other hand's web is the same one); 4 this hand took hold of it and did
 // not shoot it (Web::taken; it stays when the other hand lets go); 8 this
-// hand reels it in now (Swing::reeling; its trigger, reel_haptics.hpp).
+// hand reels it in now (Swing::reeling; its trigger, reel_haptics.hpp); 16
+// this hand climbs the shared strand hand over hand (Swing::ropeClimbing,
+// beta3c: its rope changes only by the pulls); 32 this hand pays its line out
+// now (Swing::reelingOut, beta3d REEL OUT: a double tap and hold on its reel).
 struct WebState {
     uint32_t attached{}, bodyId{};
     Vec3 anchor{};
@@ -610,15 +613,18 @@ static_assert(sizeof(PoseCoupling) == 16);
 // rises with each new launch; the same serial again is ignored. Not a Command
 // or Settings field and not versioned with them (an older swing module has no
 // SpidySwingPointJump export; XR then never fires). `normal`: the surface's,
-// for the diagnostics only.
+// for the diagnostics only. Version 2 (beta3e) appends `flags`: bit 0, POINT JUMP CANCELS WALL GRABS - the
+// launch is off the game's own wall crawl or wall run (Swing::pointJump's offCrawl), which version 1 never
+// was; 0, as before.
 struct PointJumpAsk {
-    uint32_t magic = 0x5357504a, version = 1, bytes = sizeof(PointJumpAsk), serial{};
+    uint32_t magic = 0x5357504a, version = 2, bytes = sizeof(PointJumpAsk), serial{};
     Vec3 velocity{}, normal{};
+    uint32_t flags{};
 };
-static_assert(sizeof(PointJumpAsk) == 40);
+static_assert(sizeof(PointJumpAsk) == 44);
 inline bool validPointJump(const PointJumpAsk& a) {
-    return a.magic == 0x5357504a && a.version == 1 && a.bytes == sizeof(PointJumpAsk) && finite(a.velocity) &&
-           length(a.velocity) > .1f && length(a.velocity) <= 80.f && finite(a.normal);
+    return a.magic == 0x5357504a && a.version == 2 && a.bytes == sizeof(PointJumpAsk) && a.flags <= 1u &&
+           finite(a.velocity) && length(a.velocity) > .1f && length(a.velocity) <= 80.f && finite(a.normal);
 }
 // Side channel from XR (QUICK SIDESTEP, sidestep.hpp): a burst across the
 // ground at `velocity` (level, real m/s) for moveSeconds, then a hard stop
@@ -753,6 +759,61 @@ struct JumpPullAsk {
     uint32_t reserved{};
 };
 static_assert(sizeof(JumpPullAsk) == 64);
+// Side channel from XR (ROPE PHYSICS ON THE SWING, beta3c, swing_rope_physics; swing_line::Line::pull): sent
+// every frame while it is on to SpidyRopePull; an ask older than 200 ms is none. `flags` bit 0: on. `accel`:
+// the swing lines' pull on the player (m/s^2, world), both hands summed; `cap` its most (m/s^2). The swing
+// adds it to its own air velocity while a web is attached and it is off the ground; the animation's air is
+// never touched. Not a Command or Settings field: an older module has no export and XR then sends none (the
+// swing as before).
+struct RopePullAsk {
+    uint32_t magic = 0x53575250, version = 1, bytes = sizeof(RopePullAsk), serial{};
+    uint32_t flags{};
+    float accel[3]{};
+    float cap{};
+    uint32_t reserved[3]{};
+};
+static_assert(sizeof(RopePullAsk) == 48);
+// Side channel from XR (REEL OUT, beta3d, swing_reel_out; reel_out.hpp): sent every frame to SpidyReelOut; an
+// ask older than 200 ms is off. `flags` bit 0: on. `tapMs`: the double tap's window (150 to 600); `speed`:
+// the pay-out, m/s (0.5 to 15). Not a Command or Settings field: an older module has no export and XR then
+// sends none (no reel out, the swing as before).
+struct ReelOutAsk {
+    uint32_t magic = 0x5357524f, version = 1, bytes = sizeof(ReelOutAsk), serial{};
+    uint32_t flags{}, tapMs = 300;
+    float speed = 4.f;
+    uint32_t reserved{};
+};
+static_assert(sizeof(ReelOutAsk) == 32);
+// Side channel from XR (GRIP TO STICK, beta3e, wall_grip_to_stick / wall_slide_friction; wall_slide.hpp):
+// sent every frame to SpidyWallStick; an ask older than 200 ms is off. `flags` bit 0: on. `frictionPct`: the
+// slide's friction, 0 to 100 (% of gravity). Not a Command or Settings field: an older module has no export
+// and XR then sends none (every wall holds at once, as before). Version 2 (beta3n, WALL FEEL, wall_feel.hpp):
+// flags bit 1, WALL RUN PUSH (wall_run_push), and `runBlendMs` its blend (0 to 1000); bit 2, WALL FLING ANY
+// WAY (wall_fling_any_way); bit 3, STICKY PALMS (sticky_palms), and `stickyPct` its strength (0 to 200); a
+// version 1 ask is
+// beta3m's (none of version 2's on).
+struct WallStickAsk {
+    uint32_t magic = 0x53575753, version = 2, bytes = sizeof(WallStickAsk), serial{};
+    uint32_t flags{}, frictionPct = 50;
+    uint32_t runBlendMs = 250, stickyPct = 100;
+};
+static_assert(sizeof(WallStickAsk) == 32);
+inline bool validWallStick(const WallStickAsk& a) {
+    if (a.magic != 0x53575753 || a.bytes != sizeof(WallStickAsk) || a.frictionPct > 100)
+        return false;
+    if (a.version == 1)
+        return !(a.flags & ~1u);
+    return a.version == 2 && !(a.flags & ~15u) && a.runBlendMs <= 1000 && a.stickyPct <= 200;
+}
+// SpidyWallStickLive: GRIP TO STICK's account for XR's log. `on` whether the switch is in force; `stuck` 1
+// while the body is on SpidyVR's wall and stuck to it, 2 while it slides there, 0 off any; `slides` the walls
+// come onto sliding, `sticks` the walls stuck to (a grip, a mount, carried on), both counting up.
+struct WallStickLive {
+    uint32_t magic = 0x5357534c, version = 1, bytes = sizeof(WallStickLive), on{};
+    uint32_t stuck{}, slides{}, sticks{};
+    float speed{}; // along the wall now (m/s)
+};
+static_assert(sizeof(WallStickLive) == 32);
 // SpidyJumpPullLive: what the pull did. `events` counts up LAST (a pick began, changed or ended); `active` is 1 while a
 // pick is in force; `target` his record, `weight` 0..1, `angleDeg` off the picking line, `distance` to him (m), `added` what
 // this jump has had added (m/s), `byStick` whether the stick's cone picked him. `pulls` counts jumps that were pulled.
@@ -765,30 +826,39 @@ struct JumpPullLive {
 };
 static_assert(sizeof(JumpPullLive) == 64);
 // Side channel from XR (AIR KICKS, air_kick.hpp, K2): the settings, sent whenever they change and again every
-// second, and on a flick the ask (`serial` new): `gesture` (air_kick::Gesture, 1 dive, 2 double, 3 roundhouse,
-// 4 freeform, 5 sweep: GROUND KICKS, K3), `side` (-1 left, +1 right) and `angle` (degrees from up) of the flick, the eyes' offset from the
-// feet and the gaze (both in the world's axes). `flags` bit 0: kicks is on; bit 1: the legs are engaged; bit 2: ground_kicks is on (GROUND KICKS,
-// ground_kick.hpp, K3: the same ask, standing and slow); bit 3: enemy_joints is on (R1: the swing reads the
-// joints of the enemies a kick may meet, enemy_joints.hpp); bit 4: enemy_limb_zones (the shins and forearms
-// too: only after probe_c0_skeleton.py).
-// gazeCone is kick_gaze_cone_deg (25). Not a Command or Settings field and not versioned with them (an older
-// swing module has no SpidyAirKick export; XR then sends none and no air kick happens).
+// second, and on a flick the ask (`serial` new): `gesture` (air_kick::Gesture, 1 dive, 2 double, 3
+// roundhouse, 4 freeform, 5 sweep: GROUND KICKS, K3), `side` (-1 left, +1 right) and `angle` (degrees from
+// up) of the flick, the eyes' offset from the feet and the gaze (both in the world's axes). `flags` bit 0:
+// kicks is on; bit 1: the legs are engaged; bit 2: ground_kicks is on (GROUND KICKS, ground_kick.hpp, K3: the
+// same ask, standing and slow); bit 3: enemy_joints is on (R1: the swing reads the joints of the enemies a
+// kick may meet, enemy_joints.hpp); bit 4: enemy_limb_zones (the shins and forearms too: only after
+// probe_c0_skeleton.py). gazeCone is kick_gaze_cone_deg (25). Not a Command or Settings field and not
+// versioned with them (an older swing module has no SpidyAirKick export; XR then sends none and no air kick
+// happens). Version 2 (beta3f): flags bit 5, KICK LUNGE (kick_lunge), and `lungeCm` its reach past the leg's
+// (cm, 0 to 400; the field was version 1's reserved, 0). Version 3 (beta3g, 80 bytes): `more` bit 0 KICK
+// REBOUND (kick_rebound), bit 1 GROUND LUNGE (kick_ground_lunge), bit 2 KICK ROPE ASSIST (kick_rope_assist),
+// bit 3 KICK TARGET RING (kick_target_ring: the swing works out the enemy a kick would take every step, from
+// the latest ask's gaze - XR then sends one every frame while the legs are engaged); `groundSpeedCms` the
+// fastest a standing kick may start at (kick_ground_speed_cms, 100 to 1000; 300 was the fixed value).
 struct AirKickAsk {
-    uint32_t magic = 0x5357414b, version = 1, bytes = sizeof(AirKickAsk), serial{};
+    uint32_t magic = 0x5357414b, version = 3, bytes = sizeof(AirKickAsk), serial{};
     uint32_t flags{}, gesture{};
     int32_t side{};
     float gazeCone = 25.f;
     Vec3 eyeOffset{0, 1.6f, 0}, gaze{0, 0, -1};
     float angle{};
-    uint32_t reserved{};
+    uint32_t lungeCm{};
+    uint32_t more{}, groundSpeedCms = 300, pad3[2]{};
 };
-static_assert(sizeof(AirKickAsk) == 64);
+static_assert(sizeof(AirKickAsk) == 80);
 inline bool validAirKick(const AirKickAsk& a) {
-    return a.magic == 0x5357414b && a.version == 1 && a.bytes == sizeof(AirKickAsk) && !(a.flags & ~31u) &&
-           a.gesture <= 5 && a.side >= -1 && a.side <= 1 && std::isfinite(a.gazeCone) && a.gazeCone >= 8.f &&
-           a.gazeCone <= 60.f && std::isfinite(a.angle) && std::isfinite(a.eyeOffset.x) &&
-           std::isfinite(a.eyeOffset.y) && std::isfinite(a.eyeOffset.z) && std::isfinite(a.gaze.x) &&
-           std::isfinite(a.gaze.y) && std::isfinite(a.gaze.z) && a.eyeOffset.y > 0.f && a.eyeOffset.y < 3.f &&
+    return a.magic == 0x5357414b && a.version == 3 && a.bytes == sizeof(AirKickAsk) && !(a.flags & ~63u) &&
+           !(a.more & ~15u) && a.groundSpeedCms >= 100 && a.groundSpeedCms <= 1000 &&
+           a.lungeCm <= 400 && a.gesture <= 5 && a.side >= -1 && a.side <= 1 && std::isfinite(a.gazeCone) &&
+           a.gazeCone >= 8.f && a.gazeCone <= 60.f && std::isfinite(a.angle) &&
+           std::isfinite(a.eyeOffset.x) && std::isfinite(a.eyeOffset.y) && std::isfinite(a.eyeOffset.z) &&
+           std::isfinite(a.gaze.x) && std::isfinite(a.gaze.y) && std::isfinite(a.gaze.z) &&
+           a.eyeOffset.y > 0.f && a.eyeOffset.y < 3.f &&
            a.gaze.x * a.gaze.x + a.gaze.y * a.gaze.y + a.gaze.z * a.gaze.z > .25f;
 }
 // SpidyAirKickLive: the kick's account for XR's log, legs and feel. `events` counts up last; for the latest
@@ -796,7 +866,7 @@ inline bool validAirKick(const AirKickAsk& a) {
 // record), the foot's speed (real m/s) and the blow's strength (0..1), and for a refusal air_kick::Refusal.
 // `state` is the kick's Phase now (0 idle, 1 kicking, 2 recovering); `progress` 0..1 through the kick.
 struct AirKickLive {
-    uint32_t magic = 0x53574b4c, version = 3, bytes = sizeof(AirKickLive), state{};
+    uint32_t magic = 0x53574b4c, version = 5, bytes = sizeof(AirKickLive), state{};
     uint32_t gesture{}, zone{}, refusal{}, lastEvent{};
     int32_t side{};
     uint32_t asked{}, started{}, hits{}, misses{}, refused{}, flies{}, events{};
@@ -813,6 +883,18 @@ struct AirKickLive {
     // zone came from the joints, and which roles the last rig read names (enemy_joints::Role bits), with its
     // joint count, why the last failure was (game_joints::Failure) and the roles the last read got.
     uint32_t jointReads{}, jointMisses{}, jointZones{}, jointNamed{}, jointCount{}, jointWhy{}, jointValid{}, jointPad{};
+    // Version 4 (beta3f). KICK LUNGE: the latest start's lunge (m/s toward him, 0 none) and the gap it closes
+    // (m), and the lunges made. THE KICK'S OUTCOME in the log: at the latest event, the enemies in the fight
+    // (up to 12) and the nearest one's distance from the player's feet (m; 0 with none).
+    float lungeSpeed{}, lungeGap{};
+    uint32_t lunges{}, enemies{};
+    float nearest{}, pad4{};
+    // Version 5 (beta3g). KICK TARGET RING: the enemy a kick would take now (0 none; air_kick::preview), his
+    // chest and radius (world, metres). The rebounds given (KICK REBOUND), the standing kicks that stepped
+    // in (GROUND LUNGE) and the steps the web's rope steered an air kick (KICK ROPE ASSIST).
+    uint64_t preview{};
+    float previewX{}, previewY{}, previewZ{}, previewRadius{};
+    uint32_t rebounds{}, groundLunges{}, ropeAssists{}, pad5{};
 };
 static_assert(sizeof(AirKickLive) % 8 == 0);
 // Side channel from XR (GRIP ACROSS THE GAME, grip.hpp): the settings, sent whenever they change and again

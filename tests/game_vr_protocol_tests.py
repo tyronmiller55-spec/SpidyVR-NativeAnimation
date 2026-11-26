@@ -2213,6 +2213,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn('0xC0000005, an access violation', text)
         self.assertIn('at stage: frames reaching the headset', text)
         self.assertIn('.mdmp', text)
+        self.assertIn('The game crashed', text)
+        close = crash_advice(0xC0000409, 'running (300 frames submitted)')
+        self.assertIn('0xC0000409', close)
+        self.assertIn('window is closed', close)
+        self.assertNotIn('crashed', close.lower())
+        self.assertNotIn('stack buffer overrun', close)
+        with_dump = crash_advice(0xC0000409, 'running (300 frames submitted)', mdmp=True)
+        self.assertIn('The game crashed', with_dump)
+        self.assertIn('0xC0000409, a stack buffer overrun', with_dump)
+        self.assertIn('.mdmp', with_dump)
         with tempfile.TemporaryDirectory() as folder:
             log = DiagLog(pathlib.Path(folder)/'x-diag.log', echo=lambda line: None)
             raw = {'build': 'b', 'main': (2, ['[   1.000] stage: headset active, the eye views not started',
@@ -2220,6 +2230,40 @@ class ProtocolTests(unittest.TestCase):
                                           + ['']*126), 'aim': (0, ['']*16), 'head': (0, ['']*64)}
             log.take(raw)
             self.assertEqual(log.stage, 'frames reaching the headset - the eye images')
+
+    def test_a_leftover_mdmp_is_not_a_new_dump_for_this_close(self):
+        """A November 21 dump still in Documents must not make a later force-close look like a crash."""
+        from run_game_vr import game_mdmp
+        with tempfile.TemporaryDirectory() as folder:
+            folder = pathlib.Path(folder)
+            old = folder/'old.mdmp'
+            old.write_bytes(b'dump')
+            earlier = old.stat().st_mtime - 10
+            later = old.stat().st_mtime + 10
+            self.assertIsNone(game_mdmp(folder, since=later))
+            self.assertEqual(game_mdmp(folder, since=earlier), old)
+            self.assertEqual(game_mdmp(folder), old)
+            self.assertIsNone(game_mdmp(folder/'missing'))
+
+    def test_a_swing_kick_flick_that_starts_an_air_kick_is_not_logged_as_refused(self):
+        """A flick off the web starts an air kick on the same frame; the swing-kick live event was still
+        logged as 'refused (not swinging)', which looked like a missed kick."""
+        root = pathlib.Path(__file__).resolve().parents[1]
+        worker = (root/'src/game_xr.cpp').read_text(encoding='utf-8')
+        self.assertIn('swing kick: not swinging; the flick started an air kick', worker)
+        self.assertIn('swing kick: refused (%s)', worker)
+        start = worker.find('else if (what == 4)')
+        # The first 'what == 4' in the swing-kick live block, not the later air-kick refusal.
+        block = worker[start:worker.find('// AIR KICKS:', start)]
+        self.assertIn('takenAsAir', block)
+        self.assertIn('Refusal::notSwinging', block)
+        self.assertIn('lastEvent == 1', block)
+        refused = block.find('swing kick: refused (%s)')
+        taken = block.find('swing kick: not swinging; the flick started an air kick')
+        self.assertGreater(refused, 0)
+        self.assertGreater(taken, 0)
+        self.assertIn('if (takenAsAir)', block)
+        self.assertIn('else', block[taken:])
 
     def test_the_forearm_aim_line_is_formatted_from_named_fields(self):
         """v6 (78a43ed) passed two arguments more than its format to the forearm aim: snprintf; the last %s

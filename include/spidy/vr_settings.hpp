@@ -181,6 +181,28 @@ struct Values {
     // A fast hand closes into a fist with nobody to punch too (the tab's AIR
     // FISTS; hand_pose.hpp). Off: only with an enemy marked or within reach.
     bool airFists = true;
+    // WEB GRIP (0.8.7-na next, settings revision 24; the owner, Nov 25 t50u): while the animation has the
+    // body, a hand whose web holds or that grips the other hand's web closes on the line (the measured native
+    // fist, body_ik::poseFingers) and opens when the web lets go. Off: the animation's fingers stay, as before.
+    bool animatedWebGrip = true;
+    // PUNCH FISTS (0.8.7-na next, settings revision 24; the owner, Nov 25 t50u): while the animation has the
+    // body, a punching hand closes into a fist (the same measured native pose). Off: the animation's fingers
+    // stay, as before. The VR-owned body already fists a punch.
+    bool animatedPunchFists = true;
+    // WEB IN HAND (0.8.7-na-beta3i, settings revision 24; the owner, Nov 25 t51u):
+    // a held web's line leaves from inside the closed fist. Until beta3n that was webHoldPoint, the
+    // knuckles 15.5 cm along the hand from the web shooter - the front of the fist, so the line floated
+    // outside it (the owner, Nov 26 t148u). From beta3o (t149u) it is the fist's channel, taken each
+    // solve from the drawn hand's own finger bones (body::solvedFistChannel), or with no solved hand the
+    // OpenXR grip pose's own point. A shot still leaves from the wrist shooter. Off: every line leaves
+    // from the shooter, as beta3h.
+    bool webHoldInHand = true;
+    // ROPE GRIP (0.8.7-na-beta3o, settings revision 26; the owner, Nov 26 t148u: "I want an animation so that
+    // Spiderman actually holds the line while swinging", t149u: yes to the rope grip; fingers only,
+    // hand_pose.hpp): a hand on a held web closes fully - with the animation owning the body too, where it
+    // followed the web button's travel - and its thumb tucks onto the index finger, a ring the line runs
+    // through. The wrist, forearm and elbow are unchanged. Off: as beta3n.
+    bool webRopeGrip = true;
     // Aiming with the eyes (the tab's EYE AIM; eyeAimShots, eyeAimZips): web
     // balls go where the eyes look, from the hand that pulled; a zip goes to
     // the point the eyes look at, the game's camera being turned onto it.
@@ -302,7 +324,7 @@ struct Values {
     // from before it gets RUN CURVE on and EARLY JUMP QUICK TAP once (the
     // user: "movement fixes will be defaults"); after that the player's own
     // choice stands. Not a row. movement_defaults.
-    int movementDefaults = 16; // movementDefaultsRevision: a new file has seen them
+    int movementDefaults = 27; // movementDefaultsRevision: a new file has seen them
     // SOFT LANDING (the tab's SOFT LANDING; Swing::allowSoftLanding,
     // run_update::softLandVertical): a fall the swing flies, with no web
     // holding, eases to 9 m/s down over its last 3 m (or 0.35 s), its speed
@@ -368,11 +390,21 @@ struct Values {
     // (NATIVE RUN). Swing / web / zip / wall-run stay with the mod. On in this package
     // (animated_moves.hpp).
     bool animatedMoves = true;
-    // ANIMATED HEAD (the tab's ANIMATED HEAD; Off|Level|Full, default Full):
+    // ANIMATED HEAD (the tab's ANIMATED HEAD; Off|Level|Full, default Level from
+    // 0.8.7-na-beta3p, settings revision 27 - the owner, Nov 26 t151u: "Level was
+    // the one that felt like something that should be default"; Full before):
     // while a pose yield is active, attach the view to the hero's gameplay head
     // like finishers (anchored 4 Level / 2 Full). Full keeps anim pitch/roll
-    // in air too; Level only when chosen (animated_moves.hpp).
-    int animatedHead = 2;
+    // in air too (animated_moves.hpp).
+    int animatedHead = 1;
+    // LEVEL KEEPS HIM WITH YOU (0.8.7-na-beta3p, settings revision 27; the owner, Nov 26 t151u: LEVEL "felt
+    // great ... the body and the head had no cohesion, so you'd frequently be looking backwards after moves",
+    // and his answer "Build A"; level_head_lock.hpp): with HEAD LEVEL, HYBRID and HEADSET FIRST, LEVEL joins
+    // FULL's head lock - the view's yaw is the lock's (the right stick, snap realign, recenter) plus the
+    // headset, never the animation's, and the game's own turns bring him back under the view after a dodge,
+    // roll or landing - while the view stays level. Its latch, where the lock is not live, no longer re-latches
+    // on a fast dive's one-metre test or onto the crown's yaw looking up. Off: LEVEL as beta3o.
+    bool levelHeadLock = true;
     // SMOOTHING (the tab's SMOOTHING; Off|Low|Medium|High|Max, default Off):
     // ease the view toward the headset's look. Translation stays current, so
     // leaning and travel do not trail. Not a Settings / Command field.
@@ -755,11 +787,254 @@ struct Values {
     // floor line 1.5 x HANDSTAND HOLD with 0.15 s off the floor before it ends. The arms still have to be up.
     bool handstandSticky = true;
     int handstandStickyGraceMs = 400;
+    // GRIP HOLDS THE HANDSTAND (0.8.7-na-beta3n, settings revision 25; the owner, Nov 26 t146u: "I want handstands to
+    // lock easily, and grip to be used to 'hold' the stance. Everything else would stay the same, and pushing out of
+    // it, or pushing off of anything, requires me to let go of the grip"; a feel change, handstand.hpp
+    // Params::gripHold): a grip squeezed upside down near the floor catches the handstand without the arms-over-head
+    // test (palms from the tip-in's reach), and while a grip is held the handstand stays locked - no fall, step-down,
+    // push or leap, and the grip shoots no web. Let go of the grip to push, leap or step out, as before. Off: as
+    // beta3m (a squeeze after the catch ends the handstand).
+    bool handstandGripHold = true;
     // FULL-LENGTH SWING LINES (beta2, swing_line.hpp; the owner, Nov 20 t81u: "Yes, reel should shorten one-for-one,
     // the line should stay full. Let's add this as a toggle option."): a swing web is drawn as long as it was when it
     // caught, its slack hanging (the combat webs' rope), shortened only by the reel. Visual only: the swing is as
     // before. Off: the straight line from the hand to the anchor.
     bool swingLineFullLength = true;
+    // HANDOFF HEAD FIRST (beta3, H2; the owner, Nov 21 t86u: frames of the body without the neck): on a switch into
+    // the animation the hero's head is read on the switch's own frame (the Nov 21 log said "headbone n/a" on 297 of
+    // 300), and SpidyVR's body stays drawn until it is (at most 2 frames), so the view never shows the animation's
+    // body without a head to put it on. Off: as beta2.
+    bool handoffHeadFirst = true;
+    // LANDING VIEW SNAP (beta3, H1; the owner, Nov 21 t86u: "Handoffs have to be cleaned up so that jump isn't
+    // visible"): a landing, zip or mount puts the view within LANDING VIEW SNAP CM of the head at once and glides the
+    // rest over LANDING VIEW SNAP MS (the beta2 glide: up to handoff_place_cm over up to 450 ms). Off: as beta2.
+    bool landingViewSnap = true;
+    int landingViewSnapCm = 15; // (cm, 0 to 100) how far from the head the snap leaves the view
+    // (ms, 40 to 400) the glide over the last LANDING VIEW SNAP CM
+    int landingViewSnapMs = 120;
+    // HEAD SEAT PULL (beta3, H4; the owner, Nov 21 t86u: the head "periodically disconnecting"): while the view is
+    // head-locked on the animation, past HEAD SEAT PULL CM from the neck it follows your headset back at up to
+    // HEAD SEAT PULL SPEED, instead of a 20 cm reseat glide every ~12 s of walking (the 20 cm reseat stays as a
+    // backstop for a fast step). Off: as beta2.
+    bool headSeatPull = true;
+    int headSeatPullCm = 5; // (cm, 0 to 20) how far off the neck the view may lean before the pull
+    // (cm/s, 5 to 200) the pull at most
+    int headSeatPullCmS = 50;
+    // HANDSTAND CATCH ANGLE (beta3; the owner, Nov 21: "Lower the handstand tip-in angle too"): inverted at least this
+    // far (degrees, 45 to 150) for a touchdown on the palms to catch; 100 before (hardcoded). A new key, default 60.
+    int handstandCatchDeg = 60;
+    // SHOWTIME AUTO: FINISHERS / STRIKES (beta3, the owner Nov 21 t87u: "activate Showtime during finishers and web
+    // strikes"; split in beta3b, t88u: "separate toggles for dodges, finishers, and strikes, and different timings for
+    // how often it fires"): Showtime's camera steps out when the game's Y+B finisher starts (finisher_handoff's scene
+    // detection) or the game's own animated web strike begins (since beta3d: its web rush, the hero's dodge of kind 8 in
+    // SpidyDodgeLive; SpidyVR's manual punches are AUTO: PUNCHES, below), and back through the normal exit 0.3 s after it ends (a
+    // finisher at most 10 s, a strike 4 s). Needs SHOWTIME. Each kind, the dodges' (AUTO: DODGES) too: _every N fires
+    // on every Nth one (1: every one), _cooldown_ms the least time between two of that kind (0: none). The beta3 key
+    // showtime_auto_finisher_strike is read once by revision 18: a saved 0 turns finishers and strikes off.
+    bool showtimeAutoFinisher = true;
+    int showtimeAutoFinisherEvery = 1;      // 1 to 10
+    int showtimeAutoFinisherCooldownMs = 0; // 0 to 60000
+    bool showtimeAutoStrike = true;
+    int showtimeAutoStrikeEvery = 1;
+    int showtimeAutoStrikeCooldownMs = 0;
+    int showtimeAutoDodgeEvery = 1;
+    int showtimeAutoDodgeCooldownMs = 0;
+    // DOUBLE-TAP A: UPSIDE DOWN (beta3b; the owner, Nov 21 t88u: "flip Spidey perfectly upside down by double tapping
+    // A. I can hold on the double tap to stay inverted"): with REALISTIC FLIPS, a second A within AIR FLIP DOUBLE TAP MS
+    // in SpidyVR's air turns him upside down (the A upright's turn, mirrored), and held keeps him there until let go,
+    // as a held single A keeps him upright. The first A still begins the upright at once. Off: A only rights him.
+    bool airFlipDoubleTap = true;
+    // (ms, 150 to 600) the double tap's window, from the first press to the second
+    int airFlipDoubleTapMs = 300;
+    // WEBS ACROSS THE GAME (0.8.7-na-beta3c; the owner, Nov 21 t90u: "polish our webs to work across all of those
+    // states, and let them keep the physics until they fade away"; t92u approved). Plan:
+    // /workspace/playtest-na-beta3b/WEB_POLISH_PLAN.md. Each comes on once (revision 19); looks only unless said.
+    // WRAP SLACK: a full-length swing line round edges keeps its length; the slack hangs on the run from the wrist to
+    // the first edge. Off: round edges the web is drawn taut, as before.
+    bool webWrapSlack = true;
+    // SECOND HAND: a web the other hand takes hold of keeps its full-length line (the slack on the upper hand's run);
+    // hand-over-hand climbing takes line in one-for-one, as the reel. Off: one web in both hands is drawn taut.
+    bool webSharedSlack = true;
+    // PHYSICS UNTIL FADE: a full-length line let go of swings free from where it sticks for WEB FADE MS, then
+    // dissolves as before. A new web from that rope ends it at once. Off: it dissolves on the let-go frame.
+    bool webFadePhysics = true;
+    // (ms, 300 to 3000) how long a let-go line swings before it dissolves
+    int webFadeMs = 1200;
+    // CONNECT HANDOFF: a web line or web tie made with the stick click (or a zip to a line) takes the hands' webs at
+    // once: no let-go line keeps swinging in the way of its rope. Off: fading lines stay until their time is up.
+    bool webConnectHandoff = true;
+    // ROPE PHYSICS ON THE SWING (feel change; t91u "see what's possible", t92u approved): with FULL-LENGTH SWING LINES,
+    // the hanging line pulls the player: its slack's weight, a coil whipping out, and the drag of a line trailing a fast
+    // swing (swing_line::Line::pull), in SpidyVR's own air while a web is on. Off (or 0%): the swing as before.
+    bool swingRopePhysics = true;
+    // (%, 0 to 300) the pull's strength: 100 moderate (30 m of slack hanging pulls about 1.5 m/s^2; at most 2.5)
+    int swingRopePhysicsPct = 100;
+    // SHOWTIME AUTO: PUNCHES (0.8.7-na-beta3d; the owner, Nov 21 t93u: "Showtime on punches is what's happening
+    // now, let's remove that ... Or, if we do, let's give it a toggle"): the camera out for SpidyVR's own manual
+    // punch that flies him to an enemy (WebStrike, game_punch::Strikes::opened). Off by default (revision 20 turns
+    // it off for everyone); AUTO: STRIKES is the game's animated web strike alone since beta3d.
+    bool showtimeAutoPunch = false;
+    // PUNCHES: out on every Nth one (1 to 10).
+    int showtimeAutoPunchEvery = 1;
+    // PUNCHES: the least time between two of their cameras, ms (0: none).
+    int showtimeAutoPunchCooldownMs = 0;
+    // REEL OUT (0.8.7-na-beta3d, reel_out.hpp; the owner, Nov 21 t93u: "I'd like the ability to double tap the trigger
+    // and hold to reel the line out, so we can have more control there"): with a web attached, a second press of that
+    // hand's reel control within swing_reel_out_tap_ms of the first, held, pays the line out at swing_reel_out_speed
+    // (cm/s) until it is let go of, up to the swing's longest line. On by default (revision 20 turns it on once).
+    bool swingReelOut = true;
+    // REEL OUT: the double tap's window, ms (150 to 600).
+    int swingReelOutTapMs = 300;
+    // REEL OUT: how fast the line pays out, cm/s (50 to 1500; 400 = 4 m/s, half the reel-in's 8 m/s).
+    int swingReelOutSpeed = 400;
+    // AIR PHYSICS WHILE SWINGING (0.8.7-na-beta3d; the owner, Nov 21 t93u: "I also want air arm and leg physics, and all
+    // mid air physics calculations to apply while swinging as well"): the air systems that stood down while a web
+    // held now run on a swing too - REALISTIC FLIPS' arm spin builds over the web's alignment
+    // (RealisticFlipSettings::tetherSpin), MIDAIR POSES (dive, superhero, starfish), the LANDING BLEND-IN's upright
+    // before a touchdown, and the AIR DODGE (B) - each where it makes physical sense; docs/NA_BETA3.md (beta3d) has the
+    // table, with what stays off and why. Off: exactly as beta3c. On by default (revision 20 turns it on once).
+    bool swingAirPhysics = true;
+    // POINT JUMP CANCELS WALL GRABS (0.8.7-na-beta3e; the owner, Nov 22 t94u: "I want point jump to cancel wall
+    // grabs"): A+B on a wall fires the point jump off it - a hand climbing grip held on Spidy's wall no longer
+    // cancels the charge, and the game's own wall crawl or wall run is no longer refused ("game crawl"): the
+    // jump takes the body off the game's hold, with its sounds. Off: as beta3d.
+    bool pointJumpWallCancel = true;
+    // GRIP TO STICK (0.8.7-na-beta3e; the owner, Nov 22 t94u: "I want to remove the auto wall stick so that I can
+    // slide on walls; in order to stick and crawl I need to grip the wall, then I can crawl as normal"; a feel
+    // change, wall_slide.hpp): a wall of SpidyVR's own met in the air no longer holds the body at once - it slides
+    // down and along it with friction, keeping its speed, until a grip with a palm at the wall sticks it; then the
+    // stick crawls as before. The game's own wall crawl is the game's (no hook). Off: as beta3d.
+    bool wallGripToStick = true;
+    // (%, 0 to 100) GRIP TO STICK's slide: friction as a share of gravity. 0 slides freely; 100 holds a body at
+    // rest (a moving one still slows to a stop).
+    int wallSlideFriction = 50;
+    // WALL RUN PUSH (0.8.7-na-beta3n, settings revision 25; the owner, Nov 26 t141u: "when adding wall grip and
+    // slide, wall running broke. Add that back ... it's a slide anytime you're near the wall, and pushing the
+    // stick towards the wall smoothly initiates the wallrun in that direction"; a feel change, wall_feel.hpp): on
+    // a wall SpidyVR's own the body slides on (GRIP TO STICK), the stick pushed toward the wall blends the slide
+    // into the stick's wall run - the run a stuck wall has (its part at the wall up it, along it along it, a
+    // faster run keeping its speed) - over wallRunBlendMs; let go, it blends back into the slide. The game's own
+    // wall run is the game's (no hook). Off: as beta3m (the stick does nothing on a slide).
+    bool wallRunPush = true;
+    // (ms, 0 to 1000) WALL RUN PUSH's blend from the slide into the run and back. 0: at once.
+    int wallRunBlendMs = 250;
+    // WALL FLING ANY WAY (0.8.7-na-beta3n, settings revision 25; the owner, Nov 26 t141u: "Gripping the wall, I
+    // want to be able to fling myself in any direction via grip fling"; a feel change, wall_feel.hpp): a grip
+    // fling let go of on SpidyVR's wall leaves it along the whole fling as soon as any of it (0.3 m/s) points
+    // out of the wall - up, down, sideways or out. A fling into the wall still strokes along it. Off: as beta3m
+    // (only a push 2 m/s or more straight out leaves; the rest strokes along the wall).
+    bool wallFlingAnyWay = true;
+    // STICKY PALMS (0.8.7-na-beta3n, settings revision 25; the owner, Nov 26 t141u: "I want a softer "sticky" palm
+    // whenever my palms touch a surface. This active-when-in-contact soft friction can be tied to the momentum,
+    // and can use it to slow slides, or gain momentum off of wallruns or jumps"; a feel change, wall_feel.hpp):
+    // an open palm (no grip) touching the SpidyVR wall the body slides or runs on holds it softly, only while it
+    // touches - the body follows the palm: held still it slows the slide, swept back along a run it pushes the
+    // run on, swept down it lifts. SpidyVR's walls only: the game's own wall crawl and the ground have no hook.
+    // Off: as beta3m (a palm does nothing until it grips).
+    bool stickyPalms = true;
+    // (%, 0 to 200) STICKY PALMS' strength: how firmly a touching palm holds. 100: a still palm takes a 6 m/s
+    // slide under 1 m/s in about half a second.
+    int stickyPalmsPct = 100;
+    // WALL SLIDE POSE (0.8.7-na-beta3o, settings revision 26; the owner, Nov 26 t147u: "we need an animation for
+    // wall sliding. Maybe we can pose his legs like the image whenever he's sliding, similar to the old classic
+    // Spiderman 2 Playstation game"; visual only, leg_layers::wallSlidePose): while SpidyVR's own wall slides him
+    // (GRIP TO STICK, not stuck) mostly down or slowly, his legs take a braced crouch - knees up and wide, one foot
+    // higher - in place of the wall crawl's planted legs or the wall run's stride. A slide the stick runs along the
+    // wall keeps the wall run. Off: as beta3n.
+    bool wallSlidePose = true;
+    // GRIP LOCKS THE WALL JUMP (0.8.7-na-beta3o, settings revision 26; the owner, Nov 26 t147u: "Only point jumps
+    // should work through the grip. Normal jumps should stay locked."; a feel change, grip_jump.hpp): on one of
+    // SpidyVR's walls with a grip squeezed (no web in that hand), A is no wall jump - for the swing or the game -
+    // until it is let go of; A+B's point jump still fires through the grip. Let go of the grip to wall jump. Off:
+    // as beta3n (A wall jumps with a grip held).
+    bool wallGripJumpLock = true;
+    // (%, 0 to 300) ROPE WEIGHT (0.8.7-na-beta3e; the owner, Nov 22 t94u: "I want a weight slider for the webs,
+    // right now they're so light I can't control the swing"): the swing line's mass for ROPE PHYSICS, the sim and
+    // the pull alike (swing_line::Input::weight). Heavier hangs and swings on with what it has - more inertia to
+    // lean on - and pulls harder (its cap rises with it). 100 is beta3d's line; 200 by default.
+    // MASS RESCALE (0.8.7-na-beta3g, settings revision 23; the owner, Nov 22 t97u: "I had to increase his weight
+    // to see an effect ... See how you can massage things to achieve this without me setting his weight to
+    // 300%"): the line's mass a metre is 2.5 times beta3f's at the same percentage (swing_line::Line::
+    // massPerMetre), so 100% now is beta3f's 250%; revision 23 turns a saved weight into the same mass (beta3f's
+    // 200% default becomes 100%). 100 by default.
+    int swingRopeWeightPct = 100;
+    // (%, 0 to 300) ROPE DRAG (beta3e, t94u: "Reducing drag should reduce the effect of slack while swinging, but
+    // still allow for the physics"): the air on the swing line (swing_line::Input::drag). Less: the slack's tug and
+    // fling on you shrink and a trailing line lags less, its weight still hangs and the rope still moves. 100 is
+    // beta3d's.
+    int swingRopeDragPct = 100;
+    // KICK LUNGE (0.8.7-na-beta3f; the owner, Nov 22 t96u: "let's start to work on kicks"; air_kick.hpp
+    // Config::lungeReach): an air kick (AIR KICKS, legs engaged) at an enemy up to kick_lunge_reach_cm past
+    // the leg's reach carries you at him - the kick's window closes the gap, at most 12 m/s - and a blow off
+    // it stops you at him. In the air only, SpidyVR's body; standing kicks are unchanged. The beta3b and
+    // beta3c logs: 11 kicks, no enemy in the leg's reach once. Off: the leg's reach only, as beta3e.
+    bool kickLunge = true;
+    // (cm, 0 to 400) KICK LUNGE's reach past the leg's (1.55 m with the air's lunge). 250 by default.
+    int kickLungeReachCm = 250;
+    // KICK FEEL (0.8.7-na-beta3f, t96u): a kick that starts ticks both controllers (the legs have none), so a
+    // gesture taken is felt at once; a kick that lunges adds the strike rush's thump and sound (BLOW SOUNDS
+    // OFF silences it). A landed kick's blow feels and sounds as before (the strikes'). Off: as beta3e.
+    bool kickFeel = true;
+    // ROPE STABILITY (0.8.7-na-beta3g; the owner, Nov 22 t97u: "they seem to build up kinetic energy and become
+    // volatile, never settling ... the rope seems jittery and jumpy ... it feels like a step issue"; swing_line::
+    // Input::stable): the swing line's sim steps at a fixed 1/600 s out of the frames' time (beta3f: 8 steps a
+    // frame whatever its length), 8 constraint passes a step, damped toward moving with the hand (a line carried
+    // along is not dragged back into a stall), no particle faster than 30 m/s about the hand, its pull eased
+    // over 80 ms. Off: as beta3f.
+    bool swingRopeStable = true;
+    // TAUT UNDER LOAD (beta3g, t97u: "Spiderman's weight should make it taut when he swings against it";
+    // swing_line::Input::loadTaut): while the swing's own rope carries him (its pull past 2 m/s^2, all in at 6),
+    // the drawn line's spare length goes in and it is drawn taut; the slack comes back when the load comes off.
+    // Off: the slack always hangs, as beta3f.
+    bool swingRopeLoadTaut = true;
+    // WRAP KEEP (beta3g, t97u: "the webs are cutting off and making new lines instead of wrapping and
+    // releasing"; tether::Rope::reanchor): a web that bends round an edge or comes off one keeps its line as it
+    // lies, cut at (or carried on to) the new end, instead of a fresh one laid. Off: laid anew, as beta3f.
+    bool webWrapKeep = true;
+    // KICK TARGET RING (beta3g, t97u, approved in the beta3f plan; air_kick::preview): with the legs engaged, a
+    // turning ring round the enemy a kick would take now. Off: none, as beta3f.
+    bool kickTargetRing = true;
+    // GROUND LUNGE (beta3g; air_kick::Config::groundLungeReach): a standing kick at an enemy past the leg's
+    // reach (up to KICK LUNGE's reach, at most 2 m) steps the body at him along the ground. Off: as beta3f.
+    bool kickGroundLunge = true;
+    // KICK LEAN (beta3g; air_kick::kickLean): an air kick leans the upper body into it on the torso channel.
+    // Off: the legs only, as beta3f.
+    bool kickLean = true;
+    // KICK MOMENTUM (beta3g; air_kick::momentumPose): an air kick's legs carry the body's travel and swing
+    // in over 70 ms rather than 40. Off: as beta3f.
+    bool kickMomentum = true;
+    // KICK REBOUND (beta3g; air_kick::rebound): a kick's blow in the air springs him off the enemy (3 m/s up,
+    // 2.5 back). Off: as beta3f.
+    bool kickRebound = true;
+    // KICK ROPE ASSIST (beta3g): an air kick at an enemy while a web holds him steers the swing at him (the
+    // swing kick's assist: the web's length and the velocity toward him). Off: as beta3f.
+    bool kickRopeAssist = true;
+    // (cm/s, 100 to 1000) KICK GROUND SPEED (beta3g, approved): the fastest a standing kick may start at (it
+    // may go on 1.5 m/s faster). 450 by default; 300 was the fixed value through beta3f.
+    int kickGroundSpeedCms = 450;
+    // KICK CHAMBER (beta3g; the owner, Nov 22 t100u: "Kicks were okay, we need lots of animation work there, but
+    // they seem to fire"; air_kick::shapedLegPose): an air kick's leg winds up (the knee drawn up), snaps out
+    // through its line with a small overshoot and folds back as it recoils, and the kick's legs come in over
+    // 60 ms rather than 0.2 s. Off: the stiff leg swung out, as beta3f.
+    bool kickChamber = true;
+    // BETA3 SETTINGS END
+    // CRIME RUN (prototype; the owner, Nov 22 t103u; crime_run.hpp): a roguelike random-crime mode. Off by default:
+    // a mode, started from the phone's CRIME RUN app (shown only while this is on). Off: as the build before it.
+    bool crimeRun = false;
+    // The run's rules (crime_run::Config, crimeConfig): the score it starts at, the seconds between crimes, the
+    // ring they appear on round the player (metres), each crime's timer (s), a stop's points and its speed bonus
+    // (%), the points for each enemy of a real crime, a miss's penalty, the stops that win, how many crimes may be
+    // open at once, a beacon's zone (metres across) and how long to stay in it (s), and whether the game's own
+    // enemies in play become crimes (REAL CRIMES).
+    int crimeStartScore = 20000, crimeSpawnS = 45, crimeRadiusMinM = 150, crimeRadiusMaxM = 400, crimeTimerS = 120;
+    int crimeStopPoints = 1000, crimeSpeedBonusPct = 100, crimeThugPoints = 200, crimeMissPenalty = 2000;
+    int crimeWinStops = 20, crimeMaxSites = 2, crimeReachM = 15, crimeHoldS = 3;
+    bool crimeRealCrimes = true;
+    // The run's HUD below the gaze (the beacons always show).
+    bool crimeHud = true;
+    // The best: the highest final score of a won run, and the most stops in any run (written by the game).
+    int crimeBest = 0, crimeBestStops = 0;
+    // CRIME RUN SETTINGS END
     // HERO ATTACK SOUND (beta polish A2; attack_sound, spidy_vr.ini only, no menu row): one of the game's sounds played
     // on Spidey as a punch is thrown or a kick starts (at most one a hand every 250 ms, hit_sound.hpp): the id's 32
     // bits as a signed decimal. 0 (the default): none - the game's own whoosh and effort ids are not captured yet
@@ -890,10 +1165,10 @@ struct Values {
     int handstandGraceBeforeMs = 300;
     int handstandGraceAfterMs = 400;
     // HANDSTAND TIP-IN (the owner, Nov 17: "tip the player into the handstand when it's clear they're attempting one"):
-    // inverted at least handstand_tip_in_deg (120), not spinning, the hands over the head (now or in the grace): the catch takes
+    // inverted at least handstand_tip_in_deg (60; 120 before beta3), not spinning, the hands over the head (now or in the grace): the catch takes
     // the palms from up to handstand_tip_in_reach_cm (200) over the floor with no hold wait, and sets them down.
     bool handstandTipIn = true;
-    int handstandTipInDeg = 120;
+    int handstandTipInDeg = 60; // 45 to 180; 120 until 0.8.7-na-beta3 (revision 17 moves a saved 120 to 60)
     int handstandTipInReachCm = 200;
     // MARKER TWIST STEADY (the owner, Nov 17: "reaching around to fire webs causes the marker to jump ... loosen up that
     // twisting"): the arm line is smoothed in the world, carried with the controller's pointing, so a twist of the hand no longer
@@ -1205,6 +1480,12 @@ enum class Item : uint8_t {
     handstandSticky,
     // FULL-LENGTH SWING LINES (beta2).
     swingLineFullLength,
+    // WEB GRIP / PUNCH FISTS (revision 24): while the animation has the body, a hand on its web or a punch
+    // closes with the measured native fist.
+    animatedWebGrip,
+    animatedPunchFists,
+    // WEB IN HAND (revision 24, beta3i). (THICK SWING LINE was removed in beta3n, owner t141u.)
+    webHoldInHand,
     // NA HELP (beta polish M5, na_help.hpp): the NA · HELP tab's pages, one item for all of them (a page has no
     // value: one choice, READ). Its rows are the catalog's last.
     helpPage,
@@ -1239,8 +1520,8 @@ struct Row {
     Place place{};
 };
 // Stable row/setting numbers; categories below determine presentation order.
-// The catalog: the settings' rows (239), then NA HELP's pages.
-inline constexpr size_t settingRowCount = 239;
+// The catalog: the settings' rows (242), then NA HELP's pages.
+inline constexpr size_t settingRowCount = 242;
 inline constexpr size_t rowTotal = settingRowCount + na_help::pageCount;
 const std::array<Row, rowTotal>& rows();
 const Row* rowFor(Item);
@@ -1307,7 +1588,7 @@ std::string tabOnlyText(const Values&);
 // key, or whose value is no whole number, is passed over.
 Values withTabOnly(Values, std::string_view text);
 // The movement defaults' revision (Values::movementDefaults) this build has.
-inline constexpr int movementDefaultsRevision = 16;
+inline constexpr int movementDefaultsRevision = 27;
 // November 12 movement cleanup: a settings file (that text) older than
 // movementDefaultsRevision gets the new movement defaults once - RUN CURVE
 // on, EARLY JUMP at least QUICK TAP - and is marked as having seen them; a

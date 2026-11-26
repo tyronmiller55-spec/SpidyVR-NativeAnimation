@@ -1,4 +1,5 @@
 #pragma once
+#include "air_flip_tap.hpp"
 #include "head_clearance.hpp"
 #include "hand_collision.hpp"
 #include "handstand.hpp"
@@ -251,6 +252,13 @@ class FloorCrawlRoof {
     float held_{};
     bool duct_{};
 };
+// A move off the floor (the point jump since beta3f, ground flips since Nov 18)
+// is refused on the game's floor-crawl flag only in a duct: the flag also
+// lights for a hero ducking under anything low, in fights and in rooftop
+// parkour, where it is no reason to refuse him.
+inline bool floorCrawlRefuses(bool floorFlag, const FloorCrawlRoof& roof) {
+    return floorFlag && roof.duct();
+}
 // On the game's crawl the stick goes along the game camera's own look laid
 // onto the surface; where less than crawlLook of that look lies along the
 // surface (the camera faces it), along the camera's up laid onto it instead.
@@ -362,6 +370,14 @@ class GameTrackingRig {
         groundFlipOff_ = off;
     }
     // How many ground flips' spins were let go into the air, and how many ran out on the ground.
+    // DOUBLE-TAP A: double taps that turned him upside down, and whether one is held now (locked upside
+    // down).
+    unsigned airFlipInverts() const {
+        return airFlipInverts_;
+    }
+    bool airFlipHolding() const {
+        return airFlipHolding_;
+    }
     unsigned groundFlipsReleased() const {
         return groundFlipsReleased_;
     }
@@ -607,6 +623,10 @@ class GameTrackingRig {
     RealisticFlip automatic_{};
     AutomaticHandMotion automaticHands_{};
     bool automaticStickReady_{}, automaticBrakeHeld_{}, automaticBrakeFromAir_{};
+    // DOUBLE-TAP A: UPSIDE DOWN (air_flip_tap.hpp): which way A's turn goes, and how many went upside down.
+    air_flip_tap::Tap airFlipTap_{};
+    unsigned airFlipInverts_{};
+    bool airFlipHolding_{};
     Rig rig_{};
     FlipMotion flip_{};
     Pose lastHead_{};

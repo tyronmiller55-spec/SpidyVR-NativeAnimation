@@ -319,6 +319,9 @@ float tuckWeight();
 // TORSO CHANNEL (J1; body::Targets::torso): the midair poses' curl / arch, side bend and twist, radians (clamped to
 // body::torsoMaxRadians), shown at `amount`; only in the air. Off eases it out.
 void setTorsoControl(bool on, const body::Targets::TorsoAngles& torso, float amount = 1.f);
+// ROPE GRIP (beta3o, hand_pose.hpp HandPose::rope): each hand's thumb tuck onto the index, 0..1 (body::Targets::
+// Hand::rope); 0 both: as before.
+void setRopeGrip(float left, float right);
 // The torso channel's eased share, 0..1 (the solve's).
 float torsoWeight();
 // LEG CONTROL (leg_control.hpp): each leg's hip angles and knee bend for the
@@ -354,6 +357,10 @@ struct OverlayTracking {
     uint32_t headValid{};
     Pose actualGrip[2]{};
     uint32_t actualValid[2]{};
+    // WEB IN HAND's fist channel (beta3o, body::solvedFistChannel): the closed fist's loop from the solved finger
+    // bones, in the solved grip's own frame (actualGrip's axes, metres); holdValid 0: none this solve.
+    Vec3 holdLocal[2]{};
+    uint32_t holdValid[2]{};
     uint64_t deadlineMs{}; // originating body command lease, not last read time
     float residual[2]{-1, -1}, angle[2]{-1, -1};
     uint32_t valid[2]{}, reachClamped[2]{};

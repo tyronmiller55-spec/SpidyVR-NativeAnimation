@@ -36,7 +36,7 @@ namespace spidy::leg_layers {
 using leg_control::Angles;
 using leg_control::Legs;
 
-enum class Layer : uint8_t { off, passive, autoPose, flail, active, easing, kick };
+enum class Layer : uint8_t { off, passive, autoPose, flail, active, easing, kick, wallSlide };
 inline const char* layerName(Layer l) {
     switch (l) {
     case Layer::passive: return "passive";
@@ -45,6 +45,7 @@ inline const char* layerName(Layer l) {
     case Layer::active: return "active (right stick)";
     case Layer::easing: return "easing to straight";
     case Layer::kick: return "kick";
+    case Layer::wallSlide: return "wall slide";
     default: return "off";
     }
 }
@@ -92,6 +93,9 @@ inline constexpr Legs starfishPose{{{.1f, .65f, .1f}, {.1f, -.65f, .1f}}};
 struct Torso {
     float pitch = 0, roll = 0, yaw = 0;
 };
+inline float torsoClamp(float a) {
+    return std::isfinite(a) ? std::clamp(a, -.7f, .7f) : 0.f;
+}
 inline constexpr Torso tuckTorso{.55f, 0, 0}, diveTorso{-.25f, 0, 0}, superheroTorso{-.2f, 0, .15f},
                        starfishTorso{-.18f, 0, 0};
 inline Torso airPoseTorso(AirPose p, int heroSide = 0) {
@@ -243,6 +247,25 @@ inline float pelvisDrop(float standingEye) {
     return std::clamp(.44f * (std::isfinite(standingEye) ? standingEye : 1.6f), .55f, .9f);
 }
 
+// WALL SLIDE POSE (beta3o, wall_slide_pose; the owner, Nov 26 t147u: "we need an animation for wall sliding.
+// Maybe we can pose his legs like the image whenever he's sliding, similar to the old classic Spiderman 2
+// Playstation game"): while SpidyVR's own wall slides him (GRIP TO STICK, not stuck), the legs take a braced
+// crouch - knees up and wide, the left foot higher than the right, as the classic game's slide down a wall.
+// An approximation: the owner's picture was not readable here. Angles as leg_control's (pitch forward +,
+// side left +, knee bend, within its limits).
+inline constexpr Legs wallSlidePose{{{1.2f, .55f, 1.2f}, {.7f, -.5f, 1.1f}}};
+// Whether the slide shows the pose: sliding (not stuck), and mostly going down or slow - a slide the stick
+// runs along or up the wall (WALL RUN PUSH) keeps the wall run's own legs. `down` is the speed down the wall
+// (m/s, + down), `across` the speed along it the other ways (m/s). Hysteresis: on, it stays while across is
+// under 1.5x down plus 0.6 m/s; off, it starts under 1x down plus 0.3 m/s.
+inline constexpr float slideAcrossIn = 1.f, slideAcrossOut = 1.5f, slideSlackIn = .3f, slideSlackOut = .6f;
+inline bool wallSlideWanted(bool sliding, float down, float across, bool was) {
+    if (!sliding || !std::isfinite(down) || !std::isfinite(across))
+        return false;
+    const float d = std::max(down, 0.f), a = std::abs(across);
+    return was ? a < slideAcrossOut * d + slideSlackOut : a < slideAcrossIn * d + slideSlackIn;
+}
+
 // FLAIL: a running cycle, legs in opposition, the back leg's knee bent most.
 inline constexpr float flailHz = 2.2f, flailStickZone = .3f;
 inline Legs flailPose(float phase) {
@@ -269,6 +292,7 @@ struct Settings {
     int passiveCouplingPct = 15; // of LEG COUPLING
     bool crouch = true, reach = true;
     bool poses = true; // MIDAIR POSES (air_poses)
+    bool wallSlide = false; // WALL SLIDE POSE (wall_slide_pose; the caller's values)
 };
 struct Input {
     float dt = 0;
@@ -285,6 +309,16 @@ struct Input {
     bool kick = false;
     Legs kickPose = leg_control::centrePose;
     float kickSpin = .3f;
+    // KICK LEAN (beta3g, kick_lean; air_kick::kickLean): the kick's upper body on the torso channel while the
+    // kick layer runs. Off: the torso stays the solve's during a kick, as before.
+    bool kickLeanOn = false;
+    Torso kickTorso{};
+    // KICK CHAMBER (beta3g, kick_chamber): the kick layer comes in over 60 ms (0.2 s before: a 0.16 s kick was
+    // about 80% shown at its fullest) - the pose itself carries the wind-up and the recoil.
+    bool kickQuick = false;
+    // WALL SLIDE POSE (beta3o): SpidyVR's wall slides him and the pose is wanted (wallSlideWanted, the caller's
+    // hysteresis). Off the air only: the air's layers take the legs in the air.
+    bool wallSlide = false;
 };
 struct Output {
     Layer layer = Layer::off;
@@ -394,10 +428,16 @@ class Mixer {
                 layer = Layer::autoPose;
             else if (passiveOn)
                 layer = Layer::passive;
+        } else if (in.wallSlide && s.wallSlide) {
+            layer = Layer::wallSlide;
         }
         out.torsoOn = layer == Layer::autoPose && poseMax > .001f;
         if (!out.torsoOn)
             out.torso = {};
+        if (layer == Layer::kick && in.kickLeanOn) {
+            out.torsoOn = true;
+            out.torso = {torsoClamp(in.kickTorso.pitch), torsoClamp(in.kickTorso.roll), torsoClamp(in.kickTorso.yaw)};
+        }
         out.layer = layer;
         out.layerChanged = layer != layer_;
         layer_ = layer;
@@ -438,6 +478,12 @@ class Mixer {
             want = passive + (1 - passive) * std::max({crouchW_, reachW_, poseMax});
             break;
         }
+        case Layer::wallSlide:
+            // The wall holds him: the pose turns nothing on the body.
+            out.pose = wallSlidePose;
+            out.couplingScale = 0;
+            want = 1;
+            break;
         case Layer::passive:
             out.couplingScale = passiveCoupling(s);
             want = std::clamp(s.passivePct, 0, 100) * .01f;
@@ -448,7 +494,7 @@ class Mixer {
         if (layer != Layer::flail)
             flailPhase_ = 0;
         // The shown amount eases at body_ik's airLegBlendSeconds pace (0.2 s full scale).
-        amount_ = approach(amount_, want, dt / .2f);
+        amount_ = approach(amount_, want, dt / (layer == Layer::kick && in.kickQuick ? .06f : .2f));
         out.amount = amount_;
         return out;
     }

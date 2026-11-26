@@ -1,6 +1,52 @@
 # Native Animation cumulative 0.8.5 source provenance
 
-## Current user-approved cumulative integration — Nov 21, 2026 (1418992)
+## Current user-approved cumulative integration — Nov 26, 2026 (b426479)
+
+Authoritative working source:
+`b4264797406743020969c19bdc7ddb42f2e2b475`
+https://github.com/tyronmiller55-spec/SpidyVR/commit/b4264797406743020969c19bdc7ddb42f2e2b475
+
+Branch `feat/087-next`: 0.8.7-na-beta3p, the testers' CURRENT. The owner played
+beta3p on Nov 26, 2026, said "Ok, this is fine" and asked for it to become the
+CURRENT release (`t153u`), then approved publishing it here. Earlier that day he
+confirmed beta3m's crash fix ("No MDMP, game ran fine").
+
+Beta3 since the previous CURRENT (`1418992`): the VR thread's 16 MB stack for
+the 0xC00000FD crash (beta3m) and the GPU bridge start order (beta3j to beta3l);
+HEAD LEVEL as the default with LEVEL KEEPS HIM WITH YOU and the smoothing clock
+fix (beta3p); wall run push, wall fling any way, sticky palms, grip-held
+handstands, the thick swing line removed (beta3n); the wall slide pose, grip
+locks the wall jump, the held line in the fist and the rope grip (beta3o); web
+rope physics, reel out and air physics on a swing, point jump off wall grabs,
+grip to stick, Showtime auto kinds, double-tap A, kick lunge, feel, chamber,
+lean and target ring (beta3b to beta3i); Crime Run (off by default). Settings
+migrations 17 to 27 turn the new features on once; a saved off stays off, and
+revision 27 turns a saved HEAD FULL into LEVEL once.
+
+Publication starts from live NativeAnimation main
+`53ebc5aeaf9990471a76de41dcb859c59a4eb992` (after PR #7), preserving history.
+The owner explicitly authorized this CURRENT release.
+
+Exact tree parity policy (same as before, verified with Git blob IDs and modes):
+- All tracked files other than the two below match the working source exactly.
+- `README.md` is publication-specific documentation.
+- This provenance document is additional publication-only documentation.
+- `.github/workflows/release.yml` remains deliberately omitted. No workflow, rule
+  change or automatic publication is added.
+
+Windows build of `b426479` (CI CTest and Python protocol tests passed; core
+tests 995/997 locally under Wine, the two misses Wine-only target-scan checks):
+https://github.com/tyronmiller55-spec/SpidyVR/actions/runs/45896082078
+Release asset `Spidy-0.8.7-na-beta3p-win64-b426479.zip` (unpacks to
+`Spidy-0.8.7-player-torso-b426479`), SHA256
+`3e725db0fd5f5161f5ea50087dd23c193c6c874c90afcd16326add37a471221f`,
+18,640,598 bytes.
+
+Known limits going into this CURRENT (see the README): kicks rarely land in the
+logs so far; the wall pieces are on SpidyVR's own walls only; LEVEL does not
+roll the view on dodges; the game's 0xC0000409 in long sessions.
+
+## Earlier integration — Nov 21, 2026 (1418992)
 
 Authoritative working source:
 `1418992a8fda6a2f6044c75abafb52940814000e`

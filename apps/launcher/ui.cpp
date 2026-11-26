@@ -1812,8 +1812,20 @@ void App::nativeAnimation(ImVec2 origin, ImVec2 size) {
                S(42), [&] { tabToggle("##nativeanimation", Item::nativeAnimation); });
         option(
             "Head",
-            "Full follows the animated head, including flips. Level keeps the horizon level; Off unlocks it.",
+            "Level (the default) keeps the horizon level and turns only with you. Full follows the animated head, "
+            "including flips. Off unlocks it.",
             S(150), [&] { tabCombo("##nativehead", Item::animatedHead); });
+        option("Level keeps him with you",
+               "Head Level with Hybrid and Headset first: the view's turn is yours alone (headset, right stick, "
+               "snap realign) and Spider-Man is turned back under it after dodges, rolls and landings, so you "
+               "don't end up behind him. The view stays level. Off: Level as beta3o. Default: on.",
+               S(42), [&] {
+                   bool on = tabOnly_.levelHeadLock;
+                   if (toggle("##levelheadlock", &on)) {
+                       tabOnly_.levelHeadLock = on;
+                       tabChanged = true;
+                   }
+               });
         option("Smoothing",
                "How much animation wobble is calmed while Native Animation owns the view. "
                "Off is as now. Headset look, leaning and travel stay with you.",
@@ -2351,6 +2363,22 @@ void App::options(ImVec2 origin, ImVec2 size) {
                "A hand moved fast closes into a fist even with nobody to punch. Off: only with an enemy "
                "marked or within reach, so hands at rest never close.",
                S(42), [&] { tabToggle("##airfists", Item::airFists); });
+        settingOption(Item::animatedWebGrip, "Web grip",
+               "While the animation has the body, a hand on its web closes on the line (the game's own fist "
+               "pose) and opens when the web lets go. Off: the animation's fingers stay, as before. Default: on.",
+               S(42), [&] { tabToggle("##animatedwebgrip", Item::animatedWebGrip); });
+        settingOption(Item::animatedPunchFists, "Punch fists",
+               "While the animation has the body, a punching hand closes into a fist (the game's own fist "
+               "pose). Off: the animation's fingers stay, as before. Default: on.",
+               S(42), [&] { tabToggle("##animatedpunchfists", Item::animatedPunchFists); });
+        settingOption(Item::none, "Rope grip", "Looks only: a hand holding a web closes all the way around it and the thumb tucks onto the first finger, so the line runs through a closed ring - while the animation has the body too. The wrist, forearm and elbow don't change. Off: the fist as beta3n. Default: on.",
+               S(42), [&] {
+                   bool on = tabOnly_.webRopeGrip;
+                   if (toggle("##webropegrip", &on)) {
+                       tabOnly_.webRopeGrip = on;
+                       tabChanged = true;
+                   }
+               });
         // The guards (game_guard::setEnemyTypes has the choice from the game's settings, spidy_vr.ini's
         // enemy_types).
         settingOption(Item::enemyTypes, "Enemy types",
@@ -2895,6 +2923,35 @@ void App::options(ImVec2 origin, ImVec2 size) {
                 "re-placing your hands and head together is no loss, and once caught the hands may lift a "
                 "little higher and for 0.15 s before it ends. Your arms still have to be up. On by default.",
                 S(42), [&] { tabToggle("##handstandsticky", Item::handstandSticky); });
+            // HANDSTAND ENTRY ANGLE (0.8.7-na-beta3): the catch and the tip-in angles, 5 degree steps.
+            const auto degreeSlider = [&](const char* id, int& field, int lowest, int highest) {
+                int value = field;
+                ImGui::PushFont(fonts_.semibold, 14);
+                if (slider(id, &value, lowest, highest, "%d deg")) {
+                    value = std::clamp((value - lowest + 2) / 5 * 5 + lowest, lowest, highest);
+                    if (value != field) {
+                        field = value;
+                        tabChanged = true;
+                    }
+                }
+                ImGui::PopFont();
+            };
+            settingOption(Item::none, "Catch angle",
+                "How far upside down you must be for your palms on the floor to catch a handstand (45 to 150). "
+                "60 by default (100 before beta3). Needs Realistic flips.",
+                S(150), [&] { degreeSlider("##handstandcatchdeg", tabOnly_.handstandCatchDeg, 45, 150); });
+            settingOption(Item::none, "Tip-in angle",
+                "Upside down at least this far with your hands over your head, you are tipped into the handstand "
+                "from up to 2 m (45 to 180). 60 by default (120 before beta3).",
+                S(150), [&] { degreeSlider("##handstandtipindeg", tabOnly_.handstandTipInDeg, 45, 180); });
+            settingOption(Item::none, "Grip holds the handstand", "Changes the feel: upside down near the floor, squeeze a grip and the handstand catches without the hands-over-head check. While you hold a grip the handstand stays locked - no falling, stepping down, pushing off or leaping, and the grip shoots no web. Let go of the grip to push off, leap or step out, as before. Off: a squeeze ends the handstand, as beta3m. Default: on.",
+                S(42), [&] {
+                    bool on = tabOnly_.handstandGripHold;
+                    if (toggle("##handstandgriphold", &on)) {
+                        tabOnly_.handstandGripHold = on;
+                        tabChanged = true;
+                    }
+                });
         });
         // BODY & LEGS / KICKS & COMBAT (beta polish M4): the NA rows that lived on MOVEMENT and FLIPS.
         group(legsPage, 0, "Flips (Native Animation)", [&] {
@@ -2902,6 +2959,32 @@ void App::options(ImVec2 origin, ImVec2 size) {
                        "How long A in the air takes to bring you upright, smoothly with no jerk at either end. "
                        "Needs Realistic flips. 1 second by default.",
                        S(150), [&] { tabCombo("##aircorrect", Item::airCorrect); });
+            // DOUBLE-TAP A: UPSIDE DOWN (0.8.7-na-beta3b; the owner, Nov 21 t88u).
+            settingOption(Item::none, "Double-tap A: upside down",
+                       "In the air, tap A twice quickly: you turn upside down as smoothly as A rights you; hold the "
+                       "second A to stay upside down until you let go (a held single A keeps you upright). One A still "
+                       "rights you at once. Needs Realistic flips. On by default.",
+                       S(42), [&] {
+                           bool on = tabOnly_.airFlipDoubleTap;
+                           if (toggle("##airflipdoubletap", &on)) {
+                               tabOnly_.airFlipDoubleTap = on;
+                               tabChanged = true;
+                           }
+                       });
+            settingOption(Item::none, "Double-tap window",
+                       "How quickly the second A must follow the first. Default: 300 ms.",
+                       S(150), [&] {
+                           int value = tabOnly_.airFlipDoubleTapMs;
+                           ImGui::PushFont(fonts_.semibold, 14);
+                           if (slider("##airflipdoubletapms", &value, 150, 600, "%d ms")) {
+                               value = std::clamp((value - 150 + 12) / 25 * 25 + 150, 150, 600);
+                               if (value != tabOnly_.airFlipDoubleTapMs) {
+                                   tabOnly_.airFlipDoubleTapMs = value;
+                                   tabChanged = true;
+                               }
+                           }
+                           ImGui::PopFont();
+                       });
             settingOption(Item::directionalFlips, "Directional flips",
                        "Standing, hold the left stick to a side, ahead or back and tap A (let go within 0.18 s): a side "
                        "flip, front flip or backflip that way. Holding A is still the normal jump. On by default.",
@@ -3126,6 +3209,64 @@ void App::options(ImVec2 origin, ImVec2 size) {
                    "Hold X+B: you step outside by hand (the default). Auto only: the chord does nothing and X and B "
                    "are the game's as always; only the automatic moments below take the camera out.",
                    S(150), [&] { tabCombo("##showtimechord", Item::showtimeChord); });
+            // AUTO MOMENTS (beta3b; the owner, Nov 21 t88u): a switch per kind and how often each fires.
+            const auto autoToggle = [&](const char* id, bool& field) {
+                bool on = field;
+                if (toggle(id, &on)) {
+                    field = on;
+                    tabChanged = true;
+                }
+            };
+            const auto autoSlider = [&](const char* id, int& field, int lowest, int highest, int step, const char* format,
+                                        const char* zero) {
+                int value = field;
+                ImGui::PushFont(fonts_.semibold, 14);
+                if (slider(id, &value, lowest, highest, zero && value <= 0 ? zero : format)) {
+                    value = std::clamp((value - lowest + step / 2) / step * step + lowest, lowest, highest);
+                    if (value != field) {
+                        field = value;
+                        tabChanged = true;
+                    }
+                }
+                ImGui::PopFont();
+            };
+            settingOption(Item::none, "Auto: finishers",
+                   "The camera steps outside on its own when the game's Y+B finisher starts, and comes back the usual "
+                   "way 0.3 s after it ends. Needs Showtime. On by default.",
+                   S(42), [&] { autoToggle("##showtimeautofinisher", tabOnly_.showtimeAutoFinisher); });
+            settingOption(Item::none, "Finishers: every",
+                   "Out on every Nth finisher (1: every one). Default: 1.",
+                   S(150), [&] { autoSlider("##showtimeautofinisherevery", tabOnly_.showtimeAutoFinisherEvery, 1, 10, 1, "every %d", nullptr); });
+            settingOption(Item::none, "Finishers: cooldown",
+                   "The least time between two automatic finisher cameras. Default: none.",
+                   S(150), [&] { autoSlider("##showtimeautofinishercd", tabOnly_.showtimeAutoFinisherCooldownMs, 0, 60000, 500, "%d ms", "None"); });
+            settingOption(Item::none, "Auto: web strikes",
+                   "The camera steps outside on its own while the game's own animated web strike carries you to "
+                   "an enemy, and comes back 0.3 s after. Your own SpidyVR punches are Auto: punches. Needs "
+                   "Showtime. On by default.",
+                   S(42), [&] { autoToggle("##showtimeautostrike", tabOnly_.showtimeAutoStrike); });
+            settingOption(Item::none, "Strikes: every",
+                   "Out on every Nth web strike (1: every one). Default: 1.",
+                   S(150), [&] { autoSlider("##showtimeautostrikeevery", tabOnly_.showtimeAutoStrikeEvery, 1, 10, 1, "every %d", nullptr); });
+            settingOption(Item::none, "Strikes: cooldown",
+                   "The least time between two automatic web strike cameras. Default: none.",
+                   S(150), [&] { autoSlider("##showtimeautostrikecd", tabOnly_.showtimeAutoStrikeCooldownMs, 0, 60000, 500, "%d ms", "None"); });
+            settingOption(Item::none, "Auto: punches",
+                   "The camera steps outside on its own while one of your own SpidyVR punches flies you to an "
+                   "enemy (or dives), and comes back 0.3 s after. Needs Showtime. Off by default.",
+                   S(42), [&] { autoToggle("##showtimeautopunch", tabOnly_.showtimeAutoPunch); });
+            settingOption(Item::none, "Punches: every",
+                   "Out on every Nth punch that flies you (1: every one). Default: 1.",
+                   S(150), [&] { autoSlider("##showtimeautopunchevery", tabOnly_.showtimeAutoPunchEvery, 1, 10, 1, "every %d", nullptr); });
+            settingOption(Item::none, "Punches: cooldown",
+                   "The least time between two automatic punch cameras. Default: none.",
+                   S(150), [&] { autoSlider("##showtimeautopunchcd", tabOnly_.showtimeAutoPunchCooldownMs, 0, 60000, 500, "%d ms", "None"); });
+            settingOption(Item::none, "Dodges: every",
+                   "With Auto: dodges on, out on every Nth dodge it counts (1: every one). Default: 1.",
+                   S(150), [&] { autoSlider("##showtimeautododgeevery", tabOnly_.showtimeAutoDodgeEvery, 1, 10, 1, "every %d", nullptr); });
+            settingOption(Item::none, "Dodges: cooldown",
+                   "The least time between two automatic dodge cameras. Default: none.",
+                   S(150), [&] { autoSlider("##showtimeautododgecd", tabOnly_.showtimeAutoDodgeCooldownMs, 0, 60000, 500, "%d ms", "None"); });
             settingOption(Item::showtimeAutoDodge, "Auto: dodges",
                    "The camera steps outside by itself for a dodge and comes back 0.3 s after it ends (and not "
                    "while you hold X+B). Perfect only: just the dodge the game slows time for. All: every dodge. "
@@ -3189,6 +3330,176 @@ void App::options(ImVec2 origin, ImVec2 size) {
                    S(150), [&] { fineSlider("##fineglidemax", tabOnly_.handoffGlideMaxMs, 150, 2000, 25, "%d ms", nullptr); });
             settingOption(Item::none, "Handoff place", "A landing or zip view farther than this from the head is placed, not glided. Default: 125 cm.",
                    S(150), [&] { fineSlider("##fineplace", tabOnly_.handoffPlaceCm, 0, 2000, 10, "%d cm", "Always glide"); });
+        });
+        // BETA3 HANDOFF FIXES (0.8.7-na-beta3): the new handoff switches, each on by default for testing. The same
+        // spidy_vr.ini keys as the game's NA tabs.
+        const auto flagToggle = [&](const char* id, bool& field) {
+            bool on = field;
+            if (toggle(id, &on)) {
+                field = on;
+                tabChanged = true;
+            }
+        };
+        group(handoffPage, 1, "Handoff fixes (beta3)", [&] {
+            settingOption(Item::none, "Head first", "A switch into the animation reads his head first; your body stays drawn until then (2 frames at most). Default: on.",
+                   S(42), [&] { flagToggle("##headfirst", tabOnly_.handoffHeadFirst); });
+            settingOption(Item::none, "Landing view snap", "A landing, zip or mount puts the view near his head at once, then a short glide. Default: on.",
+                   S(42), [&] { flagToggle("##landingsnap", tabOnly_.landingViewSnap); });
+            settingOption(Item::none, "Snap distance", "How far from his head the snap leaves the view; the rest glides. Default: 15 cm.",
+                   S(150), [&] { fineSlider("##landingsnapcm", tabOnly_.landingViewSnapCm, 0, 100, 1, "%d cm", "Onto the head"); });
+            settingOption(Item::none, "Snap glide", "The glide over the last few centimetres after the snap. Default: 120 ms.",
+                   S(150), [&] { fineSlider("##landingsnapms", tabOnly_.landingViewSnapMs, 40, 400, 10, "%d ms", nullptr); });
+            settingOption(Item::none, "Neck pull", "Past a few centimetres off his neck your view follows back smoothly, not a jump every few steps. Default: on.",
+                   S(42), [&] { flagToggle("##headseatpull", tabOnly_.headSeatPull); });
+            settingOption(Item::none, "Neck pull starts", "How far off his neck your view may lean before the pull. Default: 5 cm.",
+                   S(150), [&] { fineSlider("##headseatpullcm", tabOnly_.headSeatPullCm, 0, 20, 1, "%d cm", "At once"); });
+            settingOption(Item::none, "Neck pull speed", "The pull at most; faster steps still re-seat at 20 cm. Default: 50 cm/s.",
+                   S(150), [&] { fineSlider("##headseatpullcms", tabOnly_.headSeatPullCmS, 5, 200, 5, "%d cm/s", nullptr); });
+            // BETA3 LAUNCHER END
+        });
+        // WEBS ACROSS THE GAME (0.8.7-na-beta3c): the swing lines in every web state, and the rope's pull on the swing,
+        // each on by default for testing. The same spidy_vr.ini keys as the game's NA tabs.
+        group(shootersPage, 1, "Webs across the game (beta3c)", [&] {
+            settingOption(Item::none, "Wrap slack", "A full-length line round edges keeps its length; the slack hangs between your hand and the first edge. Default: on.",
+                   S(42), [&] { flagToggle("##webwrapslack", tabOnly_.webWrapSlack); });
+            settingOption(Item::none, "Second hand", "A web your other hand takes keeps its line; climbing hand over hand takes line in. Default: on.",
+                   S(42), [&] { flagToggle("##websharedslack", tabOnly_.webSharedSlack); });
+            settingOption(Item::none, "Physics until fade", "A line you let go of swings free from where it sticks, then dissolves. Default: on.",
+                   S(42), [&] { flagToggle("##webfadephysics", tabOnly_.webFadePhysics); });
+            settingOption(Item::none, "Fade time", "How long a let-go line swings before it dissolves. Default: 1200 ms.",
+                   S(150), [&] { fineSlider("##webfadems", tabOnly_.webFadeMs, 300, 3000, 100, "%d ms", nullptr); });
+            settingOption(Item::none, "Connect handoff", "A web line or web tie made with the stick click takes the hands' webs at once. Default: on.",
+                   S(42), [&] { flagToggle("##webconnecthandoff", tabOnly_.webConnectHandoff); });
+            settingOption(Item::none, "Rope physics on the swing", "Changes the feel: the hanging line pulls you - its weight, a coil whipping out, the drag of a trailing line. Needs full-length swing lines. Off: the swing as before. Default: on.",
+                   S(42), [&] { flagToggle("##swingropephysics", tabOnly_.swingRopePhysics); });
+            settingOption(Item::none, "Rope pull strength", "How hard the line pulls. 100% is moderate; 0% is none. Default: 100%.",
+                   S(150), [&] { fineSlider("##swingropephysicspct", tabOnly_.swingRopePhysicsPct, 0, 300, 10, "%d%%", "Off"); });
+            settingOption(Item::none, "Rope weight", "How heavy the swing line is: a heavier line hangs and swings on with what it has, so you can lean on its momentum, and pulls harder. Rescaled in beta3g: 100% is now Spidey's own match (the old 250%). Default: 100%.",
+                   S(150), [&] { fineSlider("##swingropeweightpct", tabOnly_.swingRopeWeightPct, 0, 300, 10, "%d%%", "Weightless"); });
+            settingOption(Item::none, "Rope drag", "The air on the swing line. Lower: the slack tugs and flings you less while the rope still swings and hangs. 100% is the beta3d line. Default: 100%.",
+                   S(150), [&] { fineSlider("##swingropedragpct", tabOnly_.swingRopeDragPct, 0, 300, 10, "%d%%", "No drag"); });
+            // BETA3C LAUNCHER END
+        });
+        // SWINGING (0.8.7-na-beta3d): reel out and the air's physics on a swing, each on by default for testing. The
+        // same spidy_vr.ini keys as the game's NA tabs.
+        group(shootersPage, 1, "Swinging (beta3d)", [&] {
+            settingOption(Item::none, "Reel out", "With a web attached, double tap that hand's reel trigger and hold: the line pays out until you let go (the first tap reels in a little, as always). Default: on.",
+                   S(42), [&] { flagToggle("##swingreelout", tabOnly_.swingReelOut); });
+            settingOption(Item::none, "Reel out: double tap", "How quickly the second press must follow the first. Default: 300 ms.",
+                   S(150), [&] { fineSlider("##swingreelouttap", tabOnly_.swingReelOutTapMs, 150, 600, 10, "%d ms", nullptr); });
+            settingOption(Item::none, "Reel out: speed", "How fast the line pays out while held (the reel takes in at 8 m/s). Default: 400 cm/s.",
+                   S(150), [&] { fineSlider("##swingreeloutspeed", tabOnly_.swingReelOutSpeed, 50, 1500, 25, "%d cm/s", nullptr); });
+            settingOption(Item::none, "Air physics while swinging", "Changes the feel: on a web your arm swings build their own spin over the swing, the midair poses (dive, superhero, starfish) and the air dodge work, and the landing blend uprights you before a touchdown. Off: the swing as before. Default: on.",
+                   S(42), [&] { flagToggle("##swingairphysics", tabOnly_.swingAirPhysics); });
+            // BETA3D LAUNCHER END
+        });
+        // WALLS (0.8.7-na-beta3e): the point jump off a wall grab, and grip to stick, each on by default for testing.
+        // The same spidy_vr.ini keys as the game's NA tabs.
+        group(legsPage, 0, "Walls (beta3e)", [&] {
+            settingOption(Item::none, "Point jump cancels wall grabs", "A + B on a wall fires the point jump off it: a grip held on the wall no longer cancels the charge, and the game's own wall crawl lets you go. Default: on.",
+                   S(42), [&] { flagToggle("##pointjumpwallcancel", tabOnly_.pointJumpWallCancel); });
+            settingOption(Item::none, "Grip to stick", "Changes the feel: hitting a wall no longer sticks you to it. You slide down and along it with friction, keeping your speed; squeeze a grip with your palm on the wall to stick, then crawl as usual. The game's own wall crawl is unchanged. Off: walls hold you at once, as before. Default: on.",
+                   S(42), [&] { flagToggle("##wallgriptostick", tabOnly_.wallGripToStick); });
+            settingOption(Item::none, "Wall slide friction", "How hard a wall you slide on holds you back, as a share of gravity: 0% slides freely, 100% stops you. Default: 50%.",
+                   S(150), [&] { fineSlider("##wallslidefriction", tabOnly_.wallSlideFriction, 0, 100, 5, "%d%%", "Free"); });
+            settingOption(Item::none, "Wall run push", "Changes the feel: sliding on a wall, push the stick toward the wall and the slide smoothly turns into a wall run in the stick's direction (straight at the wall runs up it, angled runs up and along). Let go and you slide again. Off: the stick does nothing while you slide, as beta3m. Default: on.",
+                   S(42), [&] { flagToggle("##wallrunpush", tabOnly_.wallRunPush); });
+            settingOption(Item::none, "Wall run push: blend", "How long the slide takes to become the run, and the run the slide again. 0 ms: at once. Default: 250 ms.",
+                   S(150), [&] { fineSlider("##wallrunblend", tabOnly_.wallRunBlendMs, 0, 1000, 25, "%d ms", "At once"); });
+            settingOption(Item::none, "Wall fling any way", "Changes the feel: holding a wall with a grip, pull and let go to fling off it in any direction - up, down, sideways or out. A fling into the wall still carries you along it. Needs Grip fling on. Off: only a hard push straight out leaves the wall, as beta3m. Default: on.",
+                   S(42), [&] { flagToggle("##wallflinganyway", tabOnly_.wallFlingAnyWay); });
+            settingOption(Item::none, "Sticky palms", "Changes the feel: an open hand touching the wall you slide or run on holds softly, only while it touches. Hold it still to slow a slide; sweep it back along a wall run to push on faster; sweep it down to lift. SpidyVR's walls only. Off: a palm does nothing until you grip, as beta3m. Default: on.",
+                   S(42), [&] { flagToggle("##stickypalms", tabOnly_.stickyPalms); });
+            settingOption(Item::none, "Sticky palms: strength", "How firmly a touching palm holds. 100%: a still palm takes a quick slide to a crawl in about half a second. 0%: none. Default: 100%.",
+                   S(150), [&] { fineSlider("##stickypalmspct", tabOnly_.stickyPalmsPct, 0, 200, 10, "%d%%", "None"); });
+            settingOption(Item::none, "Wall slide pose", "Looks only: while you slide down one of SpidyVR's walls (before a grip sticks you), his legs brace in a crouch - knees up and wide, one foot higher - like the classic wall slide. A slide you run along the wall keeps the wall run's legs. Off: the crawl's or the run's legs, as beta3n. Default: on.",
+                   S(42), [&] { flagToggle("##wallslidepose", tabOnly_.wallSlidePose); });
+            settingOption(Item::none, "Grip locks the wall jump", "Changes the feel: while you grip one of SpidyVR's walls, A does not jump off it - let go of the grip first. A+B, the point jump, still fires through the grip. Off: A wall jumps with a grip held, as beta3n. Default: on.",
+                   S(42), [&] { flagToggle("##wallgripjumplock", tabOnly_.wallGripJumpLock); });
+            // BETA3E LAUNCHER END
+        });
+        // KICKS (0.8.7-na-beta3f): the air kick's lunge and the kicks' feel, each on by default for testing. The same
+        // spidy_vr.ini keys as the game's NA tabs.
+        group(kicksPage, 0, "Kicks (beta3f)", [&] {
+            settingOption(Item::none, "Kick lunge", "Changes the feel of air kicks: kick at an enemy a little out of your leg's reach and you fly at him to land it, stopping at him on the blow. In the air only; standing kicks are unchanged. Off: the leg's reach only, as before. Default: on.",
+                   S(42), [&] { flagToggle("##kicklunge", tabOnly_.kickLunge); });
+            settingOption(Item::none, "Kick lunge reach", "How far past your leg's reach an enemy may be for the lunge. Default: 250 cm.",
+                   S(150), [&] { fineSlider("##kicklungereach", tabOnly_.kickLungeReachCm, 0, 400, 10, "%d cm", "Leg only"); });
+            settingOption(Item::none, "Kick feel", "A kick that starts ticks both controllers, and a lunge adds the web strike's rush thump and sound. Landed kicks feel as before. Default: on.",
+                   S(42), [&] { flagToggle("##kickfeel", tabOnly_.kickFeel); });
+            // BETA3F LAUNCHER END
+        });
+        // WEB ROPE AND KICKS (0.8.7-na-beta3g): the swing line's steps, load and wraps, and the kicks' ring, lunge,
+        // lean, momentum, rebound and rope assist, each on by default for testing. The same spidy_vr.ini keys as
+        // the game's NA tabs.
+        group(shootersPage, 1, "Web rope (beta3g)", [&] {
+            settingOption(Item::none, "Steady rope steps", "Changes the feel: the swing line's physics step at a steady rate whatever the frame rate, damp out instead of building up, and no longer stall the line in midair. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##swingropestable", tabOnly_.swingRopeStable); });
+            settingOption(Item::none, "Taut under load", "Changes the look: when you swing or hang on the web the line pulls straight and tight; its slack comes back when the load comes off. Off: the slack always hangs, as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##swingropeloadtaut", tabOnly_.swingRopeLoadTaut); });
+            settingOption(Item::none, "Keep lines through wraps", "A web that wraps round an edge or comes off one keeps its line as it lies instead of a new line appearing. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##webwrapkeep", tabOnly_.webWrapKeep); });
+            // BETA3G ROPE LAUNCHER END
+        });
+        group(kicksPage, 0, "Kicks (beta3g)", [&] {
+            settingOption(Item::none, "Kick target ring", "With the legs engaged, a turning ring shows the enemy a kick would go for. Default: on.",
+                   S(42), [&] { flagToggle("##kicktargetring", tabOnly_.kickTargetRing); });
+            settingOption(Item::none, "Ground lunge", "Changes the feel: a standing kick at an enemy a step or two out of reach steps you in to land it. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##kickgroundlunge", tabOnly_.kickGroundLunge); });
+            settingOption(Item::none, "Kick chamber", "Changes the look of air kicks: the leg winds up with the knee drawn in, snaps out through its line and folds back as it recoils, and comes in faster. Off: the stiff leg, as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##kickchamber", tabOnly_.kickChamber); });
+            settingOption(Item::none, "Kick lean", "Air kicks lean your upper body into the kick. Off: the legs only. Default: on.",
+                   S(42), [&] { flagToggle("##kicklean", tabOnly_.kickLean); });
+            settingOption(Item::none, "Kick momentum", "Air kicks' legs carry your travel and swing in a little softer. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##kickmomentum", tabOnly_.kickMomentum); });
+            settingOption(Item::none, "Kick rebound", "Changes the feel: an air kick that lands springs you up and back off the enemy. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##kickrebound", tabOnly_.kickRebound); });
+            settingOption(Item::none, "Kick rope assist", "An air kick while on a web steers the swing at the enemy. Off: as beta3f. Default: on.",
+                   S(42), [&] { flagToggle("##kickropeassist", tabOnly_.kickRopeAssist); });
+            settingOption(Item::none, "Ground kick speed", "The fastest you may move and still start a standing kick. 300 was the old value. Default: 450 cm/s.",
+                   S(150), [&] { fineSlider("##kickgroundspeed", tabOnly_.kickGroundSpeedCms, 100, 1000, 10, "%d cm/s", "Slow"); });
+            // BETA3G LAUNCHER END
+        });
+        // CRIME RUN (prototype; the owner, Nov 22 t103u; crime_run.hpp): a roguelike random-crime mode, off by default.
+        // The same spidy_vr.ini keys the game reads (crime_*); the best is written by the game.
+        group(kicksPage, 1, "Crime Run (prototype)", [&] {
+            settingOption(Item::none, "Crime Run", "A roguelike mode: start a run from anywhere in the open world with the phone's CRIME RUN app (pull the phone from your back pocket, pick CRIME RUN, press A; A twice quits). Crimes appear on a ring around you at regular times as pillars of light; reach each before its timer runs out. Where the game's own thugs are fighting near you, they become the crime and you stop it by taking them all down; otherwise you stop it by reaching the beacon and staying in its ring. Stops score points (more the faster you are), misses cost points. You start at 20,000: hit zero and the run is lost, stop enough crimes and it is won. Off: no app, nothing changes. Default: off.",
+                   S(42), [&] { flagToggle("##crimerun", tabOnly_.crimeRun); });
+            settingOption(Item::none, "Real crimes", "The game's own enemies in play near you become the crimes (take them all down to stop it). Off: always a beacon to reach. Default: on.",
+                   S(42), [&] { flagToggle("##crimereal", tabOnly_.crimeRealCrimes); });
+            settingOption(Item::none, "Run HUD", "The score, stops, rank and an arrow to the next crime, held below your gaze. The beacons show either way. Default: on.",
+                   S(42), [&] { flagToggle("##crimehud", tabOnly_.crimeHud); });
+            settingOption(Item::none, "Starting score", "Where the score starts; the run is lost at zero. Default: 20,000.",
+                   S(150), [&] { fineSlider("##crimestart", tabOnly_.crimeStartScore, 1000, 100000, 1000, "%d", nullptr); });
+            settingOption(Item::none, "Crimes to win", "Stops that win the run. The ranks (Rookie, Street-Level, Friendly Neighborhood, Spectacular, Sensational, Amazing) are shares of it. Default: 20.",
+                   S(150), [&] { fineSlider("##crimewin", tabOnly_.crimeWinStops, 1, 200, 1, "%d stops", nullptr); });
+            settingOption(Item::none, "Time between crimes", "How often a new crime appears (if fewer than the most at once are open). Default: 45 s.",
+                   S(150), [&] { fineSlider("##crimespawn", tabOnly_.crimeSpawnS, 10, 300, 5, "%d s", nullptr); });
+            settingOption(Item::none, "Time per crime", "Each crime's timer. Default: 120 s.",
+                   S(150), [&] { fineSlider("##crimetimer", tabOnly_.crimeTimerS, 20, 600, 5, "%d s", nullptr); });
+            settingOption(Item::none, "Most crimes at once", "How many crimes may be open together. Default: 2.",
+                   S(150), [&] { fineSlider("##crimemax", tabOnly_.crimeMaxSites, 1, 4, 1, "%d", nullptr); });
+            settingOption(Item::none, "Nearest beacon", "The ring beacons appear on: the nearest they come. Default: 150 m.",
+                   S(150), [&] { fineSlider("##crimermin", tabOnly_.crimeRadiusMinM, 30, 1000, 10, "%d m", nullptr); });
+            settingOption(Item::none, "Farthest beacon", "The farthest a crime appears (real crimes too). Default: 400 m.",
+                   S(150), [&] { fineSlider("##crimermax", tabOnly_.crimeRadiusMaxM, 40, 1500, 10, "%d m", nullptr); });
+            settingOption(Item::none, "Points per stop", "A stop's points before the speed bonus. Default: 1,000.",
+                   S(150), [&] { fineSlider("##crimepoints", tabOnly_.crimeStopPoints, 0, 10000, 100, "%d", nullptr); });
+            settingOption(Item::none, "Speed bonus", "A stop the moment a crime appears scores this much more; one at the last second scores none. Default: 100%.",
+                   S(150), [&] { fineSlider("##crimebonus", tabOnly_.crimeSpeedBonusPct, 0, 300, 10, "%d%%", nullptr); });
+            settingOption(Item::none, "Points per thug", "Added for each enemy a real crime had. Default: 200.",
+                   S(150), [&] { fineSlider("##crimethug", tabOnly_.crimeThugPoints, 0, 2000, 50, "%d", nullptr); });
+            settingOption(Item::none, "Miss penalty", "Points lost when a crime's timer runs out. Default: 2,000.",
+                   S(150), [&] { fineSlider("##crimemiss", tabOnly_.crimeMissPenalty, 0, 20000, 100, "%d", nullptr); });
+            settingOption(Item::none, "Beacon zone", "How close (across) counts as at a beacon; up to 25 m above or below once its ground is found. Default: 15 m.",
+                   S(150), [&] { fineSlider("##crimereach", tabOnly_.crimeReachM, 3, 60, 1, "%d m", nullptr); });
+            settingOption(Item::none, "Hold at a beacon", "How long to stay in a beacon's zone to stop it. Default: 3 s.",
+                   S(150), [&] { fineSlider("##crimehold", tabOnly_.crimeHoldS, 0, 30, 1, "%d s", "At once"); });
+            settingOption(Item::none, "Best", "The highest final score of a won run, and the most stops in any run, saved by the game.",
+                   S(150), [&] {
+                       ImGui::Text("%d  (%d stops)", tabOnly_.crimeBest, tabOnly_.crimeBestStops);
+                   });
+            // CRIME RUN LAUNCHER END
         });
         // NA HELP (beta polish M5): the same pages as the game's NA · HELP tab (na_help.hpp), a card per topic.
         const int helpPage = static_cast<int>(Category::help);
