@@ -957,8 +957,8 @@ int main() {
         const Params P = paramsOf(d);
         check(d.handstandReachCm == 160 && std::abs(P.touchdownReach - 1.6f) < 1e-6f &&
                   std::abs(P.armsGraceBefore - .3f) < 1e-6f && std::abs(P.touchdownGrace - .4f) < 1e-6f && P.tipIn &&
-                  P.tipInDegrees == 120.f && std::abs(P.tipInReach - 2.f) < 1e-6f,
-              "the defaults: 1.6 m reach, 300 ms before, 400 ms after, tip-in from 120 deg within 2 m");
+                  P.tipInDegrees == 60.f && P.catchDegrees == 60.f && std::abs(P.tipInReach - 2.f) < 1e-6f,
+              "the defaults: 1.6 m reach, 300 ms before, 400 ms after, catch and tip-in from 60 deg within 2 m");
         const auto attempt = [](float degrees, float palmsUp, float armsY, bool air) {
             auto in = inverted();
             const float r = degrees * 3.14159265f / 180.f;
@@ -1010,23 +1010,26 @@ int main() {
                   "the window closes with every failing gate");
         }
         // A hold made in the air counts at once below the tip-in's angle.
+        // (The tip-in's angle at its old 120 here: 110 is below it; the default is 60 since beta3.)
+        Params below = P;
+        below.tipInDegrees = 120.f;
         {
             Handstand h;
             for (int i = 0; i < 18; ++i)
-                h.update(attempt(110, 0, .25f, true), P);
-            const auto o = h.update(attempt(110, 1.5f, .25f, false), P);
+                h.update(attempt(110, 0, .25f, true), below);
+            const auto o = h.update(attempt(110, 1.5f, .25f, false), below);
             check(o.caughtNow && !o.tipIn, "110 deg, hands held up in the air, palms 1.5 m: caught with no wait");
         }
         // Raised only at the touchdown, below the tip-in's angle: the 0.12 s hold, then the catch.
         {
             Handstand h;
             for (int i = 0; i < 18; ++i)
-                h.update(attempt(110, 0, -.3f, true), P);
-            auto o = h.update(attempt(110, 1.5f, .25f, false), P);
+                h.update(attempt(110, 0, -.3f, true), below);
+            auto o = h.update(attempt(110, 1.5f, .25f, false), below);
             check(!o.caughtNow && o.refused == Refusal::none, "hands up at the touchdown: the hold first");
             int frames = 1;
             for (; frames < 40 && !o.caughtNow; ++frames)
-                o = h.update(attempt(110, 1.5f, .25f, false), P);
+                o = h.update(attempt(110, 1.5f, .25f, false), below);
             check(o.caughtNow && frames * dt >= .12f, "then the catch");
         }
         // TIP-IN: clearly attempting (150 deg, hands over the head), palms 1.9 m up: tipped in at once.
@@ -1085,7 +1088,7 @@ int main() {
                   "a tuned reach stays");
             const auto r = vr_settings::withTabOnly({}, "handstand_tip_in=0\nhandstand_tip_in_deg=20\n"
                                                         "handstand_grace_before_ms=5000\nhandstand_grace_after_ms=10\n");
-            check(!r.handstandTipIn && r.handstandTipInDeg == 100 && r.handstandGraceBeforeMs == 1000 &&
+            check(!r.handstandTipIn && r.handstandTipInDeg == 45 && r.handstandGraceBeforeMs == 1000 &&
                       r.handstandGraceAfterMs == 100,
                   "the ini keys read, clamped");
         }
@@ -1290,6 +1293,104 @@ int main() {
         vr_settings::Values plain;
         plain.handstandSticky = false;
         check(handstand::paramsOf(plain).armsOverHead == .10f, "the setting's default reaches the params");
+    }
+    // GRIP HOLDS THE HANDSTAND (beta3n, the owner Nov 26 t146u): a grip is the catch's intent and holds the stance;
+    // letting go is the way out. Off: beta3m (a squeeze ends it).
+    {
+        Params p = fresh();
+        p.gripHold = true;
+        Params old = fresh();
+        // Upside down at a touchdown, the palms 0.5 m over the floor and held at the chest (not over the head).
+        const auto touch = [](bool grip) {
+            auto in = inverted();
+            in.vrAir = false;
+            in.touchdown = true;
+            in.floorPalms = 0;
+            in.floorKnown = true;
+            in.floorY = 0;
+            in.headKnown = true;
+            in.head = {0, .3f, 0};
+            for (int k = 0; k < 2; ++k) {
+                in.palms[k] = {k ? .2f : -.2f, .5f, 0};
+                in.palmRel[k] = {0, -.3f, -.25f};
+                in.palmRelKnown[k] = true;
+            }
+            in.grip = grip;
+            return in;
+        };
+        const auto airborne = [](Handstand& h, const Params& q) {
+            auto a = inverted();
+            a.floorPalms = 0;
+            a.floorKnown = true;
+            a.floorY = 0;
+            a.palms[0] = {-.2f, -.5f, 0};
+            a.palms[1] = {.2f, -.5f, 0};
+            h.update(a, q);
+        };
+        Handstand noGrip;
+        airborne(noGrip, p);
+        check(!noGrip.update(touch(false), p).caughtNow, "no grip, hands at the chest: no catch, as before");
+        Handstand oldGrip;
+        airborne(oldGrip, old);
+        check(!oldGrip.update(touch(true), old).caughtNow, "off: a grip is no intent (beta3m)");
+        Handstand h;
+        airborne(h, p);
+        const auto c = h.update(touch(true), p);
+        check(c.caughtNow && c.gripCatch, "a grip upside down near the floor: the catch, no arms-over-head test");
+        // Held: locked through a palms-off, a push, a leap and a lean far off the palms.
+        auto held = touch(true);
+        held.touchdown = true;
+        held.palms[0].y = held.palms[1].y = .05f;
+        Handstand::Out o{};
+        for (int i = 0; i < 60; ++i)
+            o = h.update(held, p);
+        check(o.state == State::balance && o.gripLocked, "held into the balance, locked");
+        held.floorPalms = 0;
+        held.palms[0].y = held.palms[1].y = .6f; // palms well off the floor
+        held.pushInto = 3.f;
+        held.jump = true;
+        held.stick = 1.f;
+        held.aim = {.5f, 0, 0};
+        Exit any = Exit::none;
+        for (int i = 0; i < 180; ++i)
+            any = std::max(any, (o = h.update(held, p)).exitNow);
+        check(any == Exit::none && o.supporting && o.gripLocked, "held: no step-down, push, leap or fall");
+        check(std::hypot(o.lean.x, o.lean.z) <= .19f, "held: the centre of mass stays over the palms");
+        // Let go: the way out is as before (here a push into the floor, the palms on it).
+        auto out = held;
+        out.grip = false;
+        out.jump = false;
+        out.stick = 0;
+        out.floorPalms = 3;
+        out.palms[0].y = out.palms[1].y = .05f;
+        Exit why = Exit::none;
+        for (int i = 0; i < 20 && why == Exit::none; ++i)
+            why = (o = h.update(out, p)).exitNow;
+        check(why == Exit::push && o.launch.y > 2.f, "let go of the grip: the push launches him");
+        // Let go and lift the palms: the step-down, as before.
+        Handstand s;
+        auto in = inverted();
+        in.grip = true;
+        for (int i = 0; i < 30; ++i)
+            s.update(in, p);
+        in.floorPalms = 0;
+        for (int i = 0; i < 30; ++i)
+            check(s.update(in, p).exitNow == Exit::none, "held, palms up: no step-down");
+        in.grip = false;
+        Exit sw = Exit::none;
+        for (int i = 0; i < 30 && sw == Exit::none; ++i)
+            sw = s.update(in, p).exitNow;
+        check(sw == Exit::stepDown, "let go, palms up: the step-down");
+        // A squeeze after the catch no longer ends it; off, it still does.
+        Handstand q;
+        auto qi = inverted();
+        q.update(qi, p);
+        qi.grip = true;
+        check(q.update(qi, p).exitNow == Exit::none, "a squeeze holds instead of letting go");
+        vr_settings::Values v;
+        check(v.handstandGripHold && handstand::paramsOf(v).gripHold, "on by default from the settings");
+        v.handstandGripHold = false;
+        check(!handstand::paramsOf(v).gripHold, "off reaches the params");
     }
     std::printf("handstand: %d checks passed\n", passed);
     return 0;

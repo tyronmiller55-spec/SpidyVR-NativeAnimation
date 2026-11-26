@@ -26,6 +26,17 @@ struct RealisticFlipSettings {
     // heading. It was error / 0.18 s at up to `speed` degrees a second with a hard start (about 0.5 s for a full flip).
     // A small tilt takes less (the angle's share of a half turn, never under 30% of this).
     int levelMs = 1000;
+    // DOUBLE-TAP A: UPSIDE DOWN (air_flip_double_tap / _ms, beta3b; air_flip_tap.hpp): a double tap of A in
+    // the air turns him upside down instead, the same turn as the upright's mirrored, held the same way. Off
+    // here; the settings set it.
+    bool doubleTapInvert = false;
+    int doubleTapMs = 300;
+    // AIR PHYSICS WHILE SWINGING (swing_air_physics, 0.8.7-na-beta3d; the owner, Nov 21 t93u: "I also want
+    // air arm and leg physics, and all mid air physics calculations to apply while swinging as well"): on a
+    // web the arms' swings build a spin of their own (falling off at the air's falloff, as in free air) that
+    // rides on the web's alignment, instead of a nudge one frame long that the alignment took back at once;
+    // it goes on in the release spin. Off (here; the settings set it): exactly as before.
+    bool tetherSpin = false;
     bool operator==(const RealisticFlipSettings&) const = default;
 };
 struct RealisticFlight {
@@ -76,6 +87,8 @@ inline Vec3 legTurnVector(Quat head, float pitch, float roll) {
 }
 struct RealisticControls {
     bool brake{};
+    // DOUBLE-TAP A (air_flip_tap.hpp): this press of the brake turns him upside down, not upright.
+    bool invert{};
     Vec3 manualAngular{}; // tracking-local left-stick angular velocity
     bool manualActive{};
 };
@@ -132,7 +145,9 @@ class RealisticFlip {
     Quat tilt_{}, levelTarget_{}, levelFrom_{};
     float levelAge_{}, levelSeconds_ = 1.f;
     Vec3 angular_{}, momentum_{}, averageVelocity_{}, lastPull_{0, 1, 0};
-    bool attached_{}, sampled_{}, airborne_{}, leveling_{}, brakeHeld_{};
+    Vec3
+        ownSpin_{}; // AIR PHYSICS WHILE SWINGING: the arms' spin on a web (RealisticFlipSettings::tetherSpin)
+    bool attached_{}, sampled_{}, airborne_{}, leveling_{}, brakeHeld_{}, inverting_{};
     float missingTime_{}, lastRadius_ = 20, poseInertia_ = 1;
     static Quat unit(Quat q) {
         const float n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
@@ -165,6 +180,22 @@ class RealisticFlip {
     bool recovering() const {
         return leveling_;
     }
+    // DOUBLE-TAP A: the turn in force (or the hold) is toward upside down.
+    bool inverting() const {
+        return (leveling_ || brakeHeld_) && inverting_;
+    }
+    // The upside-down mirror of the upright turn's target: from far over, the shortest turn that puts his up
+    // straight down (as the upright's puts it straight up); from nearer upright, where that turn would be no
+    // clear thing, the upright target rolled half a turn about his own forward, so he faces the way he did
+    // (the heading is the headset's; nothing here turns the view's yaw).
+    static Quat invertedTarget(Quat tilt) {
+        tilt = unit(tilt);
+        const Vec3 up = tilt.rotate({0, 1, 0});
+        if (up.y < .5f)
+            return unit(arc(up, {0, -1, 0}) * tilt);
+        const Quat upright = unit(arc(up, {0, 1, 0}) * tilt);
+        return unit(upright * Quat::around({0, 0, -1}, 3.14159265f));
+    }
     bool level() const {
         return std::abs(tilt_.w) > .99999f;
     }
@@ -196,6 +227,7 @@ class RealisticFlip {
         levelFrom_ = unit(back * levelFrom_);
         angular_ = back.rotate(angular_);
         momentum_ = back.rotate(momentum_);
+        ownSpin_ = back.rotate(ownSpin_);
         averageVelocity_ = back.rotate(averageVelocity_);
         lastPull_ = back.rotate(lastPull_);
         return heading;
@@ -215,6 +247,7 @@ class RealisticFlip {
                 tilt_ = q;
             angular_ = finite(flight.supportAngular) ? limited(flight.supportAngular, 12.f) : Vec3{};
             momentum_ = angular_;
+            ownSpin_ = {};
             leveling_ = brakeHeld_ = attached_ = airborne_ = false;
             missingTime_ = 0;
             return tilt_;
@@ -224,7 +257,9 @@ class RealisticFlip {
         const float rate = manual ? std::max(autoRate, length(controls.manualAngular)) : autoRate;
         const bool brake = controls.brake && settings.airBrake;
         if (brake && !brakeHeld_) {
-            levelTarget_ = unit(arc(tilt_.rotate({0, 1, 0}), {0, 1, 0}) * tilt_);
+            inverting_ = controls.invert;
+            levelTarget_ =
+                inverting_ ? invertedTarget(tilt_) : unit(arc(tilt_.rotate({0, 1, 0}), {0, 1, 0}) * tilt_);
             levelFrom_ = tilt_;
             levelAge_ = 0;
             // The angle's share of a half turn, so a small tilt does not take a second.
@@ -238,6 +273,7 @@ class RealisticFlip {
             // Finish an upright recovery even after a short button press, as a smooth turn (minimum jerk: no hard start,
             // no hard stop). Preserve horizontal heading, and discard the old spin momentum.
             momentum_ = {};
+            ownSpin_ = {};
             levelAge_ += dt;
             const float u = std::clamp(levelAge_ / levelSeconds_, 0.f, 1.f);
             const float smooth = u * u * u * (u * (6 * u - 15) + 10);
@@ -271,6 +307,7 @@ class RealisticFlip {
                 return tilt_;
             attached_ = airborne_ = false;
             momentum_ = {};
+            ownSpin_ = {};
             integrate(limited(rotationVector(arc(tilt_.rotate({0, 1, 0}), {0, 1, 0})) / response, rate),
                       acceleration, dt);
             return tilt_;
@@ -305,6 +342,7 @@ class RealisticFlip {
             const float keep = poseInertia_ / inertia;
             angular_ = angular_ * keep;
             momentum_ = momentum_ * keep;
+            ownSpin_ = ownSpin_ * keep;
         }
         poseInertia_ = inertia;
         const float drag = (std::clamp(settings.falloffMs, 500, 3000) / 1000.f) / poseDrag;
@@ -328,11 +366,20 @@ class RealisticFlip {
         if (flying) {
             const float gain = 8.f * std::clamp(settings.handStrength, 0, 200) / 100.f / inertia;
             const Vec3 hand = tilt_.rotate(flight.handMomentum) * gain;
-            // Capture the short arm swing that straddles takeoff, then accept
-            // ongoing gestures and opposite gestures that brake the rotation.
-            desired += hand * (dt + (!airborne_ ? .08f : 0));
-
+            if (tether && settings.tetherSpin) {
+                // AIR PHYSICS WHILE SWINGING: the arms' spin builds and falls off on its own, over the web's
+                // alignment (at most half the turn rate, so the web still leads).
+                ownSpin_ = limited(ownSpin_ * std::exp(-dt / drag) + hand * (dt + (!airborne_ ? .08f : 0)),
+                                   rate * .5f);
+                desired += ownSpin_;
+            } else {
+                // Capture the short arm swing that straddles takeoff, then accept
+                // ongoing gestures and opposite gestures that brake the rotation.
+                desired += hand * (dt + (!airborne_ ? .08f : 0));
+                ownSpin_ = {};
+            }
         } else {
+            ownSpin_ = {};
             desired = limited(rotationVector(arc(tilt_.rotate({0, 1, 0}), {0, 1, 0})) / response, rate);
         }
         if (manual && flying)

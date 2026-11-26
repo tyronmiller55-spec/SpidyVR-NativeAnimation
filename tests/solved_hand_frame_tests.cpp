@@ -5,6 +5,8 @@
 #include "spidy/feedback_frame.hpp"
 #include "spidy/animation_cancel.hpp"
 #include "spidy/punch.hpp"
+#include "spidy/hand_pose.hpp"
+#include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
@@ -358,6 +360,70 @@ int main(){
     }
     ++count;
    }
+ }
+ // WEB IN HAND's fist channel (beta3o): from the solved, closed hero hand's own bones, in the solved grip's frame.
+ {
+  unsigned fists=0;
+  for(bool odd : {false,true}) for(Quat turn : {Quat::yaw(.6f),Quat::yaw(-1.3f)*Quat::around({1,0,0},.25f)}) {
+   auto b=testBody(odd,true);auto data=b.rest;
+   body::Pose pose(data.data(),static_cast<int>(b.rig.parent.size()));
+   body::Targets t;t.armsOnly=true;t.viewMapped=true;t.armWeight={1,1};
+   t.eyes=pose.position(b.rig.head);t.facing={};t.up={0,1,0};
+   for(unsigned h=0;h<2;++h)t.hands[h]={true,t.eyes+Vec3{h?-.28f:.28f,-.35f,-.3f},turn,1,0};
+   body::State state;body::Config config;config.hideHead=false;
+   check(body::solve(pose,b.rig,t,config,state,true,1.f/90,1,1).solved,"fist pose did not solve");
+   for(unsigned h=0;h<2;++h){
+    spidy::Pose actual;check(body::solvedGrip(pose,b.rig,config,h,actual),"fist grip rejected");
+    Vec3 channel{};check(body::solvedFistChannel(pose,b.rig,h,channel),"fist channel rejected");
+    const Vec3 local=actual.orientation.conjugate().rotate(channel-actual.position);
+    check(fistChannelOk(local),"fist channel out of the hand's reach");
+    const Vec3 start=webLineStart(actual,h,true,&local);
+    check(length(start-channel)<1e-5f,"the held line does not start at the channel");
+    const Vec3 knuckles=webLineStart(actual,h,true);
+    const auto& mid=b.rig.arms[h].fingers[1];
+    const Vec3 knuckle=pose.position(mid[1]),tip=pose.position(mid[4]);
+    check(length(start-knuckle)<length(knuckles-knuckle)+.02f,"the channel is farther out than the knuckle point");
+    check(length(start-knuckle)<.06f && length(start-tip)<.08f,"the channel is not inside the closed fingers");
+    check(webLineStart(actual,h,true,nullptr).x==actual.position.x,"no channel: the grip's own point");
+    check(length(webLineStart(actual,h,false,&local)-webShooter(actual,h).position)<1e-6f,"not held: the shooter");
+    ++fists;
+   }
+  }
+  auto bare=testBody();body::Pose barePose(bare.rest.data(),static_cast<int>(bare.rig.parent.size()));
+  Vec3 none{9,9,9};check(!body::solvedFistChannel(barePose,bare.rig,0,none),"one finger is no fist channel");
+  check(!body::solvedFistChannel(barePose,bare.rig,2,none),"no third hand");
+  check(!fistChannelOk({0,.2f,0}) && !fistChannelOk({NAN,0,0}),"far or broken channels refused");
+  std::printf("PASS: %u fist channels from the solved bones\n",fists);
+ }
+ // ROPE GRIP (beta3o): a hand on its web closes fully and its thumb tucks onto the index; off, as beta3n.
+ {
+  HandPoser on,off;HandPoseInput in;in.tracked=true;in.holding=true;in.web=.7f;
+  HandPose a{},z{};
+  for(int k=0;k<30;++k){in.ropeGrip=true;a=on.update(1.f/90,in);in.ropeGrip=false;z=off.update(1.f/90,in);}
+  check(a.fist==1.f && a.rope==1.f,"rope grip: a held web is a full fist with the thumb tucked");
+  check(std::abs(z.fist-.7f)<1e-6f && z.rope==0.f,"off: the fist follows the web button, no tuck (as beta3n)");
+  in.holding=false;in.web=0;in.ropeGrip=true;
+  a=on.update(.1f,in);
+  check(a.rope<1.f && a.rope<=a.fist,"let go: the tuck eases out with the fist");
+  in.tracked=false;check(on.update(.01f,in).rope==0.f,"untracked: none");
+  HandPoser fresh;HandPoseInput shoot;shoot.tracked=true;shoot.web=1;shoot.ropeGrip=true;
+  check(fresh.update(1.f/90,shoot).rope==0.f,"a shot (no web held yet) has no tuck");
+  // The thumb on the solved hero hand: nearer the index's middle bone with the tuck.
+  float gap[2]{};
+  for(int r=0;r<2;++r){
+   auto b=testBody(false,true);auto data=b.rest;
+   body::Pose pose(data.data(),static_cast<int>(b.rig.parent.size()));
+   body::Targets t;t.armsOnly=true;t.viewMapped=true;t.armWeight={1,1};
+   t.eyes=pose.position(b.rig.head);t.facing={};t.up={0,1,0};
+   for(unsigned h=0;h<2;++h){t.hands[h]={true,t.eyes+Vec3{h?-.28f:.28f,-.35f,-.3f},Quat::yaw(.6f),1,0};t.hands[h].rope=static_cast<float>(r);}
+   body::State state;body::Config config;config.hideHead=false;
+   check(body::solve(pose,b.rig,t,config,state,true,1.f/90,1,1).solved,"rope pose did not solve");
+   const auto& index=b.rig.arms[0].fingers[0];
+   const Vec3 bone=(pose.position(index[2])+pose.position(index[3]))/2;
+   gap[r]=length(pose.position(b.rig.arms[0].thumbChain.back())-bone);
+  }
+  check(gap[1]<gap[0],"the tuck brings the thumb onto the index finger");
+  std::printf("PASS: rope grip (thumb to the index %.3f -> %.3f)\n",gap[0],gap[1]);
  }
  auto b=testBody();body::Pose pose(b.rest.data(),static_cast<int>(b.rig.parent.size()));
  spidy::Pose unchanged{{1,2,3},{}};check(!body::solvedGrip(pose,b.rig,{},2,unchanged),"invalid hand accepted");

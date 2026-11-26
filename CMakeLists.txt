@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 project(Spidy VERSION 0.8.7 LANGUAGES C CXX)
 # The version players see (the launcher, the log's build line, the modules' version strings): the NA beta of
 # 0.8.7 (beta polish D8). The numbers stay 0.8.7 for the update check and the version resource.
-set(SPIDY_VERSION_LABEL "${PROJECT_VERSION}-na-beta2")
+set(SPIDY_VERSION_LABEL "${PROJECT_VERSION}-na-beta3p")
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -41,7 +41,7 @@ add_library(spidy_core src/swing.cpp src/web_grab.cpp src/web_tie.cpp src/web_li
             src/web_visual.cpp src/body_ik.cpp src/punch.cpp src/shooter.cpp src/vr_settings.cpp
             src/body_calibration.cpp src/overlay_text.cpp src/slow_motion.cpp src/web_strike.cpp
             src/impact_sound.cpp src/prompt_buttons.cpp src/gadget_wheel.cpp src/spider_sense.cpp src/phone.cpp
-            src/body_haptics.cpp src/tech_marks.cpp)
+            src/body_haptics.cpp src/tech_marks.cpp src/crime_run.cpp)
 target_include_directories(spidy_core PUBLIC include)
 if(MSVC)
   target_compile_options(spidy_core PRIVATE /W4 /permissive-)
@@ -90,6 +90,14 @@ add_test(NAME vr_stabilize COMMAND spidy_vr_stabilize_tests)
 
 # AIR KICKS (air_kick.hpp): gestures, zone and gaze, the foot's bend, strength, timeline, leg poses and the kick
 # against enemies (portable).
+# CRIME RUN (prototype): the run's scoring, spawns, timers, ranks, bridge and drawing.
+add_executable(spidy_crime_run_tests tests/crime_run_tests.cpp)
+target_link_libraries(spidy_crime_run_tests PRIVATE spidy_core)
+add_test(NAME crime_run COMMAND spidy_crime_run_tests)
+# Off == previous build: beta3g migration (rev 23) and Crime Run's off-by-default keys (portable).
+add_executable(spidy_defaults_off_tests tests/defaults_off_tests.cpp)
+target_link_libraries(spidy_defaults_off_tests PRIVATE spidy_core)
+add_test(NAME defaults_off COMMAND spidy_defaults_off_tests)
 add_executable(spidy_air_kick_tests tests/air_kick_tests.cpp)
 target_link_libraries(spidy_air_kick_tests PRIVATE spidy_core)
 add_test(NAME air_kick COMMAND spidy_air_kick_tests)
@@ -118,6 +126,15 @@ add_test(NAME swing_kick COMMAND spidy_swing_kick_tests)
 add_executable(spidy_grip_tests tests/grip_tests.cpp)
 target_link_libraries(spidy_grip_tests PRIVATE spidy_core)
 add_test(NAME grip COMMAND spidy_grip_tests)
+add_executable(spidy_wall_feel_tests tests/wall_feel_tests.cpp)
+target_link_libraries(spidy_wall_feel_tests PRIVATE spidy_core)
+add_test(NAME wall_feel COMMAND spidy_wall_feel_tests)
+add_executable(spidy_grip_jump_tests tests/grip_jump_tests.cpp)
+target_link_libraries(spidy_grip_jump_tests PRIVATE spidy_core)
+add_test(NAME grip_jump COMMAND spidy_grip_jump_tests)
+add_executable(spidy_level_head_lock_tests tests/level_head_lock_tests.cpp)
+target_link_libraries(spidy_level_head_lock_tests PRIVATE spidy_core)
+add_test(NAME level_head_lock COMMAND spidy_level_head_lock_tests)
 
 # HAND GRAB (hand_grab.hpp): the reach, hold, cost, release and slam math, and WebGrab holding bodies by hand.
 add_executable(spidy_hand_grab_tests tests/hand_grab_tests.cpp)
@@ -157,6 +174,11 @@ add_test(NAME direction_report COMMAND spidy_direction_report_tests)
 # POLISH PASS, slice 6: the longest visit's sections, the LOW FPS watch, the quiet log's new kinds, the new defaults.
 add_executable(spidy_polish_runtime_tests tests/polish_runtime_tests.cpp)
 target_link_libraries(spidy_polish_runtime_tests PRIVATE spidy_core)
+if(WIN32)
+  # The flushed VR-start log (diag_log::durable) is in the stereo module; the test
+  # covers it on Windows, where that file already builds.
+  target_sources(spidy_polish_runtime_tests PRIVATE src/diag_log.cpp)
+endif()
 add_test(NAME polish_runtime COMMAND spidy_polish_runtime_tests)
 # BETA POLISH PASS (Nov 19): eye stall watch, kick miss reasons, minimum stints, landings, sound cues, settings checks.
 add_executable(spidy_beta_polish_tests tests/beta_polish_tests.cpp)

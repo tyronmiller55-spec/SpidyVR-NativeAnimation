@@ -1002,6 +1002,12 @@ template <class V> auto switchOf(Item item, V& v) -> decltype(&v.aimMarkers) {
         return &v.webLines;
     case Item::airFists:
         return &v.airFists;
+    case Item::animatedWebGrip:
+        return &v.animatedWebGrip;
+    case Item::animatedPunchFists:
+        return &v.animatedPunchFists;
+    case Item::webHoldInHand:
+        return &v.webHoldInHand;
     case Item::pointJump:
         return &v.pointJump;
     case Item::view:
@@ -1324,10 +1330,51 @@ Values sanitized(Values v) {
     v.markerSwitchHoldMs = std::clamp(v.markerSwitchHoldMs, 0, 500);
     v.markerTurnRateDps = std::clamp(v.markerTurnRateDps, 0, 2000);
     v.handstandTipInReachCm = std::clamp(v.handstandTipInReachCm, 60, 300);
-    v.handstandTipInDeg = std::clamp(v.handstandTipInDeg, 100, 180);
+    v.handstandTipInDeg = std::clamp(v.handstandTipInDeg, 45, 180);
     v.handstandGraceAfterMs = std::clamp(v.handstandGraceAfterMs, 100, 1000);
     v.handstandGraceBeforeMs = std::clamp(v.handstandGraceBeforeMs, 0, 1000);
     v.handoffPlaceCm = std::clamp(v.handoffPlaceCm, 0, 2000);
+    v.swingRopeDragPct = std::clamp(v.swingRopeDragPct, 0, 300);
+    v.kickLungeReachCm = std::clamp(v.kickLungeReachCm, 0, 400);
+    v.kickGroundSpeedCms = std::clamp(v.kickGroundSpeedCms, 100, 1000);
+    // CRIME RUN: the launcher's ranges (crime_run::sanitized keeps the run's own).
+    v.crimeStartScore = std::clamp(v.crimeStartScore, 1000, 100000);
+    v.crimeSpawnS = std::clamp(v.crimeSpawnS, 10, 300);
+    v.crimeRadiusMinM = std::clamp(v.crimeRadiusMinM, 30, 1000);
+    v.crimeRadiusMaxM = std::clamp(v.crimeRadiusMaxM, v.crimeRadiusMinM + 10, 1500);
+    v.crimeTimerS = std::clamp(v.crimeTimerS, 20, 600);
+    v.crimeStopPoints = std::clamp(v.crimeStopPoints, 0, 10000);
+    v.crimeSpeedBonusPct = std::clamp(v.crimeSpeedBonusPct, 0, 300);
+    v.crimeThugPoints = std::clamp(v.crimeThugPoints, 0, 2000);
+    v.crimeMissPenalty = std::clamp(v.crimeMissPenalty, 0, 20000);
+    v.crimeWinStops = std::clamp(v.crimeWinStops, 1, 200);
+    v.crimeMaxSites = std::clamp(v.crimeMaxSites, 1, 4);
+    v.crimeReachM = std::clamp(v.crimeReachM, 3, 60);
+    v.crimeHoldS = std::clamp(v.crimeHoldS, 0, 30);
+    v.crimeBest = std::clamp(v.crimeBest, 0, 10000000);
+    v.crimeBestStops = std::clamp(v.crimeBestStops, 0, 1000);
+    v.swingRopeWeightPct = std::clamp(v.swingRopeWeightPct, 0, 300);
+    v.wallSlideFriction = std::clamp(v.wallSlideFriction, 0, 100);
+    v.wallRunBlendMs = std::clamp(v.wallRunBlendMs, 0, 1000);
+    v.stickyPalmsPct = std::clamp(v.stickyPalmsPct, 0, 200);
+    v.swingReelOutSpeed = std::clamp(v.swingReelOutSpeed, 50, 1500);
+    v.swingReelOutTapMs = std::clamp(v.swingReelOutTapMs, 150, 600);
+    v.showtimeAutoPunchCooldownMs = std::clamp(v.showtimeAutoPunchCooldownMs, 0, 60000);
+    v.showtimeAutoPunchEvery = std::clamp(v.showtimeAutoPunchEvery, 1, 10);
+    v.swingRopePhysicsPct = std::clamp(v.swingRopePhysicsPct, 0, 300);
+    v.webFadeMs = std::clamp(v.webFadeMs, 300, 3000);
+    v.airFlipDoubleTapMs = std::clamp(v.airFlipDoubleTapMs, 150, 600);
+    v.showtimeAutoFinisherEvery = std::clamp(v.showtimeAutoFinisherEvery, 1, 10);
+    v.showtimeAutoStrikeEvery = std::clamp(v.showtimeAutoStrikeEvery, 1, 10);
+    v.showtimeAutoDodgeEvery = std::clamp(v.showtimeAutoDodgeEvery, 1, 10);
+    v.showtimeAutoFinisherCooldownMs = std::clamp(v.showtimeAutoFinisherCooldownMs, 0, 60000);
+    v.showtimeAutoStrikeCooldownMs = std::clamp(v.showtimeAutoStrikeCooldownMs, 0, 60000);
+    v.showtimeAutoDodgeCooldownMs = std::clamp(v.showtimeAutoDodgeCooldownMs, 0, 60000);
+    v.handstandCatchDeg = std::clamp(v.handstandCatchDeg, 45, 150);
+    v.headSeatPullCmS = std::clamp(v.headSeatPullCmS, 5, 200);
+    v.headSeatPullCm = std::clamp(v.headSeatPullCm, 0, 20);
+    v.landingViewSnapMs = std::clamp(v.landingViewSnapMs, 40, 400);
+    v.landingViewSnapCm = std::clamp(v.landingViewSnapCm, 0, 100);
     v.turnPushPct = std::clamp(v.turnPushPct, 20, 100);
     v.targetScanIdleMs = std::clamp(v.targetScanIdleMs, 250, 2000);
     return v;
@@ -1580,7 +1627,7 @@ const std::array<Row, rowTotal>& rows() {
          "NATIVE ANIMATION",
          "On: animations + tracked arms. Off: classic body; run options stay independent.",
          {}},
-        {Item::animatedHead, "HEAD", "FULL follows the animated head; LEVEL keeps the horizon level.",
+        {Item::animatedHead, "HEAD", "LEVEL (default) keeps the horizon level; FULL follows the animated head.",
          animatedHeadChoices},
         {Item::animatedHeadsetSmooth, "SMOOTHING",
          "Calms animation wobble. OFF is as now; headset look and travel stay with you.",
@@ -2074,6 +2121,18 @@ const std::array<Row, rowTotal>& rows() {
          "FULL-LENGTH SWING LINES",
          "Swing webs keep the length they caught at; the slack hangs. Reel shortens them.",
          {}},
+        {Item::animatedWebGrip,
+         "WEB GRIP",
+         "A hand on its web closes on the line. Off: the animation's fingers stay.",
+         {}},
+        {Item::animatedPunchFists,
+         "PUNCH FISTS",
+         "A punching hand closes into a fist. Off: the animation's fingers stay.",
+         {}},
+        {Item::webHoldInHand,
+         "WEB IN HAND",
+         "A held web leaves from the closed hand. A shot still leaves from the shooter.",
+         {}},
     }};
     static const std::array<Row, rowTotal> all = [] {
         std::array<Row, rowTotal> a{};
@@ -2216,7 +2275,8 @@ const std::array<Screen, categoryCount>& screens() {
         Item::shooterMode,   Item::shooterLock,  Item::webAngle,
         Item::webAimSource,  Item::forearmBlend, Item::forearmAimLimit,
         Item::wristShooters, Item::palmShooters, Item::animForearmFallback,
-        Item::swingLineFullLength,
+        Item::swingLineFullLength, Item::animatedWebGrip, Item::animatedPunchFists,
+        Item::webHoldInHand,
     };
     // NA · BODY & LEGS (LEGS (ADVANCED) since November 11): shown even while unavailable, the help saying why
     // (shownWhenInactive); the flips' NA rows and the handstand with it.
@@ -2521,7 +2581,7 @@ bool choose(Item item, int index, Values& v) {
         const Values before = v;
         const bool on = index == 1;
         v.animatedMoves = v.animatedHybrid = on;
-        v.animatedHead = on ? 2 : 0;
+        v.animatedHead = on ? Values{}.animatedHead : 0; // the recommended head: LEVEL from beta3p
         v.animatedArms = v.animatedTorso = v.animatedModelYaw = on;
         if (on) {
             v.nativeRun = v.spidyRun = true;
@@ -3114,7 +3174,8 @@ constexpr TabOnly tabOnly[] = {
     {"swing_kick_grunt", &Values::swingKickGrunt, nullptr},
     {"wall_brake", &Values::wallBrake, nullptr},
     {"grip_fling", &Values::gripFling, nullptr},
-    {"grip_stop_pct", nullptr, &Values::wallBrakeMuPct}, // was wall_brake_mu_pct (90): a renamed key takes the new default
+    {"grip_stop_pct", nullptr,
+     &Values::wallBrakeMuPct}, // was wall_brake_mu_pct (90): a renamed key takes the new default
     {"grip_fling_gain_pct", nullptr, &Values::gripFlingGainPct},
     {"grip_fling_max", nullptr, &Values::gripFlingMax},
     {"hand_grab", &Values::handGrab, nullptr},
@@ -3135,6 +3196,9 @@ constexpr TabOnly tabOnly[] = {
     {"air_poses", &Values::airPoses, nullptr},
     {"directional_flips", &Values::directionalFlips, nullptr},
     {"air_fists", &Values::airFists, nullptr},
+    {"animated_web_grip", &Values::animatedWebGrip, nullptr},
+    {"animated_punch_fists", &Values::animatedPunchFists, nullptr},
+    {"web_hold_in_hand", &Values::webHoldInHand, nullptr},
     {"camera_pitch_pct", nullptr, &Values::cameraPitchPct},
     {"camera_roll_pct", nullptr, &Values::cameraRollPct},
     {"camera_bob_vertical_pct", nullptr, &Values::cameraBobVerticalPct},
@@ -3253,7 +3317,86 @@ constexpr TabOnly tabOnly[] = {
     {"showtime_speed_lead_pct", nullptr, &Values::showtimeSpeedLeadPct},
     {"handstand_sticky", &Values::handstandSticky, nullptr},
     {"handstand_sticky_grace_ms", nullptr, &Values::handstandStickyGraceMs},
+    {"handstand_grip_hold", &Values::handstandGripHold, nullptr},
     {"swing_line_full_length", &Values::swingLineFullLength, nullptr},
+    {"handoff_head_first", &Values::handoffHeadFirst, nullptr},
+    {"landing_view_snap", &Values::landingViewSnap, nullptr},
+    {"landing_view_snap_cm", nullptr, &Values::landingViewSnapCm},
+    {"landing_view_snap_ms", nullptr, &Values::landingViewSnapMs},
+    {"head_seat_pull", &Values::headSeatPull, nullptr},
+    {"head_seat_pull_cm", nullptr, &Values::headSeatPullCm},
+    {"head_seat_pull_cm_s", nullptr, &Values::headSeatPullCmS},
+    {"handstand_catch_deg", nullptr, &Values::handstandCatchDeg},
+    {"showtime_auto_finisher", &Values::showtimeAutoFinisher, nullptr},
+    {"showtime_auto_finisher_every", nullptr, &Values::showtimeAutoFinisherEvery},
+    {"showtime_auto_finisher_cooldown_ms", nullptr, &Values::showtimeAutoFinisherCooldownMs},
+    {"showtime_auto_strike", &Values::showtimeAutoStrike, nullptr},
+    {"showtime_auto_strike_every", nullptr, &Values::showtimeAutoStrikeEvery},
+    {"showtime_auto_strike_cooldown_ms", nullptr, &Values::showtimeAutoStrikeCooldownMs},
+    {"showtime_auto_dodge_every", nullptr, &Values::showtimeAutoDodgeEvery},
+    {"showtime_auto_dodge_cooldown_ms", nullptr, &Values::showtimeAutoDodgeCooldownMs},
+    {"air_flip_double_tap", &Values::airFlipDoubleTap, nullptr},
+    {"air_flip_double_tap_ms", nullptr, &Values::airFlipDoubleTapMs},
+    {"web_wrap_slack", &Values::webWrapSlack, nullptr},
+    {"web_shared_slack", &Values::webSharedSlack, nullptr},
+    {"web_fade_physics", &Values::webFadePhysics, nullptr},
+    {"web_fade_ms", nullptr, &Values::webFadeMs},
+    {"web_connect_handoff", &Values::webConnectHandoff, nullptr},
+    {"swing_rope_physics", &Values::swingRopePhysics, nullptr},
+    {"swing_rope_physics_pct", nullptr, &Values::swingRopePhysicsPct},
+    {"showtime_auto_punch", &Values::showtimeAutoPunch, nullptr},
+    {"showtime_auto_punch_every", nullptr, &Values::showtimeAutoPunchEvery},
+    {"showtime_auto_punch_cooldown_ms", nullptr, &Values::showtimeAutoPunchCooldownMs},
+    {"swing_reel_out", &Values::swingReelOut, nullptr},
+    {"swing_reel_out_tap_ms", nullptr, &Values::swingReelOutTapMs},
+    {"swing_reel_out_speed", nullptr, &Values::swingReelOutSpeed},
+    {"swing_air_physics", &Values::swingAirPhysics, nullptr},
+    {"point_jump_wall_cancel", &Values::pointJumpWallCancel, nullptr},
+    {"wall_grip_to_stick", &Values::wallGripToStick, nullptr},
+    {"wall_slide_friction", nullptr, &Values::wallSlideFriction},
+    {"wall_run_push", &Values::wallRunPush, nullptr},
+    {"wall_run_blend_ms", nullptr, &Values::wallRunBlendMs},
+    {"wall_fling_any_way", &Values::wallFlingAnyWay, nullptr},
+    {"sticky_palms", &Values::stickyPalms, nullptr},
+    {"sticky_palms_pct", nullptr, &Values::stickyPalmsPct},
+    {"wall_slide_pose", &Values::wallSlidePose, nullptr},
+    {"wall_grip_jump_lock", &Values::wallGripJumpLock, nullptr},
+    {"web_rope_grip", &Values::webRopeGrip, nullptr},
+    {"level_head_lock", &Values::levelHeadLock, nullptr},
+    {"swing_rope_weight_pct", nullptr, &Values::swingRopeWeightPct},
+    {"swing_rope_drag_pct", nullptr, &Values::swingRopeDragPct},
+    {"kick_lunge", &Values::kickLunge, nullptr},
+    {"kick_lunge_reach_cm", nullptr, &Values::kickLungeReachCm},
+    {"kick_feel", &Values::kickFeel, nullptr},
+    {"swing_rope_stable", &Values::swingRopeStable, nullptr},
+    {"swing_rope_load_taut", &Values::swingRopeLoadTaut, nullptr},
+    {"web_wrap_keep", &Values::webWrapKeep, nullptr},
+    {"kick_target_ring", &Values::kickTargetRing, nullptr},
+    {"kick_ground_lunge", &Values::kickGroundLunge, nullptr},
+    {"kick_lean", &Values::kickLean, nullptr},
+    {"kick_momentum", &Values::kickMomentum, nullptr},
+    {"kick_rebound", &Values::kickRebound, nullptr},
+    {"kick_rope_assist", &Values::kickRopeAssist, nullptr},
+    {"kick_ground_speed_cms", nullptr, &Values::kickGroundSpeedCms},
+    {"kick_chamber", &Values::kickChamber, nullptr},
+    {"crime_run", &Values::crimeRun, nullptr},
+    {"crime_start_score", nullptr, &Values::crimeStartScore},
+    {"crime_spawn_s", nullptr, &Values::crimeSpawnS},
+    {"crime_radius_min_m", nullptr, &Values::crimeRadiusMinM},
+    {"crime_radius_max_m", nullptr, &Values::crimeRadiusMaxM},
+    {"crime_timer_s", nullptr, &Values::crimeTimerS},
+    {"crime_stop_points", nullptr, &Values::crimeStopPoints},
+    {"crime_speed_bonus_pct", nullptr, &Values::crimeSpeedBonusPct},
+    {"crime_thug_points", nullptr, &Values::crimeThugPoints},
+    {"crime_miss_penalty", nullptr, &Values::crimeMissPenalty},
+    {"crime_win_stops", nullptr, &Values::crimeWinStops},
+    {"crime_max_sites", nullptr, &Values::crimeMaxSites},
+    {"crime_reach_m", nullptr, &Values::crimeReachM},
+    {"crime_hold_s", nullptr, &Values::crimeHoldS},
+    {"crime_real_crimes", &Values::crimeRealCrimes, nullptr},
+    {"crime_hud", &Values::crimeHud, nullptr},
+    {"crime_best", nullptr, &Values::crimeBest},
+    {"crime_best_stops", nullptr, &Values::crimeBestStops},
     {"log_level", nullptr, &Values::logLevel},
     {"movement_defaults", nullptr, &Values::movementDefaults},
 };
@@ -3295,12 +3438,16 @@ Values withMovementDefaults(Values v, std::string_view text) {
     // The revision the text has seen: 0 when it names none (older than the
     // November 12 cleanup, or no file at all).
     int seen = 0;
+    // The beta3 SHOWTIME AUTO: FINISHERS AND STRIKES key (one switch for both; split in beta3b): a saved 0.
+    bool finisherStrikeOff = false;
     while (!text.empty()) {
         const size_t end = text.find('\n');
         std::string_view line = text.substr(0, end);
         text.remove_prefix(end == std::string_view::npos ? text.size() : end + 1);
         if (!line.empty() && line.back() == '\r')
             line.remove_suffix(1);
+        if (line == "showtime_auto_finisher_strike=0")
+            finisherStrikeOff = true;
         constexpr std::string_view key = "movement_defaults=";
         if (line.substr(0, key.size()) != key)
             continue;
@@ -3445,6 +3592,126 @@ Values withMovementDefaults(Values v, std::string_view text) {
         // Revision 16 (beta2; the owner, Nov 20 t81u: "Let's add this as a toggle option", all features left on for
         // testing): FULL-LENGTH SWING LINES comes on once. A new key; a 0 chosen after this revision stays.
         v.swingLineFullLength = true;
+    }
+    if (seen < 17) {
+        // Revision 17 (0.8.7-na-beta3; the owner, Nov 21: the handoff fixes and the rest approved, all features on
+        // for testing): the beta3 switches come on once. New keys; a 0 chosen after this revision stays.
+        v.handoffHeadFirst = true;
+        v.landingViewSnap = true;
+        v.headSeatPull = true;
+        v.showtimeAutoFinisher = v.showtimeAutoStrike = true;
+        // HANDSTAND ENTRY ANGLE: the tip-in from 60 degrees; a saved 120 was the old default, another number a choice.
+        if (v.handstandTipInDeg == 120)
+            v.handstandTipInDeg = 60;
+        // BETA3 MIGRATION END
+    }
+    if (seen < 18 && finisherStrikeOff) {
+        // Revision 18 (0.8.7-na-beta3b; the owner, Nov 21 t88u: separate toggles): beta3's one switch for finishers
+        // and strikes, saved off, turns both of the new switches off.
+        v.showtimeAutoFinisher = v.showtimeAutoStrike = false;
+    }
+    if (seen < 18) {
+        // Revision 18 (beta3b, t88u): DOUBLE-TAP A: UPSIDE DOWN comes on once. A new key; a 0 chosen after it stays.
+        v.airFlipDoubleTap = true;
+    }
+    if (seen < 19) {
+        // Revision 19 (0.8.7-na-beta3c; the owner, Nov 21 t92u: "get it going", all features on for testing): the web
+        // switches come on once. New keys; a 0 chosen after this revision stays.
+        v.webWrapSlack = true;
+        v.webSharedSlack = true;
+        v.webFadePhysics = true;
+        v.webConnectHandoff = true;
+        v.swingRopePhysics = true;
+        // BETA3C MIGRATION END
+    }
+    if (seen < 20) {
+        // Revision 20 (0.8.7-na-beta3d; the owner, Nov 21 t93u: "Showtime on punches is what's happening now, let's
+        // remove that"): AUTO: PUNCHES, the new switch for SpidyVR's own manual punches, is off for everyone; AUTO:
+        // STRIKES keeps its value and from now on means the game's animated web strike alone.
+        v.showtimeAutoPunch = false;
+        // REEL OUT comes on once (t93u, a feel change, all features on for testing). A new key; a 0 chosen after
+        // this revision stays.
+        v.swingReelOut = true;
+        // AIR PHYSICS WHILE SWINGING comes on once (t93u). A new key; a 0 chosen after this revision stays.
+        v.swingAirPhysics = true;
+        // BETA3D MIGRATION END
+    }
+    if (seen < 21) {
+        // Revision 21 (0.8.7-na-beta3e; the owner, Nov 22 t94u): POINT JUMP CANCELS WALL GRABS comes on once (a
+        // new key, all features on for testing); a 0 chosen after this revision stays.
+        v.pointJumpWallCancel = true;
+        // GRIP TO STICK comes on once (t94u, a feel change, all features on for testing); a 0 chosen after this
+        // revision stays.
+        v.wallGripToStick = true;
+        // ROPE WEIGHT: 200% once (t94u, "so light I can't control the swing"); a value chosen after this
+        // revision stays. ROPE DRAG is new at beta3d's 100%.
+        v.swingRopeWeightPct = 200;
+        // BETA3E MIGRATION END
+    }
+    if (seen < 22) {
+        // Revision 22 (0.8.7-na-beta3f; the owner, Nov 22 t96u: "let's start to work on kicks. I'll test them
+        // next build"): KICK LUNGE comes on once (a new key, all features on for testing); a 0 chosen after
+        // this revision stays.
+        v.kickLunge = true;
+        // KICK FEEL comes on once (t96u, a new key); a 0 chosen after this revision stays.
+        v.kickFeel = true;
+        // BETA3F MIGRATION END
+    }
+    if (seen < 23) {
+        // Revision 23 (0.8.7-na-beta3g; the owner, Nov 22 t97u: the webs' physics, and "Kicks sound interesting,
+        // and your inclusions all are perfect"): the new switches come on once (new keys, all features on for
+        // testing); a 0 chosen after this revision stays.
+        v.swingRopeStable = v.swingRopeLoadTaut = v.webWrapKeep = true;
+        v.kickTargetRing = v.kickGroundLunge = v.kickLean = v.kickMomentum = v.kickRebound = v.kickRopeAssist =
+            v.kickChamber = true;
+        // KICK GROUND SPEED: 4.5 m/s once (approved); a value chosen after this revision stays.
+        v.kickGroundSpeedCms = 450;
+        // MASS RESCALE: the line is 2.5 times as heavy a metre at the same percentage now - a saved weight
+        // becomes the same mass (to the slider's 10%), and beta3f's 200% default becomes the new 100%.
+        v.swingRopeWeightPct = v.swingRopeWeightPct == 200
+                                   ? 100
+                                   : static_cast<int>(std::lround(std::clamp(v.swingRopeWeightPct, 0, 300) / 25.f)) * 10;
+        // BETA3G MIGRATION END
+    }
+    if (seen < 24) {
+        // Revision 24 (the owner, Nov 25 t50u-t52u): WEB GRIP, PUNCH FISTS and WEB IN HAND come on once
+        // (new keys); a 0 chosen after this revision stays. (THICK SWING LINE, also revision 24, was removed
+        // in beta3n at the owner's request, Nov 26 t141u; an old file's thick_swing_line key is ignored.)
+        v.animatedWebGrip = true;
+        v.animatedPunchFists = true;
+        v.webHoldInHand = true;
+    }
+    if (seen < 25) {
+        // Revision 25 (0.8.7-na-beta3n; the owner, Nov 26 t141u: wall running back, and the walls' feel): WALL
+        // RUN PUSH comes on once (a new key, on by default for testing); a 0 chosen after this revision stays.
+        v.wallRunPush = true;
+        // WALL FLING ANY WAY comes on once (t141u, a new key); a 0 chosen after this revision stays.
+        v.wallFlingAnyWay = true;
+        // STICKY PALMS comes on once (t141u, a new key); a 0 chosen after this revision stays.
+        v.stickyPalms = true;
+        // GRIP HOLDS THE HANDSTAND comes on once (t146u, a new key); a 0 chosen after this revision stays.
+        v.handstandGripHold = true;
+        // BETA3N MIGRATION END
+    }
+    if (seen < 26) {
+        // Revision 26 (0.8.7-na-beta3o; the owner, Nov 26 t147u): WALL SLIDE POSE comes on once (a new key); a 0
+        // chosen after this revision stays.
+        v.wallSlidePose = true;
+        // GRIP LOCKS THE WALL JUMP comes on once (t147u, a new key); a 0 chosen after this revision stays.
+        v.wallGripJumpLock = true;
+        // ROPE GRIP comes on once (t149u, a new key); a 0 chosen after this revision stays.
+        v.webRopeGrip = true;
+        // BETA3O MIGRATION END
+    }
+    if (seen < 27) {
+        // Revision 27 (0.8.7-na-beta3p; the owner, Nov 26 t151u and "Build A"): LEVEL KEEPS HIM WITH YOU comes on
+        // once (a new key); a 0 chosen after this revision stays.
+        v.levelHeadLock = true;
+        // HEAD: LEVEL is the default (t151u, "Build A and make LEVEL the default"): a saved FULL (the old default)
+        // becomes LEVEL once; OFF stays, and FULL chosen after this revision stays.
+        if (v.animatedHead == 2)
+            v.animatedHead = 1;
+        // BETA3P MIGRATION END
     }
     v.movementDefaults = movementDefaultsRevision;
     return sanitized(v);

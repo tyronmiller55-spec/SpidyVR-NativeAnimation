@@ -3,6 +3,238 @@
 Every build, newest first, with what changed, why, and what was measured.
 Per-check results are in [VALIDATION.md](VALIDATION.md).
 
+**0.8.7-na-beta3p (November 26, the owner's t151u and "Build A and make LEVEL the default, Build the smoothing
+clock fix"; branch `feat/087-next`, on beta3o):** a test package
+([checklist](NA_BETA3.md#beta3p-level-keeps-him-with-you-head-level-by-default-the-smoothing-clock-fix)).
+Settings revision 27. CURRENT is unchanged.
+
+- **Level keeps him with you** (`level_head_lock=1`). HEAD LEVEL (with HYBRID and HEADSET FIRST) joins FULL's head
+  lock: the view turns only with you, the game turns him back under it after dodges, rolls and landings, and the
+  view stays level. Without the lock, LEVEL's latch skips the fast-dive re-latch and the crown's yaw. Off: beta3o.
+- **HEAD LEVEL is the default.** Revision 27 turns a saved FULL into LEVEL once; FULL is still a choice.
+- **Smoothing clock fix.** The animated view's smoothing is timed on the performance counter and steps once a
+  frame; the level latch is shared safely between the eyes' and the hands' threads. A bug fix, no setting.
+
+**0.8.7-na-beta3o (November 26, the owner's t147u-t149u; branch `feat/087-next`, on beta3n):** a test package
+([checklist](NA_BETA3.md#beta3o-grip-locks-the-wall-jump-a-wall-slide-pose-the-held-line-inside-the-fist-a-rope-grip)).
+Settings revision 26: the three new switches come on once; off of each equals beta3n. CURRENT is unchanged.
+
+- **Wall slide pose** (`wall_slide_pose=1`). Sliding down one of SpidyVR's walls, mostly down or slowly, his legs
+  brace in a crouch (knees up and wide, the left higher); a run along the wall keeps the run's legs. An
+  approximation of the owner's picture, which the build could not read.
+- **Grip locks the wall jump** (`wall_grip_jump_lock=1`). Gripping one of SpidyVR's walls, A is no jump for the
+  swing or the game until let go of; A+B's point jump still fires through the grip.
+- **Web in hand from the fist.** A held line starts in the fist's channel, measured each solve from the drawn
+  hand's finger bones (no constant), else at the grip pose's point - not 5 cm out past the knuckles. Inside
+  `web_hold_in_hand`.
+- **Rope grip** (`web_rope_grip=1`). On a held web the hand closes fully (with the animation owning the body too)
+  and the thumb tucks onto the first finger. Fingers only.
+
+**0.8.7-na-beta3n (November 26, the owner's t141u and t146u; branch `feat/087-next`, on beta3m):** a test package
+([checklist](NA_BETA3.md#beta3n-wall-running-back-wall-fling-any-way-sticky-palms-grip-held-handstands-the-thick-swing-line-gone)).
+Settings revision 25: the four new switches come on once; off of each equals beta3m. CURRENT is unchanged.
+
+- **THICK SWING LINE removed.** The extra white line along the swing web (beta3i) was never asked for. Swings
+  show only the game's own web again; an old `thick_swing_line` key is ignored.
+- **Rule for contributors.** No feature, visual, overlay, setting or behavior without the owner's signoff
+  (AGENTS.md, HANDOFF_NA.md, CONTRIBUTING.md).
+- **Wall running is back** (`wall_run_push=1`, `wall_run_blend_ms=250`). Since beta3e's GRIP TO STICK, a slide
+  returned before the stick's wall run, so the stick never ran a wall you slid on. Now, pushing the stick toward
+  the wall blends the slide into that run in the stick's direction, and back when let go.
+- **Wall fling any way** (`wall_fling_any_way=1`). A grip fling off a wall leaves along the whole fling once any of
+  it points out of the wall (0.3 m/s; it was a 2 m/s push straight out).
+- **Sticky palms** (`sticky_palms=1`, `sticky_palms_pct=100`). An open palm on the wall you slide or run on holds
+  softly while it touches: still, it slows the slide; swept, it strokes you the other way (1.3x).
+- **Grip holds the handstand** (`handstand_grip_hold=1`). A grip squeezed upside down near the floor catches the
+  handstand without the hands-over-head test (palms from 2.0 m, not 1.6 m); while held it is locked (no fall,
+  step-down, push or leap; no web, no jump). Let go to push, leap or step out, as before.
+- **Launcher text.** The stall line no longer blames Wi-Fi from the PC's own network adapter.
+- The wall pieces are SpidyVR's own walls only; the game's wall crawl and the ground have no hook. The wall jump is
+  unchanged.
+
+**0.8.7-na-beta3m (November 26, the owner's t133u-t138u; branch `feat/087-next`, on beta3l):** a test package
+([checklist](NA_BETA3.md#beta3m-a-bigger-vr-thread-stack-for-the-0xc00000fd-crash)). No new setting; how the game
+plays is unchanged. CURRENT is unchanged.
+
+- **Stack overflow fix.** beta3l's VR start worked, but Link 1.210 and SteamVR sessions still died 20 to 30 s in
+  with `0xC00000FD`. In each dump, the default 1 MB stack of the VR worker thread was full: run()'s own 867 KB frame,
+  mostly the 256-frame eye history, left about 150 KB for the OpenXR runtime and the graphics driver. The VR worker
+  now reserves 16 MB, and the eye history lives on the heap.
+- **Start log.** `spidy-vr-start.log` names the VR thread's stack reserve and its use at start.
+
+**0.8.7-na-beta3, build beta3i (November 25, the owner's t49u-t53u; branch `feat/087-next`, on beta3h-polish):**
+the same version, a ninth test package
+([checklist](NA_BETA3.md#beta3i-web-in-hand-thick-swing-line-grip-and-fists)). Settings revision 24. The four new
+switches come on once; off of each equals beta3h.
+
+- **WEB IN HAND** (`web_hold_in_hand=1`). A held web's line starts inside the closed fist (the measured knuckles,
+  15.5 cm along the hand from the web shooter, [BODY.md](BODY.md)). A shot still leaves from the wrist shooter.
+  Not a beta3 regression: since October 18 every web left from the suit's nozzle, which is right for a shot and
+  left the fist closing over empty air once the hand held the line (t51u). Off: every line leaves from the
+  shooter, as in beta3h.
+- **THICK SWING LINE** (`thick_swing_line=1`). The swing physics rope is the game's own web, laid by `swing_line`.
+  A 2.4 cm bright overlay now follows that same line so it is easier to see in the headset (t52u). Off: only the
+  game's web, as in beta3h.
+- **WEB GRIP and PUNCH FISTS** (`animated_web_grip=1`, `animated_punch_fists=1`). While the animation has the body,
+  a hand on its web closes on the line, and a punching hand balls into a fist, using the fist measured from the
+  game's own model. Off keeps the animation's fingers. The VR-owned body already did both. Kicks do not close the
+  hands.
+- **Log wording.** Closing the game window is no longer reported as a 0xC0000409 crash unless a new session
+  `.mdmp` exists. A swing-kick flick that starts an air kick no longer looks like a missed kick in the log.
+- Crime Run, the save retry and the pause-frozen quit confirm stay as in beta3h-polish. CURRENT is unchanged.
+
+**0.8.7-na-beta3, build beta3h-polish (November 24, the owner's t45u; branch `feat/087-polish`, on the Crime Run
+port):** the same version, an eighth test package
+([checklist](NA_BETA3.md#beta3h-polish-runtime-saves-and-the-quit-confirm)). No new setting; revision still 23.
+Off equals beta3g with Crime Run off. The Drive folder of webs and kicks logs could not be read (it asks for a
+Google sign-in); Crime Run has not been played in the headset yet. Play-feel items and anything that needs those
+logs or a `.mdmp` were left for later.
+
+- **A failed save of the SPIDY VR tab is tried again**, not treated as saved.
+- **Crime Run's 3 s quit confirm no longer lapses** during a pause, a load or a menu; the second A still quits
+  after you come back. Swing asks for enemies and ground are also skipped while the run is frozen.
+- **Runtime:** the overlay keeps its aim marks and translucent vertices from frame to frame; Crime Run's score HUD
+  is formatted without a heap allocation each eye.
+- **Docs and help.** NA HELP has Crime Run pages; the 0xC0000409 close line asks for a `.mdmp`. Missing beta3d,
+  beta3f and beta3g banners are in [NA_BETA3.md](NA_BETA3.md). Landing-page text names CURRENT as 0.8.7-na-beta2
+  (the CURRENT release itself is unchanged).
+- **Tests:** the quit-confirm pause contract, and a portable check that Crime Run stays off and a later 0 stays
+  (off equals the previous build).
+
+**Crime Run prototype (November 22, the owner's t103u; branch `feat/087-crime-run` on this fork, on beta3g):** a roguelike
+random-crime mode, off by default (`crime_run=0`); everything else is beta3g. [docs/CRIME_RUN.md](CRIME_RUN.md).
+
+- **The run** (`crime_run::Run`, core + `tests/crime_run_tests.cpp`). Start anywhere from the phone's new CRIME RUN
+  app (A; A twice quits). Score from 20,000; a crime every 45 s (2 open at most) with a 120 s timer; a stop scores
+  1,000 + up to 100% for speed + 200 per enemy; a miss costs 2,000; lost at 0, won at 20 stops; ranks Rookie,
+  Street-Level, Friendly Neighborhood, Spectacular, Sensational, Amazing by share of the target; the best saved to
+  `spidy_vr.ini`. Every rule is a setting (launcher card "Crime Run (prototype)", `crime_*` keys).
+- **Real crimes.** The game's own enemies standing in play 40..400 m away become the crime (the biggest group);
+  stopped once reached and all of them are down. The census is the punches' own enemy list
+  (`game_targets::fighting`, not cocooned) via `game_punch::crimeCensus`, sent by the swing module as
+  `SpidyCrimeLive` while a run asks (`SpidyCrimeAsk`). No new address.
+- **Beacons.** Otherwise a point on a 150..400 m ring, its ground from a Havok ray down (the swing's world queries);
+  reach it and hold 3 s. Drawn as a 150 m pillar of light with a label and a ground ring; the HUD below the gaze
+  shows score, stops, rank and an arrow to the most urgent crime.
+- Not possible yet without new hooks: spawning enemies or starting the game's crimes, reading the game's crime
+  objects, native map markers (`AddPOI`), crime sounds (CRIME_RUN.md lists what each needs).
+
+**0.8.7-na-beta3, build beta3g (November 22, the owner's t97u, t98u, t100u):** the same version, a seventh test
+package ([checklist](NA_BETA3.md#beta3g-web-rope-physics-kick-animation-and-reach)); migration rev 23.
+
+- **Steady rope steps** (feel change, `swing_rope_stable=1`). The swing line steps at a fixed 1/600 s (8 passes),
+  damps toward moving with its ends, limits a particle to 30 m/s about them and eases its pull: a line no longer
+  builds energy or stalls in midair. Headless: 0.17 m apart at 90 Hz vs ragged frames (beta3f 4.4 m); energy to
+  0.2% of its peak. Off: exactly beta3f.
+- **Taut under load** (`swing_rope_load_taut=1`). The drawn line pulls straight while the swing's rope carries him
+  (2 to 6 m/s^2) and its slack comes back when the load eases.
+- **Keep lines through wraps** (`web_wrap_keep=1`). A wrap or unwrap cuts or carries the rope as it lies
+  (`tether::Rope::reanchor`) instead of laying a new one. The swing's obstruction cut stays a let-go.
+- **Rope weight rescaled.** 100% (new default) is beta3f's 250%; the pull's cap is 6 m/s^2 a hand (2.5). Revision 23
+  converts saved weights to the same mass.
+- **Kick chamber, lean and momentum** (look change for t100u; `kick_chamber`, `kick_lean`, `kick_momentum`). Wind-up,
+  snap through the line with an overshoot, recoil fold; the chest curls in and throws back on the torso channel; the
+  legs carry your travel; the kick layer blends in over 60 ms.
+- **Kick target ring, ground lunge, rebound, rope assist, ground kick speed** (`kick_target_ring`,
+  `kick_ground_lunge`, `kick_rebound`, `kick_rope_assist`, `kick_ground_speed_cms=450`). `AirKickAsk` v3,
+  `AirKickLive` v5, `Swing::kickImpulse`.
+- Logs read: beta3e (860 let-gos, 27% at the pull cap; 515 wraps, 16 cuts) and beta3f (26 kicks started, 24 out of a
+  fight, 0 hits; 200 let-gos).
+
+**0.8.7-na-beta3, build beta3f (November 22, the owner's t96u):** the same version, a sixth test package
+([checklist](NA_BETA3.md#beta3f-kick-lunge-kick-feel-the-kicks-outcome-in-the-log-point-jump-on-the-floor-crawl-flag));
+migration rev 22.
+
+- **Point jump on the floor-crawl flag.** A+B is refused on the game's floor-crawl flag only in a real duct (a roof
+  seen over him: `FloorCrawlRoof`), as ground flips are since Nov 18; fights, ducking and rooftop parkour no longer
+  refuse it (5 refusals in the beta3b log, 15 in beta3c's, none in a duct). `motion.ventCrawl` still refuses. No
+  switch: the refusal the owner asked to narrow.
+- **Kick lunge** (feel change, kicks only; `kick_lunge=1`, `kick_lunge_reach_cm=250`). An air kick at an enemy up to
+  2.5 m past the leg's reach carries you at him (the kick's window closes the gap, at most 12 m/s) and stops you
+  on the blow (40% kept). SpidyVR's air only. `AirKickAsk` v2, `AirKickLive` v4, `Swing::kickLunge`. Off: exactly
+  beta3e. In the beta3b and beta3c logs no kick ever had an enemy in the leg's reach.
+- **Kick feel** (`kick_feel=1`). A kick started ticks both controllers; a lunge adds the strike rush's thump and
+  sound. Off: exactly beta3e.
+- **The kick's outcome in the log.** Each kick's start (with no target) and miss say how many enemies were in the
+  fight and the nearest one's distance; a lunging start says the gap and speed.
+
+**0.8.7-na-beta3, build beta3e (November 22, the owner's t94u):** the same version, a fifth test package
+([checklist](NA_BETA3.md#beta3e-point-jump-off-wall-grabs-grip-to-stick-rope-weight-and-drag)); migration rev 21.
+
+- **Point jump cancels wall grabs** (`point_jump_wall_cancel=1`). On a wall, a grip no longer cancels the point
+  jump's charge, and A+B fires the jump off the wall grab with its sounds. On the game's own wall crawl or run, the
+  jump is no longer refused: the swing takes it there (`PointJumpAsk` version 2, flag 1) and the owner switch hands
+  the body to SpidyVR. Off: exactly beta3d.
+- **Grip to stick** (feel change; `wall_grip_to_stick=1`, `wall_slide_friction=50`). SpidyVR's own walls no longer
+  hold the body the moment it meets them. It slides down and along with friction, keeping its speed, until a grip
+  with the palm at the wall (hand climbing's hold, or the same palm test with it off) sticks it. A mount, or a
+  stuck wall carried over a gap or corner, sticks at once. New `wall_slide.hpp` and the `SpidyWallStick` side
+  channel. The game's own wall crawl and wall run are game-native and unchanged: no validated hook stops them.
+  Off: exactly beta3d.
+- **Rope weight and drag** (`swing_rope_weight_pct=200`, `swing_rope_drag_pct=100`). Both act on the swing line's
+  sim and its pull alike. Weight scales the line's mass, its pull and cap, and divides the sim's air damping.
+  Drag scales the damping and the slack's tug and fling. 100/100 is exactly beta3d; weight 200 makes the line
+  heavier.
+
+**0.8.7-na-beta3, build beta3d (November 21, the owner's t93u):** the same version, a fourth test package
+([checklist](NA_BETA3.md#beta3d-showtime-strikes-vs-punches-finishers-fixed-reel-out-air-physics-on-a-swing));
+migration rev 20.
+
+- **Showtime: strikes vs punches.** `showtime_auto_strike` now steps out only for the game's own animated web
+  strike: its web rush, which is the hero's dodge of kind 8 in `SpidyDodgeLive`. SpidyVR's manual punches get
+  `showtime_auto_punch`, which is off (rev 20 turns it off for everyone), with its own `_every` and
+  `_cooldown_ms`. The log names which kind fired.
+- **Auto finishers fixed.** A Y+B finisher's first-person scene turns the tracking rig off, and Showtime's gate
+  still required the rig, so the scene's first frame cleared the camera it had just been given. The moment now
+  gets past that check, and the scene's eye path places the outside camera. A `held back:` line names whatever
+  takes an auto camera away.
+- **Reel out** (feel change; `swing_reel_out=1`, `_tap_ms=300`, `_speed=400` cm/s). On a web, double tap the reel
+  trigger and hold to pay the line out, up to the swing's longest line. Full-length lines grow with it. It uses
+  the new `SpidyReelOut` side channel.
+- **Air physics while swinging** (feel change; `swing_air_physics=1`). On a web, arm swings build their own spin
+  over the web's alignment. MIDAIR POSES, the AIR DODGE and the LANDING BLEND-IN now work there too. The air
+  crouch, dodge tumble and jump pull stay off; the audit table in NA_BETA3.md gives the reasons. Off: exactly
+  beta3c.
+
+**0.8.7-na-beta3, build beta3c (November 21, the owner's t90u-t92u):** the same version, a third test package
+([checklist](NA_BETA3.md#beta3c-webs-across-the-game-and-rope-physics)); migration rev 19, every new switch on.
+
+- **Webs across the game.** Full-length swing lines keep their slack round edges (`web_wrap_slack`) and in both
+  hands, taking line in as you climb hand over hand (`web_shared_slack`). A let-go line swings free from where it
+  sticks for `web_fade_ms` (1200) before it dissolves (`web_fade_physics`). A stick-click web line or tie takes the
+  webs at once (`web_connect_handoff`).
+- **Rope physics on the swing** (feel change; `swing_rope_physics=1`, `swing_rope_physics_pct=100`). The hanging
+  line's weight, a coil's fling and a trailing line's drag pull SpidyVR's own air through the new `SpidyRopePull`
+  side channel. Off: the swing exactly as before (beta3b's lines were looks only).
+
+**0.8.7-na-beta3, build beta3b (November 21, the owner's t88u):** the same version, a second test package
+([checklist](NA_BETA3.md#beta3b-showtime-auto-kinds-and-double-tap-a)); migration rev 18.
+
+- **Showtime auto kinds and how often.** `showtime_auto_finisher` and `showtime_auto_strike` replace beta3's single
+  switch (a saved 0 turns both off), and finishers, strikes and dodges each get `_every` (1) and `_cooldown_ms` (0).
+- **Double-tap A: upside down** (`air_flip_double_tap=1`, `_ms=300`). In the air one A rights him at once as before;
+  a second A inside the window turns him upside down instead (the upright's turn mirrored), held to stay there.
+
+**0.8.7-na-beta3 (November 21, branch feat/087-beta3 from 1418992): the owner's t86u handoff pass,** a test build
+([headset checklist](NA_BETA3.md)); 0.8.7-na-beta2 stays CURRENT. One change per commit, every feature on,
+migration rev 17 (the new switches come on once; a saved 120 handstand tip-in becomes 60). HANDOFF PLACE stays
+125 cm, WALL JUMP SOUND stays SOUND A, and no new game address.
+
+- **Handoff head gap (log).** One `handoff head gap:` line per owner switch: the worst view-to-head gap in the
+  second after it, when, the settled gap and the frames over settled+5 cm.
+- **Head first** (`handoff_head_first=1`). 297 of 300 beta2 `vr->anim` switches read `headbone n/a`: the head
+  sample turned on after the head read. It turns on first now, and SpidyVR's body stays drawn until the head is
+  read (2 frames at most), so no frames of his body without a head.
+- **Landing view snap** (`landing_view_snap=1`, `_cm=15`, `_ms=120`). Landings, zips and mounts put the view
+  within 15 cm of the head at once and settle over 120 ms (the beta2 glide: up to 1.25 m over up to 450 ms).
+- **Neck pull** (`head_seat_pull=1`, `_cm=5`, `_cm_s=50`). The head-locked view follows the headset back past
+  5 cm instead of a 0.20 m reseat glide every ~12 s of walking; the 20 cm reseat stays as the backstop.
+- **Takeovers** already start the SpidyVR body at the view (TAKEOVER VIEW EASE); no new switch.
+- **Handstands from 60 degrees** (`handstand_catch_deg=60` new, `handstand_tip_in_deg` 120 -> 60).
+- **Showtime auto: finishers and strikes** (`showtime_auto_finisher_strike=1`, the owner t87u). Showtime's camera
+  steps out for a Y+B finisher (its scene) or a web strike (SpidyVR's WebStrike) and back 0.3 s after.
+- **NA Help** pages for each, **version** 0.8.7-na-beta3 (the version resource stays 0.8.7).
+
 **0.8.7-na-beta2 (November 19-21, branch feat/087-beta2 from 9e8d7cb): the owner's t79u pass,** now the testers'
 **CURRENT** after the owner's Nov 21 session (t86u: "it feels good, the polish is there") ([headset checklist](NA_BETA2.md)). One change per commit, every
 feature on, migration rev 15 (AIR DODGE, SHOWTIME RAY FAN and STICKY HANDSTANDS come on once). No existing

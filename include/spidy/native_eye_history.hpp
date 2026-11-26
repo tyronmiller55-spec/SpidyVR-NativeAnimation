@@ -1,5 +1,6 @@
 #pragma once
 #include "body_calibration.hpp"
+#include "crime_run.hpp"
 #include "flip_reprojection.hpp"
 #include "gadget_wheel.hpp"
 #include "game_swing.hpp"
@@ -27,6 +28,10 @@ struct NativeEyeFrame {
     // part running from wrist to wrist; -1 otherwise.
     std::array<int, 2> webSlots{-1, -1};
     int strandUpper = -1;
+    // WEB IN HAND's fist channel (beta3o): each hand's, in its drawn grip's frame (a bit per hand: none, the
+    // grip's point).
+    std::array<Vec3, 2> fistHold{};
+    uint32_t fistHoldMask{};
     // The web tie's webs (game_grab::TieData): from where each sticks to its
     // surface to the enemy it holds there.
     struct TieStrand {
@@ -46,6 +51,13 @@ struct NativeEyeFrame {
     // The zip's marker on a web line (0: none in view).
     Vec3 lineTarget{};
     uint32_t lineTargetId{};
+    // KICK TARGET RING (beta3g): the enemy a kick would take now (radius 0: none shown).
+    Vec3 kickTarget{};
+    float kickTargetRadius{};
+    // CRIME RUN (crime_run.hpp): the open crimes' beacons, and the run's HUD (shown false: none).
+    std::array<crime_run::BeaconView, 4> crimeBeacons{};
+    uint32_t crimeBeaconCount{};
+    crime_run::HudView crimeHud{};
     // What each hand's grip press would do (game_swing::AimKind none while
     // the aim markers are off).
     std::array<game_swing::Aim, 2> aims{};

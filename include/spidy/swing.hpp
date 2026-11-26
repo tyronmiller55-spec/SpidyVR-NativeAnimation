@@ -3,7 +3,10 @@
 #include "hitch_guard.hpp"
 #include "jump_pull.hpp"
 #include "math.hpp"
+#include "reel_out.hpp"
 #include "swing_kick.hpp"
+#include "wall_feel.hpp"
+#include "wall_slide.hpp"
 #include "web_landing.hpp"
 #include <algorithm>
 #include <cmath>
@@ -332,6 +335,9 @@ struct WallHold {
     Vec3 point{};     // on the wall beside the body
     float distance{}; // the body's centre from the wall
     float seconds{};  // on walls since it came onto one
+    // GRIP TO STICK (beta3e, wall_slide.hpp): a grip (or a mount) holds the
+    // body on this wall; without it, with the switch on, the body slides.
+    bool stuck{};
 };
 enum class EventKind {
     Attach,
@@ -553,6 +559,10 @@ class Swing {
     bool reeling(int hand) const {
         return hand >= 0 && hand < 2 && webs_[hand].attached && hands_[hand].reeling;
     }
+    // That hand climbs a shared strand hand over hand (BETTER CLIMBING): its rope changes only by the pulls.
+    bool ropeClimbing(int hand) const {
+        return hand >= 0 && hand < 2 && webs_[hand].attached && hands_[hand].ropeClimbing;
+    }
     // A shared strand keeps the length taken in by hand-over-hand pulling.
     void allowBetterClimbing(bool on) {
         betterClimbing_ = on;
@@ -672,6 +682,73 @@ class Swing {
             climbing_ = {};
     }
     bool handClimbEnabled() const { return handClimb_; }
+    // GRIP TO STICK (beta3e, wall_slide.hpp): on, a wall met in the air is no
+    // hold - the body slides down and along it (friction: `frictionPct` of
+    // gravity, 0 to 100) with the speed it had, until a grip with a palm at the
+    // wall sticks it; then the stick crawls it as before. A mount sticks at
+    // once. Off: every wall holds at once, as before.
+    void wallGripToStick(bool on, int frictionPct) {
+        gripToStick_ = on;
+        slideFriction_ = static_cast<float>(std::clamp(frictionPct, 0, 100)) / 100.f;
+    }
+    bool wallGripToStickEnabled() const {
+        return gripToStick_;
+    }
+    float wallSlideFriction() const {
+        return slideFriction_;
+    }
+    // WALL RUN PUSH (0.8.7-na-beta3n, wall_feel.hpp; off: beta3m's slide). On a wall the body slides on
+    // (GRIP TO STICK), the stick pushed toward the wall blends the slide into the stick's wall run (the one a
+    // stuck wall has, in the stick's direction: its part at the wall goes up it) over `blendMs`; the stick
+    // let go of, it blends back into the slide.
+    void wallRunPush(bool on, int blendMs) {
+        runPush_ = on;
+        runBlendSeconds_ = static_cast<float>(std::clamp(blendMs, 0, 1000)) / 1000.f;
+        if (!on)
+            runBlend_ = 0;
+    }
+    bool wallRunPushEnabled() const {
+        return runPush_;
+    }
+    // WALL FLING ANY WAY (0.8.7-na-beta3n, wall_feel.hpp; off: beta3m's). A grip fling let go of on a wall
+    // leaves the wall along the whole fling once any of it (wall_feel::flingLeaveSpeed) points out of the wall:
+    // up, down, sideways and out, not only a push straight out of 2 m/s or more. A fling into the wall still
+    // strokes along it.
+    void wallFlingAnyWay(bool on) {
+        flingAnyWay_ = on;
+    }
+    bool wallFlingAnyWayEnabled() const {
+        return flingAnyWay_;
+    }
+    // STICKY PALMS (0.8.7-na-beta3n, wall_feel.hpp; off: beta3m's). An open palm (no grip) touching the wall the
+    // body slides or runs on holds it softly, only while it touches: the body follows the palm's sweep along
+    // the wall (wall_feel::palms, `pct` of wall_feel::stickyRate, 0 to 200) - a still palm slows a slide, a palm
+    // swept back carries a run or a jump's speed on, one swept down lifts.
+    void stickyPalms(bool on, int pct) {
+        stickyPalms_ = on;
+        stickyStrength_ = static_cast<float>(std::clamp(pct, 0, 200)) / 100.f;
+        if (!on)
+            palms_ = {};
+    }
+    bool stickyPalmsEnabled() const {
+        return stickyPalms_;
+    }
+    // Which palms hold the wall now (bit 0 left, bit 1 right).
+    unsigned stickyPalmHands() const {
+        return (palms_[0].touching ? 1u : 0u) | (palms_[1].touching ? 2u : 0u);
+    }
+    // How far the slide has blended into the stick's run (0..1).
+    float wallRunBlend() const {
+        return runBlend_;
+    }
+    // How many times the body has come onto a wall sliding, and has been stuck
+    // to one (by a grip, a mount or carried on) since the start.
+    std::uint32_t wallSlides() const {
+        return wallSlides_;
+    }
+    std::uint32_t wallSticks() const {
+        return wallSticks_;
+    }
     // A near-wall squeeze that points at the wall (SwingConfig::gripAim)
     // belongs to climbing before other actions.
     bool wallHand(int hand, const Input&, const WorldQueries&) const;
@@ -827,10 +904,14 @@ class Swing {
     // the ground or Spidy's wall only (game_xr has aimed it out of the
     // surface). Never the point launch (jumpQueued_): no game launch, no smoke.
     // A queue older than its next step is dropped there if he is on neither.
-    void pointJump(Vec3 velocity) {
+    // POINT JUMP CANCELS WALL GRABS (beta3e): `offCrawl`, the launch is off the
+    // game's own wall crawl or wall run (supportSurface): it is taken there too,
+    // where the swing holds no wall of its own and the body may not stand.
+    void pointJump(Vec3 velocity, bool offCrawl = false) {
         if (finite(velocity) && length(velocity) > .1f) {
             pointJumpQueued_ = true;
             pointJumpVelocity_ = velocity;
+            pointJumpOffCrawl_ = offCrawl;
         }
     }
     std::uint32_t pointJumps() const {
@@ -846,6 +927,31 @@ class Swing {
     }
     std::uint32_t airDodges() const {
         return airDodges_;
+    }
+    // KICK LUNGE (air_kick.hpp, beta3f): on the next step, in the air only (off the ground and off Spidy's
+    // wall), his velocity toward `way` (unit) rises to `speed` if it is less; the rest of it is kept. Dropped
+    // there if he is on either.
+    void kickLunge(Vec3 way, float speed) {
+        if (finite(way) && length(way) > .5f && std::isfinite(speed) && speed > .1f) {
+            kickLungeQueued_ = true;
+            kickLungeWay_ = normalized(way);
+            kickLungeSpeed_ = std::min(speed, 20.f);
+        }
+    }
+    std::uint32_t kickLunges() const {
+        return kickLunges_;
+    }
+    // KICK REBOUND (air_kick.hpp, beta3g): a kick's blow in the air adds `change` (m/s) to his velocity on the next
+    // step, after the blow's recoil (kickRecoil): he springs off the enemy. In the air only (off the ground and
+    // off Spidy's wall); dropped there if he is on either.
+    void kickImpulse(Vec3 change) {
+        if (finite(change) && length(change) > .05f && length(change) < 20.f) {
+            kickImpulseQueued_ = true;
+            kickImpulse_ = change;
+        }
+    }
+    std::uint32_t kickImpulses() const {
+        return kickImpulses_;
     }
     // MANUAL SWING KICK (swing_kick.hpp): the assist for the steps to come, set again every native step
     // (off by itself when not). While on, in the air, each ready web's length moves toward the aim's
@@ -876,6 +982,36 @@ class Swing {
     }
     float jumpPullAdded() const {
         return pulled_;
+    }
+    // ROPE PHYSICS ON THE SWING (beta3c, swing_line::Line::pull): the swing lines' pull (m/s^2, world), set
+    // each sample; zero (or never set) pulls nothing. Applied in SpidyVR's own air only, while a web is
+    // attached, before the taut rope's constraint (which takes the outward part), so it mostly bends the arc.
+    void ropePull(Vec3 accel) {
+        ropePull_ = finite(accel) && length(accel) < 50.f ? accel : Vec3{};
+    }
+    Vec3 ropePullApplied() const {
+        return ropePull_;
+    }
+    // REEL OUT (reel_out.hpp, beta3d, swing_reel_out): the double tap and hold on a hand's reel control pays
+    // its line out. Off (the default here, until XR sends SpidyReelOut) nothing changes.
+    void reelOut(const reel_out::Params& p) {
+        reelOut_ = p;
+        if (!p.enabled)
+            for (auto& hand : hands_) {
+                hand.reelingOut = false;
+                hand.reelTap.reset();
+            }
+    }
+    const reel_out::Params& reelOutParams() const {
+        return reelOut_;
+    }
+    // That hand pays its line out now.
+    bool reelingOut(int hand) const {
+        return hand >= 0 && hand < 2 && webs_[hand].attached && hands_[hand].reelingOut;
+    }
+    // Pay-outs begun so far (both hands).
+    uint32_t reelOuts() const {
+        return hands_[0].reelTap.count() + hands_[1].reelTap.count();
     }
     // The player kept `keep` of his velocity from a kick's blow, on the next step.
     void kickRecoil(float keep) {
@@ -970,6 +1106,9 @@ class Swing {
         // press that sets it, so a lost web never re-fires while the grip stays held.
         bool held{}, sample{}, zipUsed{}, triggerReleased{}, reeling{};
         bool ropeClimbing{};
+        // REEL OUT: the reel control's press (reel_out::pressed), its double tap, and paying out now.
+        bool reelDown{}, reelingOut{};
+        reel_out::Tap reelTap{};
         Vec3 previous{};
         float pullDistance{}, pullTime{}, obstructed{};
         float winch{}; // how fast this hand's rope shortened in the last step
@@ -1044,13 +1183,21 @@ class Swing {
     float leapQueued_{};
     bool leapHeld_{};
     // POINT JUMP: a launch waiting for the next step, and those made.
-    bool pointJumpQueued_{};
+    bool pointJumpQueued_{}, pointJumpOffCrawl_{};
     Vec3 pointJumpVelocity_{};
     std::uint32_t pointJumps_{};
     // AIR DODGE: a burst waiting for the next step, and those made.
     bool airDodgeQueued_{};
     Vec3 airDodgeVelocity_{};
     std::uint32_t airDodges_{};
+    // KICK LUNGE: a lunge waiting for the next step, and those made.
+    bool kickLungeQueued_{};
+    Vec3 kickLungeWay_{};
+    float kickLungeSpeed_{};
+    std::uint32_t kickLunges_{};
+    bool kickImpulseQueued_{};
+    Vec3 kickImpulse_{};
+    std::uint32_t kickImpulses_{};
     // MANUAL SWING KICK: the assist in force, the ropes' lengths when it began, what it has done, and a
     // blow's recoil waiting.
     KickAssist kick_{};
@@ -1060,6 +1207,8 @@ class Swing {
     float kickKeep_ = -1;
     // JUMP PULL: the pick in force, the speed this jump has had added, and how long it has been in the air.
     bool pullOn_{};
+    Vec3 ropePull_{};
+    reel_out::Params reelOut_{false};
     jump_pull::Config pullConfig_{};
     Vec3 pullAim_{};
     float pullWeight_{}, pulled_{}, pullAir_{};
@@ -1073,6 +1222,28 @@ class Swing {
     };
     std::array<ClimbingHand, 2> climbing_{};
     bool handClimb_{};
+    // GRIP TO STICK (beta3e): the switch, its friction (0..1 of gravity), the
+    // wall left last was stuck and how long ago, and the counts.
+    bool gripToStick_{}, leftStuck_{};
+    float slideFriction_ = wall_slide::defaultFrictionPct / 100.f, sinceLeftWall_ = 100;
+    std::uint32_t wallSlides_{}, wallSticks_{};
+    void stickWall();
+    void stickInputs(const Input&, const WorldQueries&);
+    // WALL RUN PUSH (beta3n): the switch, the run's blend (0..1) and its time.
+    bool runPush_{}, flingAnyWay_{};
+    float runBlendSeconds_ = wall_feel::defaultBlendMs / 1000.f, runBlend_{};
+    // STICKY PALMS (beta3n): the switch, its strength (0..2), and each palm: on the wall now, its sweep (m/s,
+    // smoothed) and the tracking it was measured from.
+    bool stickyPalms_{};
+    float stickyStrength_ = wall_feel::defaultStickyPct / 100.f;
+    struct Palm {
+        bool touching{}, have{};
+        Vec3 sweep{}, previous{};
+        float yaw{};
+    };
+    std::array<Palm, 2> palms_{};
+    void palmInputs(const Input&, const WorldQueries&);
+    Vec3 wallRun(Vec3 along, Vec3 n, const Input&, float dt) const;
     float climbSeconds_{};
     void climbInputs(const Input&, const WorldQueries&);
     void gripInputs(const Input&, const WorldQueries&);

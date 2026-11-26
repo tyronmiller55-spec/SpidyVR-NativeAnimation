@@ -12,11 +12,11 @@ This build has every current feature on so you can try them. Topics are below. S
 
 ## JUMPS & POINT JUMP
 
-A jumps: the game's own jump. Hold A to charge it. A + B together (or hold B, then A) charges a POINT JUMP where you look. Tap for a hop, hold up to 1 s for a leap. A grip cancels the charge. In SpidyVR's air, B alone dodges the way the left stick points (rest: back).
+A jumps: the game's own jump. Hold A to charge it. A + B together (or hold B, then A) charges a POINT JUMP where you look. Tap for a hop, hold up to 1 s for a leap. A grip cancels the charge. On a wall a grip no longer cancels it: A+B jumps you off the wall grab. In SpidyVR's air, B alone dodges the way the left stick points (rest: back).
 
 ## FLIPS (A TAPS)
 
-Hold the left stick a way and tap A (under 180 ms): a flip that way. Right stick flicked down then A: backflip; flicked up then A: front flip. Works in fights and with every flip mode (VR FLIPS tab).
+Hold the left stick a way and tap A (under 180 ms): a flip that way. Right stick flicked down then A: backflip; flicked up then A: front flip. Works in fights and with every flip mode (VR FLIPS tab). In the air, A rights you; tap A twice to turn upside down instead. Hold the A: stay upright (one A) or upside down (two) until you let go.
 
 ## FLIP BREAK & GRIP CANCEL
 
@@ -24,15 +24,19 @@ In a game jump or move, tilt the left stick to break into SpidyVR's air. Or sque
 
 ## AIR KICKS
 
-In the air hold Y + X to engage your legs, then flick the right stick fast. From under 0.35 to past 0.75 within 150 ms; a slower push poses the legs. Up: dive. Up-left/right: one-leg dive. Quarter circle to the top: roundhouse. Other flicks: a quick kick. Kicks aim where you look (AIR KICK AIM, 40 deg).
+In the air hold Y + X to engage your legs, then flick the right stick fast. From under 0.35 to past 0.75 within 150 ms; a slower push poses the legs. Up: dive. Up-left/right: one-leg dive. Quarter circle to the top: roundhouse. Other flicks: a quick kick. Kicks aim where you look (AIR KICK AIM, 40 deg). An enemy up to 2.5 m past your leg: you fly at him and stop on the blow. A kick taken ticks both controllers; a lunge thumps with the rush sound. KICK TARGET RING: legs engaged, a ring turns round who a kick would hit. KICK CHAMBER: the leg winds up, snaps out through its line, folds back. KICK LEAN and KICK MOMENTUM: the chest leans in; the legs carry your travel. KICK REBOUND: a kick that lands in the air springs you up and back off him. KICK ROPE ASSIST: kick while on a web and the swing steers you at him.
 
 ## GROUND KICKS
 
-Standing or walking (under 3 m/s), hold Y + X and flick the right stick: up a front kick, sideways a side kick, a half circle across the bottom a sweep.
+Standing or walking (under 4.5 m/s), hold Y + X and flick the right stick: up a front kick, sideways a side kick, a half circle across the bottom a sweep. GROUND LUNGE: an enemy a step or two out of reach: you step in to kick.
 
 ## SWING KICK
 
 While swinging, hold Y + X and flick the right stick up: a swing kick. AUTO DIVE KICK: a fast flight at the ringed enemy dives in feet first.
+
+## CRIME RUN
+
+Off by default. Turn CRIME RUN on under Kicks & Combat, then open the phone. The fifth app (a siren) starts a run here. A starts it; A twice in 3 s quits. Pillars mark beacons to reach and hold, or the game's own thugs to take down. Start at 20,000. Stops add points; a miss costs 2,000. 0 loses; 20 wins.
 
 ## MIDAIR POSES & LEGS
 
@@ -48,19 +52,19 @@ X sends the game's LB + RB where the game shows it: throw, pick up, rip. X and Y
 
 ## WEBS & WEB CANCEL
 
-Shoot a web on the ground or a perch to cancel the animation into SpidyVR. Not in fights, cutscenes, dodges or your own wall run. A zip cancels at once. Y + X cuts a zip. SHOOTERS: LOCKED TO ARM fires from your wrist. FULL-LENGTH SWING LINES: webs keep their length, slack hangs; the reel shortens.
+Shoot a web on the ground or a perch to cancel the animation into SpidyVR. Not in fights, cutscenes, dodges or your own wall run. A zip cancels at once. Y + X cuts a zip. SHOOTERS: LOCKED TO ARM fires from your wrist. FULL-LENGTH SWING LINES: webs keep their length, slack hangs; the reel shortens. WRAP SLACK: round edges a line keeps its slack, hung before the first edge. SECOND HAND: the web in both hands keeps its line; climbing takes it in. PHYSICS UNTIL FADE: a let-go line swings free 1.2 s, then dissolves. A stick-click web line or tie takes the hands' webs at once (CONNECT HANDOFF). ROPE PHYSICS: hanging slack pulls you, coils fling, trailing lines drag. 100%. REEL OUT: double tap a web's reel trigger and hold: the line pays out, 4 m/s. AIR PHYSICS WHILE SWINGING: arm spin, poses, air dodge, landing blend on a web. ROPE WEIGHT: a heavier line hangs and pulls harder. 100% (was 250%). ROPE DRAG: less air on the line, less slack tug and fling; still swings. 100%. STEADY ROPE STEPS: the line steps at a fixed rate and settles, no jitter. TAUT UNDER LOAD: swing or hang on a web and its line pulls tight. KEEP LINES THROUGH WRAPS: a wrapping web keeps its line, no new one.
 
 ## HAND GRAB
 
-HAND GRAB: a palm on an enemy or prop holds it. Heavies and bosses resist throws unless stunned or webbed up (open). Shield guards and bosses tire your hand 3x faster; an open enemy is free.
+HAND GRAB: a palm on an enemy or prop holds it. Heavies and bosses resist throws unless stunned or webbed up (open). Shield guards and bosses tire your hand 3x faster; an open enemy is free. GRIP TO STICK: walls no longer stick you; you slide down them with friction. Squeeze a grip with your palm on the wall to stick, then crawl as usual. 50%.
 
 ## HANDSTAND
 
-Fall inverted onto both palms (REALISTIC FLIPS on): you balance on your hands. Lean to walk, push off to leap, let go or lean past FALL ANGLE to drop. BALANCE ASSIST steadies you; SWAY TIME is how long you may be off balance. STICKY HANDSTANDS: easier to catch (arms still up), short tracking drops held.
+Fall inverted onto both palms (REALISTIC FLIPS on): you balance on your hands. Lean to walk, push off to leap, let go or lean past FALL ANGLE to drop. BALANCE ASSIST steadies you; SWAY TIME is how long you may be off balance. STICKY HANDSTANDS: easier to catch (arms still up), short tracking drops held. CATCH ANGLE and TIP-IN ANGLE: from 60 deg upside down now (100 and 120 before).
 
 ## SHOWTIME
 
-SHOWTIME: hold X + B for 200 ms to step outside Spider-Man. The right stick orbits; let go to return. WATCH ONLY keeps your hands still. SHOWTIME RAY FAN pulls the camera in before walls and trails less at speed.
+SHOWTIME: hold X + B for 200 ms to step outside Spider-Man. The right stick orbits; let go to return. WATCH ONLY keeps your hands still. SHOWTIME RAY FAN pulls the camera in before walls and trails less at speed. AUTO: FINISHERS / WEB STRIKES: out for a Y+B finisher or the game's web strike. Each auto kind (dodges too): EVERY N fires on every Nth, COOLDOWN waits. AUTO: PUNCHES (off by default): out for your own SpidyVR punch or dive.
 
 ## CAMERA & STABILIZATION
 
@@ -68,7 +72,7 @@ How much the animation moves your view: CAMERA MOTION, PITCH, ROLL, BOB. How smo
 
 ## HANDOFF TIMING
 
-LANDING BLEND, GLIDE SPEED and LONGEST, PLACE, ANGLE TIME, HEAD SEAT: how view and body glide between animation and SpidyVR. Smaller = snappier.
+LANDING BLEND, GLIDE SPEED and LONGEST, PLACE, ANGLE TIME, HEAD SEAT: how view and body glide between animation and SpidyVR. Smaller = snappier. HANDOFF HEAD FIRST: your body stays drawn until his head is read (2 frames). LANDING VIEW SNAP: a landing puts you within 15 cm of his head, then 120 ms. HEAD SEAT PULL: past 5 cm off his neck your view eases back, up to 50 cm/s.
 
 ## SETTINGS & RESET
 
@@ -80,7 +84,7 @@ Spidy chains its hooks in front of other mods (e.g. Manhattan Skies). If the SPI
 
 ## TROUBLESHOOTING
 
-A crash code 0xC0000409 as the game closes is known and harmless. Logs are in the reports folder: post the newest three files on Discord.
+A 0xC0000409 at close is not a crash. A mid-play fault writes a .mdmp. Logs are in the reports folder: post the newest three files on Discord.
 
 ## Every NA setting and its default
 
@@ -89,7 +93,7 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | Setting | Default | Where |
 |---|---|---|
 | NATIVE ANIMATION | ON | game and launcher |
-| HEAD | FULL | game and launcher |
+| HEAD | LEVEL | game and launcher |
 | SMOOTHING | OFF | game and launcher |
 | ARMS | ON | game and launcher |
 | TORSO | ON | game and launcher |
@@ -236,6 +240,9 @@ A crash code 0xC0000409 as the game closes is known and harmless. Logs are in th
 | PALM SHOOTERS (OLD) | OFF | launcher |
 | ARM AIM FALLBACK | 60 DEG | launcher |
 | FULL-LENGTH SWING LINES | ON | game and launcher |
+| WEB GRIP | ON | game and launcher |
+| PUNCH FISTS | ON | game and launcher |
+| WEB IN HAND | ON | game and launcher |
 
 ### NA · POINT JUMP
 

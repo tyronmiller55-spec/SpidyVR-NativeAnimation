@@ -292,12 +292,19 @@ void Swing::allowWalls(bool allowed) {
         leaveWall();
 }
 void Swing::leaveWall() {
-    if (wall_.on)
+    if (wall_.on) {
         events_.push_back({EventKind::WallOff, -1, .2f});
+        // GRIP TO STICK: whether the next wall met sticks (wall_slide::carries).
+        leftStuck_ = wall_.stuck;
+        sinceLeftWall_ = 0;
+    }
     wall_ = {};
     climbing_ = {};
     wallLost_ = 0;
     wrapWay_ = {};
+    runBlend_ = 0;
+    for (auto& p : palms_)
+        p.touching = false;
 }
 void Swing::joinWall(const RayHit& hit) {
     const Vec3 n = hit.normal;
@@ -327,7 +334,10 @@ void Swing::joinWall(const RayHit& hit) {
     body_.velocity = along - n * into;
     if (!wall_.on) {
         wall_.seconds = 0;
+        wall_.stuck = false;
         events_.push_back({EventKind::WallOn, -1, std::clamp(into / 20, .2f, 1.f)});
+        if (gripToStick_)
+            ++wallSlides_;
     }
     wall_.on = true;
     wall_.normal = n;
@@ -344,8 +354,70 @@ void Swing::offerWall(const RayHit& wall) {
     mountWall_ = {wall.point, n, wall.surface, true};
     offered_ = true;
 }
+void Swing::stickWall() {
+    if (!wall_.on || wall_.stuck)
+        return;
+    wall_.stuck = true;
+    if (gripToStick_) {
+        ++wallSticks_;
+        // A slide counted for a wall that stuck at once (a mount, a wall carried on) was none.
+        if (wall_.seconds <= 0 && wallSlides_ > 0)
+            --wallSlides_;
+    }
+}
+void Swing::stickInputs(const Input& in, const WorldQueries& world) {
+    // GRIP TO STICK: a grip closed with the palm at the wall (hand climbing's own test, with hand climbing on
+    // or off, the stick pushed or not) sticks the body; hand climbing's hold (climbInputs) sticks it too.
+    if (!gripToStick_ || !wall_.on || wall_.stuck || !in.focused)
+        return;
+    for (int i = 0; i < 2; ++i) {
+        const auto& h = in.hands[i];
+        if (climbing_[i].attached) {
+            stickWall();
+            return;
+        }
+        if (webs_[i].attached || !h.tracked || !finite(h.wallPosition) || !std::isfinite(h.wallGrip) ||
+            h.wallGrip <= .65f)
+            continue;
+        if (pointsAtWall(h) && wallContact(h, world)) {
+            // The grip catches the slide, as hand climbing's hold does (the WALL BRAKE is hand climbing's).
+            stickWall();
+            body_.velocity = wall_.normal * dot(body_.velocity, wall_.normal);
+            return;
+        }
+    }
+}
+void Swing::palmInputs(const Input& in, const WorldQueries& world) {
+    // STICKY PALMS (wall_feel.hpp): which open palms touch the wall the body slides or runs on (hand climbing's
+    // palm test, GRIP TO STICK's wall), and how each sweeps: its motion against the head, turned into the world.
+    if (!stickyPalms_)
+        return;
+    const float dt = climbSeconds_;
+    const bool onSlide = gripToStick_ && wall_.on && !wall_.stuck && in.focused && length(wrapWay_) <= .5f;
+    for (int i = 0; i < 2; ++i) {
+        auto& p = palms_[i];
+        const auto& h = in.hands[i];
+        const bool valid = in.focused && h.tracked && finite(h.gripRelativeToHead) && std::isfinite(in.trackingYaw);
+        if (!valid) {
+            p = {};
+            continue;
+        }
+        const bool turned = !p.have || dt > .1f || std::abs(std::remainder(in.trackingYaw - p.yaw, 6.2831853f)) > .12f;
+        if (!turned && dt > 0)
+            p.sweep = wall_feel::smoothSweep(p.sweep, trackingTurn(in).rotate(h.gripRelativeToHead - p.previous) / dt, dt);
+        else
+            p.sweep = {};
+        p.previous = h.gripRelativeToHead;
+        p.yaw = in.trackingYaw;
+        p.have = true;
+        const float squeeze = std::isfinite(h.wallGrip) ? h.wallGrip : 0.f;
+        p.touching = onSlide && !webs_[i].attached && !climbing_[i].attached && squeeze <= wall_feel::openPalm &&
+                     finite(h.wallPosition) && pointsAtWall(h) && wallContact(h, world).has_value();
+    }
+}
 void Swing::senseWall(float dt, const Input& in, const WorldQueries& world) {
     sinceWallJump_ += dt;
+    sinceLeftWall_ += dt;
     backLeft_ = std::max(0.f, backLeft_ - dt);
     const bool offered = offered_;
     offered_ = mounting_ = false;
@@ -389,6 +461,7 @@ void Swing::senseWall(float dt, const Input& in, const WorldQueries& world) {
     }
     if (body_.grounded) {
         leaveWall();
+        leftStuck_ = false;
         crest_ = 0;
         // No mounts (mountFromGround, allowMounts): the game's crawl offered
         // to the swing is not taken from it, nor is a wall the stick walks
@@ -450,6 +523,7 @@ void Swing::senseWall(float dt, const Input& in, const WorldQueries& world) {
                                            : limited(body_.velocity - n * dot(body_.velocity, n),
                                                      config_.wallWalkSpeed);
             joinWall(mountWall_);
+            stickWall(); // GRIP TO STICK: a mount is a crawl the player asked for
             return;
         }
     }
@@ -618,8 +692,14 @@ void Swing::senseWall(float dt, const Input& in, const WorldQueries& world) {
     // fall (the player, October 14: "i went forward, wall walked to the vent
     // and fell"). A climb is never interrupted; only STARTING one is refused
     // when new walls are off, which offerWall does.
-    if (wall)
+    if (wall) {
+        const bool carried = wall_slide::carries(leftStuck_, sinceLeftWall_, sinceWallJump_);
         joinWall(*wall);
+        // GRIP TO STICK: a wall the body was stuck to, lost by itself (the next face of a shaft, the wall
+        // past a gap), carries on stuck.
+        if (carried)
+            stickWall();
+    }
 }
 std::optional<RayHit> Swing::wallContact(const HandInput& hand, const WorldQueries& world) const {
     const Vec3 n = wall_.normal;
@@ -677,6 +757,7 @@ void Swing::climbInputs(const Input& in, const WorldQueries& world) {
                 c.surface = hit->surface;
                 c.previous = h.gripRelativeToHead;
                 events_.push_back({EventKind::WallGrip, i, .45f});
+                stickWall(); // GRIP TO STICK: hand climbing's hold sticks the body
                 // WALL BRAKE (grip.hpp): a press on a sliding body is friction, not a stop at once; with
                 // the other hand holding, the body's speed is the hand's own and the brake stays out.
                 if (gripBrake_ && !climbing_[1 - i].attached) {
@@ -823,8 +904,42 @@ void Swing::wallMotion(float dt, const Input& in) {
         body_.velocity = limited(pull / static_cast<float>(count), config_.maxSpeed);
         return;
     }
+    if (gripToStick_ && !wall_.stuck) {
+        // GRIP TO STICK (wall_slide.hpp): not stuck, the body slides - gravity along the wall less friction,
+        // the speed it came with kept; the stick does not crawl. A grip sticks it (stickInputs).
+        const float out = dot(body_.velocity, n);
+        const Vec3 now = body_.velocity - n * out;
+        Vec3 along = wall_slide::step(now, n, config_.gravity, slideFriction_, dt);
+        // WALL FEEL, wall run (wall_feel.hpp): the stick pushed toward the wall blends the slide into the
+        // stick's wall run, the stuck wall's below, in the stick's direction; let go, back into the slide.
+        if (runPush_) {
+            const Vec3 move = finite(in.move) ? limited(in.move, 1) : Vec3{};
+            runBlend_ = wall_feel::blend(runBlend_, -dot(move, n), runBlendSeconds_, dt);
+            if (runBlend_ > 0)
+                along = wall_feel::mix(along, wallRun(now, n, in, dt), runBlend_);
+        }
+        // STICKY PALMS: open palms on the wall hold the slide or the run softly, only while they touch.
+        if (stickyPalms_) {
+            Vec3 sweep{};
+            unsigned count{};
+            for (const auto& p : palms_)
+                if (p.touching) {
+                    sweep += p.sweep;
+                    ++count;
+                }
+            if (count)
+                along = wall_feel::palms(along, n, sweep / static_cast<float>(count), count, stickyStrength_, dt,
+                                         config_.maxSpeed);
+        }
+        body_.velocity = limited(along + n * (press_ ? -config_.pressSpeed : out), config_.maxSpeed);
+        return;
+    }
+    runBlend_ = 0;
     const float out = dot(body_.velocity, n);
-    Vec3 along = body_.velocity - n * out;
+    const Vec3 along = wallRun(body_.velocity - n * out, n, in, dt);
+    body_.velocity = limited(along + n * (press_ ? -config_.pressSpeed : out), config_.maxSpeed);
+}
+Vec3 Swing::wallRun(Vec3 along, Vec3 n, const Input& in, float dt) const {
     // What of the stick points into the wall goes up it: pushed at a wall,
     // the body climbs.
     const Vec3 up = normalized(Vec3{0, 1, 0} - n * n.y);
@@ -843,7 +958,7 @@ void Swing::wallMotion(float dt, const Input& in) {
             along = along * (std::max(0.f, slower) / speed);
         }
     }
-    body_.velocity = limited(along + n * (press_ ? -config_.pressSpeed : out), config_.maxSpeed);
+    return along;
 }
 void Swing::holdWall(float dt, float before, const World* collision) {
     const Vec3 n = wall_.normal;
@@ -903,11 +1018,18 @@ void Swing::reset(Body b) {
     kick_ = {};
     kickKeep_ = -1;
     pullOn_ = false;
+    ropePull_ = {};
+    for (auto& hand : hands_) {
+        hand.reelingOut = hand.reelDown = false;
+        hand.reelTap.reset();
+    }
     pulled_ = pullAir_ = 0;
-    pointJumpQueued_ = false;
+    pointJumpQueued_ = pointJumpOffCrawl_ = false;
     pointJumpVelocity_ = {};
     airDodgeQueued_ = false;
     airDodgeVelocity_ = {};
+    kickLungeQueued_ = false;
+    kickImpulseQueued_ = false;
     flingQueued_ = false;
     gripHands_ = {};
     gripHave_ = {};
@@ -944,6 +1066,7 @@ void Swing::release(int i, EventKind reason) {
     hands_[i].zipUsed = false;
     hands_[i].ropeClimbing = false;
     hands_[i].reeling = false;
+    hands_[i].reelingOut = false;
     hands_[i].pullDistance = hands_[i].pullTime = hands_[i].obstructed = hands_[i].winch = 0;
     hands_[i].slack = 0;
     hands_[i].passing = false;
@@ -1127,6 +1250,8 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
         zipGestureBlock_ = .2f;
     climbSeconds_ = dt;
     climbInputs(in, world);
+    stickInputs(in, world);
+    palmInputs(in, world);
     gripInputs(in, world);
     // JUMP ALWAYS: a press while the swing runs the body on the ground
     // (SPIDY RUN, the landing carry) ends that run; the game has the body
@@ -1181,6 +1306,10 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                     s.triggerReleased = true;
                 s.reeling = s.triggerReleased && h.trigger > .65f;
             }
+            // REEL OUT: a hand not seen pays nothing out (its press waits to be let go of).
+            s.reelDown = keep && reel_out::pressed(h.trigger, s.reelDown);
+            s.reelingOut = false;
+            s.reelTap.update(dt, s.reelDown, false, reelOut_);
             if (!keep) // let go of by its button, or by the hand's loss
                 release(i, h.lost ? EventKind::Release : EventKind::TrackingLost);
             s.sample = false;
@@ -1288,10 +1417,15 @@ void Swing::inputs(float dt, const Input& in, const WorldQueries& world) {
                 events_.push_back({EventKind::Miss, i, .15f});
             }
         }
+        // REEL OUT (reel_out.hpp, beta3d): the second press of a double tap, held, pays the line out instead
+        // of reeling it in (not while this hand climbs a shared strand hand over hand).
+        s.reelDown = reel_out::pressed(h.trigger, s.reelDown);
+        s.reelingOut =
+            s.reelTap.update(dt, s.reelDown, w.ready() && !w.catching && !s.ropeClimbing, reelOut_);
         if (w.ready()) {
             if (h.trigger < .35f)
                 s.triggerReleased = true;
-            const bool reel = s.triggerReleased && h.trigger > .65f;
+            const bool reel = s.triggerReleased && h.trigger > .65f && !s.reelingOut;
             if (reel && !s.reeling) {
                 // A yank/forward swing leaves slack. Starting a winch should
                 // engage at the current distance, not spend seconds winding in
@@ -1662,11 +1796,21 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             body_.velocity = body_.velocity * kickKeep_;
         kickKeep_ = -1;
     }
+    if (kickImpulseQueued_) {
+        // KICK REBOUND: off the enemy, after the recoil (in the air only).
+        if (!body_.grounded && !wall_.on) {
+            body_.velocity = limited(body_.velocity + kickImpulse_, config_.maxSpeed);
+            ++kickImpulses_;
+        }
+        kickImpulseQueued_ = false;
+    }
     if (pointJumpQueued_) {
         // POINT JUMP: off the ground, a perch or Spidy's wall the way he looks
         // (game_xr aimed it out of the surface). Takes the place of any leap
-        // or jump this step; never the point launch.
-        if (body_.grounded || wall_.on) {
+        // or jump this step; never the point launch. POINT JUMP CANCELS WALL
+        // GRABS (beta3e): off the game's own crawl or run as well, when asked
+        // so (the hold there is the game's: the jump takes the body off it).
+        if (body_.grounded || wall_.on || (pointJumpOffCrawl_ && length(support_) > .5f)) {
             body_.velocity = limited(pointJumpVelocity_, config_.maxSpeed);
             if (wall_.on) {
                 leaveWall();
@@ -1680,7 +1824,7 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             ++pointJumps_;
             events_.push_back({EventKind::PointJump, -1, length(body_.velocity)});
         }
-        pointJumpQueued_ = false;
+        pointJumpQueued_ = pointJumpOffCrawl_ = false;
     }
     if (airDodgeQueued_) {
         // AIR DODGE (air_dodge.hpp): in the air only; game_xr aimed it from the view's heading and the stick.
@@ -1690,6 +1834,17 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         }
         airDodgeQueued_ = false;
     }
+    if (kickLungeQueued_) {
+        // KICK LUNGE (air_kick.hpp): in the air only; at him at no less than the lunge's speed.
+        if (!body_.grounded && !wall_.on) {
+            const float along = dot(body_.velocity, kickLungeWay_);
+            if (along < kickLungeSpeed_)
+                body_.velocity =
+                    limited(body_.velocity + kickLungeWay_ * (kickLungeSpeed_ - along), config_.maxSpeed);
+            ++kickLunges_;
+        }
+        kickLungeQueued_ = false;
+    }
     if (flingQueued_) {
         // GRIP FLING (grip.hpp): the pull let go of launches him the other way, from the ground, a wall or
         // the air; at most vMax, and never past a speed he already has.
@@ -1698,10 +1853,11 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         flingVelocity_ = {};
         std::uint32_t source = 0;
         if (wall_.on) {
-            // Along the wall: a stroke coasts; a push out of it (2 m/s or more) leaves it.
+            // Along the wall: a stroke coasts; a push out of it (2 m/s or more) leaves it. WALL FLING ANY WAY
+            // (wall_feel.hpp): any of it out of the wall leaves it, along the whole fling.
             const Vec3 n = wall_.normal;
             const float out = dot(v, n);
-            if (out >= 2.f) {
+            if (wall_feel::flingLeaves(out, flingAnyWay_)) {
                 body_.velocity = limited(v, config_.maxSpeed);
                 leaveWall();
                 sinceWallJump_ = 0;
@@ -1816,6 +1972,10 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
                 pulled_ += pull.added;
             }
         }
+        // ROPE PHYSICS ON THE SWING: the hanging lines' pull, with a web on, in this simulated air only.
+        if (!body_.grounded && (webs_[0].attached || webs_[1].attached) &&
+            (ropePull_.x != 0 || ropePull_.y != 0 || ropePull_.z != 0))
+            body_.velocity += ropePull_ * dt;
         Vec3 steering = finite(in.move) ? limited(Vec3{in.move.x, 0, in.move.z}, 1) : Vec3{};
         body_.velocity +=
             steering * ((body_.grounded ? config_.groundAcceleration : config_.airAcceleration * poseSteer_) * dt);
@@ -1941,11 +2101,15 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
         hands_[i].winch = (webs_[i].length - lengths[i]) / dt;
         webs_[i].length = lengths[i];
     }
+    // REEL OUT: that hand's line longer by the pay-out's speed, to the swing's longest.
+    for (int i = 0; i < 2; ++i)
+        if (hands_[i].reelingOut && webs_[i].ready() && !webs_[i].catching)
+            webs_[i].length = reel_out::paidOut(webs_[i].length, reelOut_.speed, dt, config_.maxRange);
     // MANUAL SWING KICK: each ready web's rope toward the aim's distance from its anchor.
     if (kick_.on && !body_.grounded && !wall_.on)
         for (int i = 0; i < 2; ++i) {
             auto& w = webs_[i];
-            if (!w.ready() || w.catching || hands_[i].ropeClimbing)
+            if (!w.ready() || w.catching || hands_[i].ropeClimbing || hands_[i].reelingOut)
                 continue;
             const float longer = swing_kick::ropeLength(kickStart_[i], w.length, length(hold(i) - kick_.aim),
                                                         kick_.weight, dt, config_.minRope, kickConfig_);
@@ -1965,7 +2129,8 @@ void Swing::step(float dt, const Input& in, const WorldQueries& world, const Wor
             auto& w = webs_[i];
             const Vec3 out = body_.position - hold(i);
             const float span = length(out);
-            if (!bearing[i] || w.catching || span < 1e-5f || kick_.on)
+            // (REEL OUT: a line paying out is not taken in again; the body falls or swings onto it.)
+            if (!bearing[i] || w.catching || span < 1e-5f || kick_.on || hands_[i].reelingOut)
                 continue;
             const float pulled = std::max(0.f, dot(hands_[i].rate, out / span)) * dt;
             const float slackest = span + hands_[i].slack + pulled;

@@ -596,6 +596,187 @@ int main() {
         Kick g;
         check(g.ask(fa, {Gesture::dive, 1, 30, .9f}).target == 5 && !g.lockAimed(), "the gaze's enemy comes first");
     }
+    // KICK LUNGE (beta3f; the beta3b and beta3c logs: 11 kicks, none with an enemy in the leg's reach): off
+    // the ground, an enemy up to lungeReach past the leg is the target and the kick carries the body at him;
+    // off (0), beta3e's reach; standing, never.
+    {
+        const Kick::Target far[] = {enemy(5, Vec3{0, 10, -3.5f})};
+        Kick off;
+        const auto o0 = off.ask(frame(far), {Gesture::dive, 1, 30, .9f});
+        check(o0.target == 0 && !off.lunged() && o0.lungeSpeed == 0,
+              "off: 3.5 m is out of the leg's reach (beta3e)");
+        Config lc;
+        lc.lungeReach = 2.5f;
+        Kick k(lc);
+        const auto o = k.ask(frame(far), {Gesture::dive, 1, 30, .9f});
+        check(o.target == 5 && k.lunged(), "on: 3.5 m ahead is the lunge's");
+        check(o.lungeWay.z < -.9f && o.lungeSpeed > 1.f && o.lungeSpeed <= lc.lungeSpeed && o.lungeGap > 1.f,
+              "the lunge goes at him, as fast as the window needs, at most its cap");
+        // Carried along the lunge, the foot lands within the kick's window.
+        auto f = frame(far);
+        Vec3 feet = f.feet;
+        bool hit = false;
+        for (int i = 0; i < 60 && !hit && k.busy(); ++i) {
+            feet = feet + o.lungeWay * (o.lungeSpeed / 90.f);
+            f.feet = feet;
+            f.seconds = 1.f / 90;
+            hit = k.update(f).event == Kick::Event::hit;
+        }
+        check(hit, "the lunge did not bring the foot onto him");
+        // Within the leg's reach: no lunge (the kick as before).
+        const Kick::Target close[] = {enemy(6, Vec3{0, 10, -1.2f})};
+        Kick c(lc);
+        const auto oc = c.ask(frame(close), {Gesture::dive, 1, 30, .9f});
+        check(oc.target == 6 && !c.lunged() && oc.lungeSpeed == 0, "in reach: no lunge");
+        // Past the lunge's reach: none.
+        const Kick::Target beyond[] = {enemy(7, Vec3{0, 10, -6.f})};
+        Kick b(lc);
+        check(b.ask(frame(beyond), {Gesture::dive, 1, 30, .9f}).target == 0 && !b.lunged(),
+              "6 m: past the lunge");
+        // Standing (GROUND KICKS): never a lunge.
+        auto g = frame(far);
+        g.grounded = true;
+        g.ground = true;
+        Kick s(lc);
+        const auto og = s.ask(g, {Gesture::freeform, 1, 0, .9f});
+        check(og.event == Kick::Event::started && og.target == 0 && !s.lunged(), "a standing kick lunged");
+    }
+    // GROUND LUNGE (beta3g): standing, an enemy past the leg's reach (up to groundLungeReach past it) is the
+    // target and the kick steps the body at him, at most groundLungeSpeed; the kick goes on while the burst
+    // runs faster than a standing kick may start; off (0), beta3f's none.
+    {
+        const Kick::Target out[] = {enemy(5, Vec3{0, 10, -2.6f})};
+        auto g = frame(out);
+        g.grounded = g.ground = true;
+        Kick off;
+        check(off.ask(g, {Gesture::dive, 1, 30, .9f}).target == 0 && !off.lunged(), "ground lunge off: out of reach");
+        Config gc;
+        gc.groundLungeReach = 2.f;
+        Kick k(gc);
+        const auto o = k.ask(g, {Gesture::dive, 1, 30, .9f});
+        check(o.event == Kick::Event::started && o.target == 5 && k.lunged() && k.onGround(), "no ground lunge");
+        check(o.lungeWay.z < -.9f && o.lungeSpeed > 1.f && o.lungeSpeed <= gc.groundLungeSpeed + 1e-4f,
+              "the ground lunge's way and speed");
+        // Stepping in at the burst's speed (past groundSpeed + slack): the kick goes on and lands.
+        auto f = g;
+        bool hit = false, lost = false;
+        for (int i = 0; i < 60 && !hit && k.busy(); ++i) {
+            f.feet = f.feet + Vec3{0, 0, -o.lungeSpeed / 90.f};
+            f.speed = o.lungeSpeed;
+            f.seconds = 1.f / 90;
+            const auto u = k.update(f);
+            hit = u.event == Kick::Event::hit;
+            lost = lost || u.lost;
+        }
+        check(hit && !lost, "the ground lunge did not land (or the burst's speed ended the kick)");
+        // A sweep never lunges.
+        Kick sw(gc);
+        sw.ask(g, {Gesture::sweep, 1, 0, .9f});
+        check(!sw.lunged(), "a sweep lunged");
+        // KICK GROUND SPEED (beta3g): the start's limit is the config's (450 cm/s from the setting).
+        Config fast;
+        fast.groundSpeed = 4.5f;
+        auto moving = frame(out);
+        moving.grounded = moving.ground = true;
+        moving.speed = 4.f;
+        Kick slowK, fastK(fast);
+        check(slowK.ask(moving, {Gesture::dive, 1, 30, .9f}).refusal == Refusal::moving, "4 m/s at the old 3 m/s");
+        check(fastK.ask(moving, {Gesture::dive, 1, 30, .9f}).event == Kick::Event::started, "4 m/s refused at 4.5");
+    }
+    // KICK REBOUND (beta3g): up 3 m/s and back 2.5 along the kick's level way.
+    {
+        const Vec3 r = rebound({0, -.6f, -.8f});
+        check(near(r.y, 3.f) && near(r.z, 2.5f) && near(r.x, 0.f), "the rebound");
+        check(near(rebound({0, -1, 0}).y, 3.f) && near(length(Vec3{rebound({0, -1, 0}).x, 0, rebound({0, -1, 0}).z}), 0),
+              "straight down: up only");
+        check(finite(rebound({NAN, 0, 0})), "a NaN way");
+    }
+    // KICK TARGET RING (beta3g): the gaze's enemy within reach, else the nearest in front, else the lock; none
+    // out of reach.
+    {
+        const Kick::Target ts[] = {enemy(5, Vec3{-1.f, 10, -1.f}), enemy(6, Vec3{0, 10, -1.3f}), enemy(7, Vec3{0, 10, 1.2f})};
+        const auto all = std::span<const Kick::Target>(ts);
+        check(preview(all, {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0).id == 6, "the gaze's enemy");
+        const auto p = preview(all, {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0);
+        check(near(p.point.z, -1.3f) && p.radius > .2f, "the ring sits on his chest");
+        const Kick::Target behind[] = {enemy(7, Vec3{0, 10, 1.2f})};
+        check(preview(std::span<const Kick::Target>(behind), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0).id == 0,
+              "behind, no lock: none");
+        check(preview(std::span<const Kick::Target>(behind), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 7).id == 7,
+              "behind, the lock: him");
+        const Kick::Target far[] = {enemy(8, Vec3{0, 10, -3.5f})};
+        Config lc;
+        check(preview(std::span<const Kick::Target>(far), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0, lc).id == 0,
+              "out of reach: none");
+        lc.lungeReach = 2.5f;
+        check(preview(std::span<const Kick::Target>(far), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0, lc).id == 8,
+              "the lunge's reach");
+        check(preview(std::span<const Kick::Target>(far), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, true, 0, lc).id == 0,
+              "standing: the lunge's reach is the ground lunge's (off)");
+        check(preview(std::span<const Kick::Target>(), {0, 10, 0}, {0, 1.6f, 0}, {0, 0, -1}, false, 0).id == 0, "none");
+    }
+    // KICK LEAN and KICK MOMENTUM (beta3g): the dive arches back, the roundhouse twists, none at rest; the
+    // legs swing with the travel and keep their limits; the torso goes on the channel in the kick layer.
+    {
+        const float mid = extendOf(Gesture::dive) + .05f;
+        check(kickLean(Gesture::dive, 1, 30, mid).pitch < -.3f, "the dive does not arch back");
+        check(kickLean(Gesture::doubleDive, 1, 0, mid).pitch < kickLean(Gesture::dive, 1, 30, mid).pitch,
+              "the double dive arches more");
+        check(std::abs(kickLean(Gesture::roundhouse, 1, 60, .15f).yaw) > .1f, "the roundhouse does not twist");
+        check(kickLean(Gesture::dive, 1, 30, 0).pitch == 0 && kickLean(Gesture::sweep, 1, 0, mid).pitch == 0,
+              "a lean at rest or on a sweep");
+        const auto pose = legPose(Gesture::dive, 1, 30, mid);
+        const auto forward = momentumPose(pose, 10.f, 0.f, 0.f), back = momentumPose(pose, -10.f, 0.f, 0.f);
+        check(forward[0].pitch >= pose[0].pitch && back[0].pitch < pose[0].pitch, "the legs do not carry the travel");
+        check(back[0].pitch > pose[0].pitch - momentumMaxRadians - 1e-4f, "past the momentum's most");
+        const auto wild = momentumPose(pose, 1e4f, -1e4f, 0.f);
+        for (const auto& leg : wild)
+            check(leg.pitch <= leg_control::pitchMax && std::abs(leg.side) <= leg_control::sideMax, "past a leg's limit");
+        const auto same = momentumPose(pose, NAN, 0.f, 0.f);
+        check(same[1].pitch == pose[1].pitch, "a NaN travel moved the legs");
+        leg_layers::Mixer mixer;
+        leg_layers::Input in;
+        in.air = true;
+        in.kick = true;
+        in.kickPose = pose;
+        auto o = mixer.update(in, {});
+        check(o.layer == leg_layers::Layer::kick && !o.torsoOn, "KICK LEAN off: the torso was driven");
+        in.kickLeanOn = true;
+        in.kickTorso = {-.42f, 0, 5.f};
+        o = mixer.update(in, {});
+        check(o.torsoOn && near(o.torso.pitch, -.42f) && near(o.torso.yaw, .7f), "the kick's lean on the channel (clamped)");
+    }
+    // KICK CHAMBER (beta3g; t100u "we need lots of animation work there"): the kicking leg winds up (knee
+    // bent, thigh part way), snaps out straight past its line a little, then folds back as it comes home.
+    {
+        const float e = extendOf(Gesture::dive), w = windowOf(Gesture::dive);
+        const auto wind = shapedLegPose(Gesture::dive, 1, 30, .4f * e);
+        const auto line = shapedLegPose(Gesture::dive, 1, 30, e);
+        const auto held = shapedLegPose(Gesture::dive, 1, 30, e + .5f * (w - e));
+        const auto fold = shapedLegPose(Gesture::dive, 1, 30, w + .5f * Config{}.recover);
+        const auto stiff = legPose(Gesture::dive, 1, 30, e);
+        check(wind[1].knee > .6f && wind[1].pitch < .8f * stiff[1].pitch, "no chamber: the knee not drawn up");
+        check(line[1].knee < .2f && near(line[1].pitch, stiff[1].pitch, .05f), "not out straight on its line");
+        check(held[1].pitch > line[1].pitch, "no overshoot through the line");
+        check(fold[1].knee > legPose(Gesture::dive, 1, 30, w + .5f * Config{}.recover)[1].knee + .2f, "no recoil fold");
+        const auto rest = shapedLegPose(Gesture::dive, 1, 30, totalOf(Gesture::dive) + .01f);
+        check(std::abs(rest[1].pitch - leg_control::centrePose[1].pitch) < .05f, "not home after the kick");
+        check(shapedLegPose(Gesture::dive, 1, 30, .4f * e)[0].knee == legPose(Gesture::dive, 1, 30, .4f * e)[0].knee,
+              "the other leg was shaped");
+        for (float t = 0; t < totalOf(Gesture::roundhouse) + .05f; t += .01f)
+            for (const auto& leg : shapedLegPose(Gesture::roundhouse, -1, 60, t))
+                check(std::isfinite(leg.pitch) && leg.knee <= leg_control::kneeMax && leg.knee >= 0, "a leg out of its range");
+        check(kickLean(Gesture::dive, 1, 30, .4f * e).pitch > kickLean(Gesture::dive, 1, 30, e).pitch + .2f,
+              "no curl into the wind-up");
+        leg_layers::Mixer quick, slow;
+        leg_layers::Input in;
+        in.air = in.kick = true;
+        in.dt = .03f;
+        in.kickQuick = true;
+        const float fast = quick.update(in, {}).amount;
+        in.kickQuick = false;
+        check(fast > .45f && slow.update(in, {}).amount < .2f, "the kick layer's quick blend");
+    }
     // KICK FLICK MISSES: a slow push and a short one are logged with why; a flick and a resting thumb are not.
     {
         FlickWatch w;
